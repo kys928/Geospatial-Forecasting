@@ -8,4 +8,5 @@ import datetime
 class Forecast:
     predictions: list[float]
     timestamp: datetime.datetime
-    metadata: dict[Scenario.start, Scenario.pollution_type, GridSpec.grid_spacing, GridSpec.grid_center]
+    scenario: Scenario
+    grid_spec: GridSpec
