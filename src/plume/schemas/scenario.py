@@ -3,7 +3,7 @@ import datetime
 
 @dataclass
 class Scenario:
-    source: str
+    source: tuple[float, float]
     latitude: float
     longitude: float
     start: datetime.datetime

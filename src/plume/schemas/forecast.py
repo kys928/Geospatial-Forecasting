@@ -1,12 +1,13 @@
 from dataclasses import dataclass
-from scenario import Scenario
-from grid import GridSpec
+from .scenario import Scenario
+from .grid import GridSpec
 import datetime
+import numpy as np
 
 
 @dataclass
 class Forecast:
-    predictions: list[float]
+    concentration_grid: np.ndarray
     timestamp: datetime.datetime
     scenario: Scenario
     grid_spec: GridSpec
