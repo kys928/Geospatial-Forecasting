@@ -1,0 +1,4 @@
+run_name: local-baseline
+model: gaussian_plume
+projection: EPSG:4326
+notes: local proof-of-concept baseline

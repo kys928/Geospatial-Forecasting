@@ -1,10 +1,12 @@
-from src.plume.inference.engine import InferenceEngine
-from src.plume.schemas.grid import GridSpec
-from src.plume.schemas.scenario import Scenario
-from src.plume.models.gaussian_plume import GaussianPlume
 import datetime as datetime
+
 import matplotlib.pyplot as plt
 import numpy as np
+
+from plume.inference.engine import InferenceEngine
+from plume.models.gaussian_plume import GaussianPlume
+from plume.schemas.grid import GridSpec
+from plume.schemas.scenario import Scenario
 
 
 def main():
@@ -23,7 +25,6 @@ def main():
         release_height=10.0,
     )
 
-
     grid_spec = GridSpec(
         grid_center=(52.0907, 5.1214),
         number_of_rows=50,
@@ -32,7 +33,7 @@ def main():
         grid_width=0.02,
         grid_spacing=0.0004,
         projection="EPSG:4326",
-        boundary_limits=(52.0807, 52.1007, 5.1114, 5.1314)
+        boundary_limits=(52.0807, 52.1007, 5.1114, 5.1314),
     )
 
     model = GaussianPlume(grid_spec=grid_spec, scenario=scenario)

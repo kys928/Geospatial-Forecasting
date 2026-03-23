@@ -1,0 +1,9 @@
+mode: local_demo
+validate_inputs: true
+return_forecast_object: true
+summary_statistics:
+  - max_concentration
+  - mean_concentration
+plot:
+  enabled: true
+  interactive: local_only

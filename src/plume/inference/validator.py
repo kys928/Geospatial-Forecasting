@@ -1,6 +1,7 @@
 from ..schemas.grid import GridSpec
 from ..schemas.scenario import Scenario
 
+
 class Validator:
     def __init__(self, scenario: Scenario, grid_spec: GridSpec):
         self.scenario = scenario
@@ -62,8 +63,9 @@ class Validator:
         if grid_spec.projection is None:
             raise ValueError("Invalid grid specification for projection.")
         if grid_spec.projection != "EPSG:4326":
-            raise ValueError("Invalid grid specification for projection. Expected EPSG:4326 but got {}".format(grid_spec.projection))
+            raise ValueError(
+                "Invalid grid specification for projection. Expected EPSG:4326 but got {}".format(
+                    grid_spec.projection
+                )
+            )
         return True
-
-
-
