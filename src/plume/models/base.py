@@ -1,12 +1,12 @@
 from ..schemas.grid import GridSpec
 from ..schemas.scenario import Scenario
+from ..schemas.forecast import Forecast
+from abc import ABC, abstractmethod
 
+class BaseForecastModel(ABC):
 
-class BaseForecastModel:
-    def __init__(self):
+    @abstractmethod
+    def predict_scenario(self, scenario: Scenario, grid_spec: GridSpec) -> Forecast:
         pass
-
-    def predict_scenario(self, scenario: Scenario, grid_spec: GridSpec):
-        raise NotImplementedError("Subclasses must implement this method")
 
         #Needs to return type Forecast class
