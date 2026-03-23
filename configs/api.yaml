@@ -1,0 +1,5 @@
+enabled: false
+provider: openai
+model: gpt-5.2
+forecast_summary_only: true
+timeout_seconds: 30

@@ -1,22 +1,18 @@
 from .grid_builder import GridBuilder
-from ..models.base import BaseForecastModel
-from ..schemas.scenario import Scenario
-from ..schemas.grid import GridSpec
 from .validator import Validator
-import numpy as np
-import pandas as pd
+from ..models.base import BaseForecastModel
+from ..schemas.grid import GridSpec
+from ..schemas.scenario import Scenario
 
 
 class InferenceEngine:
     def __init__(self, model: BaseForecastModel):
-      self.model = model
+        self.model = model
 
     def run_inference(self, scenario: Scenario, grid_spec: GridSpec):
-
         self.validate_inputs(scenario, grid_spec)
         self.prepare_grid(grid_spec)
         return self.model.predict_scenario(scenario, grid_spec)
-
 
     def validate_inputs(self, scenario: Scenario, grid_spec: GridSpec):
         validator = Validator(scenario, grid_spec)
@@ -34,7 +30,3 @@ class InferenceEngine:
     def prepare_grid(self, grid_spec: GridSpec):
         grid_builder = GridBuilder(grid_spec)
         grid_builder.build_coordinate_arrays()
-
-
-
-

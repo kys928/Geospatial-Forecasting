@@ -1,23 +1,34 @@
 # AGENTS.md
 
-## Project instructions
+## Repository purpose
+This repository is an early proof-of-concept for geospatial forecasting of airborne hazard dispersion. The current system is a local baseline that validates a release scenario, builds a grid, runs a Gaussian plume forecast, and returns a forecast object for local inspection or visualization.
 
-This repository is being scaffolded incrementally.
+## Current maturity
+- Early proof of concept
+- Local baseline workflow, not a production-ready dispersion platform
+- Current forecast model is a Gaussian plume baseline, not a fully realistic atmospheric simulation
 
-Current task policy:
-- Prefer minimal structural changes.
-- Create folders and empty files only unless explicitly asked to implement code.
-- Do not add placeholder code, comments, docstrings, or sample content.
-- Do not remove existing files unless explicitly instructed.
-- If a path already exists, preserve it and only add missing structure.
-- Do not commit or push unless explicitly instructed.
+## Development guidance
+- Make focused, practical changes.
+- Do not overengineer or introduce platform-level complexity without a clear need.
+- Preserve the current structure unless a small structural change is clearly justified.
+- Prefer small, testable additions over broad refactors.
+- Keep local demo scripts working.
+- Keep CI passing.
+- If you add or change setup steps or runnable commands, update `README.md` in the same change.
+- Keep documentation and config files aligned with the actual implementation.
 
-## Preferred architecture
+## Code organization
+- `src/plume/schemas`: dataclasses and core data structures
+- `src/plume/models`: forecasting model implementations
+- `src/plume/inference`: orchestration, validation, and grid handling
+- `scripts`: runnable local and demo entry points
+- `configs`: scenario and runtime configuration examples
+- `docs`: architecture and design documentation
+- `tests`: automated validation of current behavior
 
-This repo follows a lean inference-first structure:
-- schemas/
-- inference/
-- models/
-- utils/
-
-Avoid adding API, simulation, future, docker, notebook, adapter, or frontend layers unless explicitly requested.
+## Working style
+- Prefer minimal, production-sensible improvements for the current maturity level.
+- Do not add deployment, Docker, cloud infrastructure, or secrets in routine tasks.
+- Do not describe future ideas as already implemented.
+- Keep terminology consistent across code, configs, and docs.
