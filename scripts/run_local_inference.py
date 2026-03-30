@@ -1,13 +1,13 @@
 import matplotlib.pyplot as plt
 import numpy as np
-from src.plume.inference.engine import InferenceEngine
-from src.plume.models.gaussian_plume import GaussianPlume
-from src.plume.utils.config import Config
-from src.plume.inference.postprocessor import ForecastPostprocessor
+from plume.inference.engine import InferenceEngine
+from plume.models.gaussian_plume import GaussianPlume
+from plume.utils.config import Config
+from plume.inference.postprocessor import ForecastPostprocessor
 
 
-def main():
-    config = Config()
+def main(config_dir: str | None = None):
+    config = Config(config_dir=config_dir)
     scenario = config.load_scenario()
     grid_spec = config.load_grid()
     base = config.load_base()

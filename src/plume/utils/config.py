@@ -8,8 +8,11 @@ from ..schemas.Base import Base
 
 
 class Config:
-    def __init__(self) -> None:
-        self.config_dir = Path(__file__).resolve().parents[3] / "configs"
+    def __init__(self, config_dir: str | Path | None = None) -> None:
+        if config_dir is None:
+            self.config_dir = Path(__file__).resolve().parents[3] / "configs"
+        else:
+            self.config_dir = Path(config_dir)
 
     def load_grid(self) -> GridSpec:
         grid_yaml = self.config_dir / "grid.yaml"
