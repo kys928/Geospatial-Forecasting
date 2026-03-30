@@ -6,11 +6,13 @@ from ..schemas.scenario import Scenario
 
 
 class InferenceEngine:
-    def __init__(self, model: BaseForecastModel):
+    def __init__(self, model: BaseForecastModel, validate_inputs: bool = True):
         self.model = model
+        self.validate_before_run = validate_inputs
 
     def run_inference(self, scenario: Scenario, grid_spec: GridSpec):
-        self.validate_inputs(scenario, grid_spec)
+        if self.validate_before_run:
+            self.validate_inputs(scenario, grid_spec)
         self.prepare_grid(grid_spec)
         return self.model.predict_scenario(scenario, grid_spec)
 
