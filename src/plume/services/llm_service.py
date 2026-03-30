@@ -1,108 +1,87 @@
 from __future__ import annotations
-
 import json
 import os
-from dataclasses import dataclass
+import yaml
 from typing import Any
-
-from openai import OpenAI
-
+from huggingface_hub import InferenceClient
+from ..schemas.LLMConfig import LLMConfig
+from ..schemas.ForecastSummary import ForecastSummary
 from ..schemas.scenario import Scenario
 from ..schemas.grid import GridSpec
+from ..schemas.LLMInterpretationResult import LLMInterpretationResult
 
 
-@dataclass
-class ForecastSummary:
-    """
-    Small, LLM-friendly summary of a forecast or synthetic inference result.
-    This is what we send to the external API, not the whole raw grid/tensor.
-    """
-    source_latitude: float
-    source_longitude: float
-    grid_rows: int
-    grid_columns: int
-    projection: str | None
-    max_concentration: float
-    mean_concentration: float
-    affected_cells_above_threshold: int
-    dominant_spread_direction: str
-    threshold_used: float
-    note: str | None = None
+
+def load_llm_config(self) -> LLMConfig:
+    self.config = "../configs/api.yaml"
+    with open(self.config, "r") as f:
+        self.config_dict = yaml.safe_load(f)
+    return LLMConfig(**self.config_dict)
 
 
-@dataclass
-class LLMInterpretationResult:
-    """
-    Standardized return object so the rest of your code does not have to deal
-    with raw provider response objects.
-    """
-    success: bool
-    summary: str | None
-    risk_level: str | None
-    recommendation: str | None
-    uncertainty_note: str | None
-    raw_text: str | None
-    error: str | None
-    provider: str = "openai"
-    model: str | None = None
+
 
 
 class LLMService:
     """
-    API-backed LLM service.
+    API-backed LLM service using Hugging Face Inference.
 
     Responsibility:
     - Accept a prepared forecast summary
     - Send it to an external LLM through API
     - Return a structured interpretation
-
-    Non-responsibilities:
-    - It does NOT run numeric inference
-    - It does NOT build the grid
-    - It does NOT validate the scenario
-    - It does NOT load local torch model weights
     """
-
     def __init__(
         self,
-        model_name: str = "gpt-5.2",
+        model_name: str = "meta-llama/Llama-3.2-3B-Instruct",
         api_key: str | None = None,
         temperature: float = 0.2,
         max_output_tokens: int = 500,
+        provider: str | None = None,
     ) -> None:
         self.model_name = model_name
         self.temperature = temperature
         self.max_output_tokens = max_output_tokens
+        self.provider = provider
 
-        resolved_api_key = api_key or os.getenv("OPENAI_API_KEY")
+        resolved_api_key = (
+            api_key
+            or os.getenv("HF_TOKEN")
+            or os.getenv("HUGGINGFACEHUB_API_TOKEN")
+        )
         if not resolved_api_key:
             raise ValueError(
-                "OPENAI_API_KEY is not set. Pass api_key explicitly or set it in the environment."
+                "HF_TOKEN is not set. Pass api_key explicitly or set HF_TOKEN in the environment."
             )
 
-        self.client = OpenAI(api_key=resolved_api_key)
+        # model=... lets HF route the request to the hosted inference backend
+        # provider=... is optional; omit it unless you want to pin a specific provider
+        self.client = InferenceClient(
+            model=self.model_name,
+            token=resolved_api_key,
+            provider=self.provider,
+        )
 
-    def interpret_forecast(
-        self,
-        forecast_summary: ForecastSummary,
-    ) -> LLMInterpretationResult:
+    def interpret_forecast(self, forecast_summary: ForecastSummary) -> LLMInterpretationResult:
         """
         Main public method. Accepts already-prepared forecast summary data
         and returns a structured interpretation.
         """
         try:
-            instructions = self._build_instructions()
+            system_prompt = self._build_instructions()
             user_input = self._build_user_input(forecast_summary)
 
-            response = self.client.responses.create(
-                model=self.model_name,
-                instructions=instructions,
-                input=user_input,
+            completion = self.client.chat_completion(
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_input},
+                ],
+                max_tokens=self.max_output_tokens,
                 temperature=self.temperature,
-                max_output_tokens=self.max_output_tokens,
             )
 
-            raw_text = (response.output_text or "").strip()
+            raw_text = self._extract_chat_text(completion).strip()
+
             if not raw_text:
                 return LLMInterpretationResult(
                     success=False,
@@ -151,6 +130,33 @@ class LLMService:
                 model=self.model_name,
             )
 
+    def interpret_forecast_stream(self, forecast_summary: ForecastSummary):
+
+        system_prompt = self._build_instructions()
+        user_input = self._build_user_input(forecast_summary)
+
+        stream = self.client.chat_completion(
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_input},
+            ],
+            max_tokens=self.max_output_tokens,
+            temperature=self.temperature,
+            stream=True,
+        )
+
+        for chunk in stream:
+            delta = None
+
+            try:
+                choice = chunk.choices[0]
+                delta = getattr(choice.delta, "content", None)
+            except Exception:
+                delta = None
+
+            if delta:
+                yield delta
+
     def summarize_from_scenario_and_grid(
         self,
         scenario: Scenario,
@@ -163,10 +169,7 @@ class LLMService:
         threshold_used: float,
         note: str | None = None,
     ) -> ForecastSummary:
-        """
-        Convenience helper so your engine or demo script can easily build
-        the summary object from schema instances plus numeric outputs.
-        """
+
         return ForecastSummary(
             source_latitude=float(scenario.latitude),
             source_longitude=float(scenario.longitude),
@@ -212,6 +215,13 @@ class LLMService:
             "Interpret the following forecast summary and return strict JSON only.\n\n"
             f"{json.dumps(payload, indent=2)}"
         )
+
+    @staticmethod
+    def _extract_chat_text(completion: Any) -> str:
+        try:
+            return completion.choices[0].message.content or ""
+        except Exception:
+            return ""
 
     @staticmethod
     def _safe_parse_json(text: str) -> dict[str, Any] | None:
