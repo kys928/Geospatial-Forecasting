@@ -1,62 +1,51 @@
-import datetime as datetime
-
 import matplotlib.pyplot as plt
 import numpy as np
-
-from plume.inference.engine import InferenceEngine
-from plume.models.gaussian_plume import GaussianPlume
-from plume.schemas.grid import GridSpec
-from plume.schemas.scenario import Scenario
+from src.plume.inference.validator import Validator
+from src.plume.inference.engine import InferenceEngine
+from src.plume.models.gaussian_plume import GaussianPlume
+from src.plume.utils.config import Config
 
 
 def main():
-    start_time = datetime.datetime.now()
-    end_time = start_time + datetime.timedelta(minutes=60)
+    config = Config()
+    scenario = config.load_scenario()
+    grid_spec = config.load_grid()
+    base = config.load_base()
+    inference = config.load_inference()
 
-    scenario = Scenario(
-        source=(52.0907, 5.1214),
-        latitude=52.0907,
-        longitude=5.1214,
-        start=start_time,
-        end=end_time,
-        emissions_rate=100.0,
-        pollution_type="smoke",
-        duration=60.0,
-        release_height=10.0,
-    )
-
-    grid_spec = GridSpec(
-        grid_center=(52.0907, 5.1214),
-        number_of_rows=50,
-        number_of_columns=50,
-        grid_height=0.02,
-        grid_width=0.02,
-        grid_spacing=0.0004,
-        projection="EPSG:4326",
-        boundary_limits=(52.0807, 52.1007, 5.1114, 5.1314),
-    )
+    if base.model != "gaussian_plume":
+        raise ValueError(f"Unsupported model in base.yaml: {base.model}")
 
     model = GaussianPlume(grid_spec=grid_spec, scenario=scenario)
-    engine = InferenceEngine(model=model)
+    engine = InferenceEngine(model=model, validate_inputs=inference.validate_inputs)
+
+
 
     forecast = engine.run_inference(scenario, grid_spec)
-
     concentration_grid = forecast.concentration_grid
 
     print("Forecast generated successfully.")
+    print(f"Run name: {base.run_name}")
+    print(f"Model: {base.model}")
     print(f"Grid shape: {concentration_grid.shape}")
-    print(f"Max concentration: {np.max(concentration_grid):.6f}")
-    print(f"Mean concentration: {np.mean(concentration_grid):.6f}")
     print(f"Timestamp: {forecast.timestamp}")
 
-    plt.figure(figsize=(8, 6))
-    plt.imshow(concentration_grid, origin="lower")
-    plt.colorbar(label="Concentration")
-    plt.title("Gaussian Plume Forecast")
-    plt.xlabel("Grid Column")
-    plt.ylabel("Grid Row")
-    plt.tight_layout()
-    plt.show()
+
+    if "max_concentration" in inference.summary_statistics:
+        print(f"Max concentration: {np.max(concentration_grid):.6f}")
+
+    if "mean_concentration" in inference.summary_statistics:
+        print(f"Mean concentration: {np.mean(concentration_grid):.6f}")
+
+    if inference.plot["enabled"]:
+        plt.figure(figsize=(8, 6))
+        plt.imshow(concentration_grid, origin="lower")
+        plt.colorbar(label="Concentration")
+        plt.title(f"{base.model} Forecast")
+        plt.xlabel("Grid Column")
+        plt.ylabel("Grid Row")
+        plt.tight_layout()
+        plt.show()
 
 
 if __name__ == "__main__":

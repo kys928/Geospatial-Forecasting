@@ -1,25 +1,33 @@
 from __future__ import annotations
+
 import json
 import os
+from pathlib import Path
+from typing import Any, Iterator
+
 import yaml
-from typing import Any
 from huggingface_hub import InferenceClient
+
 from ..schemas.LLMConfig import LLMConfig
 from ..schemas.ForecastSummary import ForecastSummary
-from ..schemas.scenario import Scenario
-from ..schemas.grid import GridSpec
 from ..schemas.LLMInterpretationResult import LLMInterpretationResult
+from ..schemas.grid import GridSpec
+from ..schemas.scenario import Scenario
 
 
+def load_llm_config(config_path: str | Path) -> LLMConfig:
+    """
+    Load LLM configuration from api.yaml and return a typed config object.
+    """
+    path = Path(config_path)
 
-def load_llm_config(self) -> LLMConfig:
-    self.config = "../configs/api.yaml"
-    with open(self.config, "r") as f:
-        self.config_dict = yaml.safe_load(f)
-    return LLMConfig(**self.config_dict)
+    with path.open("r", encoding="utf-8") as f:
+        config_dict = yaml.safe_load(f)
 
+    if not isinstance(config_dict, dict):
+        raise ValueError(f"Invalid LLM config in {path}: expected a mapping/dictionary.")
 
-
+    return LLMConfig(**config_dict)
 
 
 class LLMService:
@@ -31,18 +39,25 @@ class LLMService:
     - Send it to an external LLM through API
     - Return a structured interpretation
     """
-    def __init__(
-        self,
-        model_name: str = "meta-llama/Llama-3.2-3B-Instruct",
-        api_key: str | None = None,
-        temperature: float = 0.2,
-        max_output_tokens: int = 500,
-        provider: str | None = None,
-    ) -> None:
-        self.model_name = model_name
+
+    def __init__(self, llm_config: LLMConfig, api_key: str | None = None, temperature: float = 0.2, max_output_tokens: int = 500):
+        self.llm_config = llm_config
+        self.model_name = llm_config.model
+        self.provider = llm_config.provider
         self.temperature = temperature
         self.max_output_tokens = max_output_tokens
-        self.provider = provider
+        self.timeout_seconds = llm_config.timeout_seconds
+        self.forecast_summary_only = llm_config.forecast_summary_only
+        self.enabled = llm_config.enabled
+
+        if not self.enabled:
+            raise ValueError("LLMService was initialized, but LLM config has enabled=False.")
+
+        if self.provider != "huggingface":
+            raise ValueError(
+                f"Unsupported LLM provider '{self.provider}'. "
+                "This service currently supports only 'huggingface'."
+            )
 
         resolved_api_key = (
             api_key
@@ -54,17 +69,29 @@ class LLMService:
                 "HF_TOKEN is not set. Pass api_key explicitly or set HF_TOKEN in the environment."
             )
 
-        # model=... lets HF route the request to the hosted inference backend
-        # provider=... is optional; omit it unless you want to pin a specific provider
         self.client = InferenceClient(
             model=self.model_name,
             token=resolved_api_key,
             provider=self.provider,
+            timeout=self.timeout_seconds,
         )
 
-    def interpret_forecast(self, forecast_summary: ForecastSummary) -> LLMInterpretationResult:
+    @classmethod
+    def from_yaml(cls, config_path: str | Path, api_key: str | None = None, temperature: float = 0.2, max_output_tokens: int = 500):
+        llm_config = load_llm_config(config_path)
+        return cls(
+            llm_config=llm_config,
+            api_key=api_key,
+            temperature=temperature,
+            max_output_tokens=max_output_tokens,
+        )
+
+    def interpret_forecast(
+        self,
+        forecast_summary: ForecastSummary,
+    ) -> LLMInterpretationResult:
         """
-        Main public method. Accepts already-prepared forecast summary data
+        Accepts already-prepared forecast summary data
         and returns a structured interpretation.
         """
         try:
@@ -91,6 +118,7 @@ class LLMService:
                     uncertainty_note=None,
                     raw_text=None,
                     error="The model returned an empty response.",
+                    provider=self.provider,
                     model=self.model_name,
                 )
 
@@ -104,6 +132,7 @@ class LLMService:
                     uncertainty_note=None,
                     raw_text=raw_text,
                     error="Model returned text, but not valid JSON in the expected format.",
+                    provider=self.provider,
                     model=self.model_name,
                 )
 
@@ -115,6 +144,7 @@ class LLMService:
                 uncertainty_note=self._safe_get_str(parsed, "uncertainty_note"),
                 raw_text=raw_text,
                 error=None,
+                provider=self.provider,
                 model=self.model_name,
             )
 
@@ -127,11 +157,14 @@ class LLMService:
                 uncertainty_note=None,
                 raw_text=None,
                 error=str(e),
+                provider=self.provider,
                 model=self.model_name,
             )
 
-    def interpret_forecast_stream(self, forecast_summary: ForecastSummary):
-
+    def interpret_forecast_stream(
+        self,
+        forecast_summary: ForecastSummary,
+    ) -> Iterator[str]:
         system_prompt = self._build_instructions()
         user_input = self._build_user_input(forecast_summary)
 
@@ -146,16 +179,13 @@ class LLMService:
         )
 
         for chunk in stream:
-            delta = None
-
             try:
                 choice = chunk.choices[0]
                 delta = getattr(choice.delta, "content", None)
+                if delta:
+                    yield delta
             except Exception:
-                delta = None
-
-            if delta:
-                yield delta
+                continue
 
     def summarize_from_scenario_and_grid(
         self,
@@ -169,7 +199,6 @@ class LLMService:
         threshold_used: float,
         note: str | None = None,
     ) -> ForecastSummary:
-
         return ForecastSummary(
             source_latitude=float(scenario.latitude),
             source_longitude=float(scenario.longitude),
@@ -191,7 +220,7 @@ class LLMService:
             "Your task is to interpret the summary conservatively. "
             "Do not invent measurements, physics, times, or locations that were not provided. "
             "Return ONLY valid JSON with exactly these fields: "
-            'summary, risk_level, recommendation, uncertainty_note. '
+            "summary, risk_level, recommendation, uncertainty_note. "
             "Keep summary concise and operational. "
             "Use risk_level as one of: low, moderate, high, critical."
         )
@@ -219,16 +248,15 @@ class LLMService:
     @staticmethod
     def _extract_chat_text(completion: Any) -> str:
         try:
-            return completion.choices[0].message.content or ""
+            content = completion.choices[0].message.content
+            if isinstance(content, str):
+                return content
+            return ""
         except Exception:
             return ""
 
     @staticmethod
     def _safe_parse_json(text: str) -> dict[str, Any] | None:
-        """
-        Attempts to parse JSON. Also handles the common case where the model
-        wraps JSON in markdown fences.
-        """
         cleaned = text.strip()
 
         if cleaned.startswith("```"):

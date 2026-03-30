@@ -1,14 +1,14 @@
-grid_center:
-  latitude: 52.0907
-  longitude: 5.1214
 grid_height: 0.02
 grid_width: 0.02
+grid_center:
+  - 52.0907
+  - 5.1214
 grid_spacing: 0.0004
 number_of_rows: 50
 number_of_columns: 50
 projection: EPSG:4326
 boundary_limits:
-  min_latitude: 52.0807
-  max_latitude: 52.1007
-  min_longitude: 5.1114
-  max_longitude: 5.1314
+  - 52.0807
+  - 52.1007
+  - 5.1114
+  - 5.1314
