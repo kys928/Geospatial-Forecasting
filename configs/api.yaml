@@ -1,5 +1,5 @@
-enabled: false
-provider: openai
-model: gpt-5.2
+enabled: true
+provider: huggingface
+model: meta-llama/Llama-3.2-3B-Instruct
 forecast_summary_only: true
 timeout_seconds: 30
