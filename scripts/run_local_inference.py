@@ -1,13 +1,15 @@
+from pathlib import Path
+
 import matplotlib.pyplot as plt
 import numpy as np
-from src.plume.inference.validator import Validator
-from src.plume.inference.engine import InferenceEngine
-from src.plume.models.gaussian_plume import GaussianPlume
-from src.plume.utils.config import Config
+
+from plume.inference.engine import InferenceEngine
+from plume.models.gaussian_plume import GaussianPlume
+from plume.utils.config import Config
 
 
-def main():
-    config = Config()
+def main(config_dir: str | Path | None = None):
+    config = Config(config_dir=config_dir)
     scenario = config.load_scenario()
     grid_spec = config.load_grid()
     base = config.load_base()
@@ -19,8 +21,6 @@ def main():
     model = GaussianPlume(grid_spec=grid_spec, scenario=scenario)
     engine = InferenceEngine(model=model, validate_inputs=inference.validate_inputs)
 
-
-
     forecast = engine.run_inference(scenario, grid_spec)
     concentration_grid = forecast.concentration_grid
 
@@ -30,14 +30,13 @@ def main():
     print(f"Grid shape: {concentration_grid.shape}")
     print(f"Timestamp: {forecast.timestamp}")
 
-
     if "max_concentration" in inference.summary_statistics:
         print(f"Max concentration: {np.max(concentration_grid):.6f}")
 
     if "mean_concentration" in inference.summary_statistics:
         print(f"Mean concentration: {np.mean(concentration_grid):.6f}")
 
-    if inference.plot["enabled"]:
+    if inference.plot.enabled:
         plt.figure(figsize=(8, 6))
         plt.imshow(concentration_grid, origin="lower")
         plt.colorbar(label="Concentration")
