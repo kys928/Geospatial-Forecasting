@@ -15,12 +15,15 @@ class Config:
         grid_yaml = self.config_dir / "grid.yaml"
         with grid_yaml.open("r", encoding="utf-8") as f:
             grid = yaml.safe_load(f)
+        grid["grid_center"] = tuple(grid["grid_center"])
+        grid["boundary_limits"] = tuple(grid["boundary_limits"])
         return GridSpec(**grid)
 
     def load_scenario(self) -> Scenario:
         scenario_yaml = self.config_dir / "scenario.yaml"
         with scenario_yaml.open("r", encoding="utf-8") as f:
             scenario = yaml.safe_load(f)
+        scenario["source"] = tuple(scenario["source"])
         return Scenario(**scenario)
 
     def load_inference(self) -> Inference:
