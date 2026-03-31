@@ -1,0 +1,21 @@
+{
+  "forecast_id": "demo-industrial-1e-6",
+  "issued_at": "2026-03-31T12:38:44.000000+00:00",
+  "model": "gaussian_plume",
+  "model_version": null,
+  "summary_statistics": {
+    "max_concentration": 0.0034,
+    "mean_concentration": 0.00052
+  },
+  "run_name": "industrial-release",
+  "grid": {
+    "rows": 50,
+    "columns": 50,
+    "projection": "EPSG:4326"
+  },
+  "source": {
+    "latitude": 51.9244,
+    "longitude": 4.4777
+  },
+  "timestamp": "2026-03-31T12:38:44.000000"
+}
