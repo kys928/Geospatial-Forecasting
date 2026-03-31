@@ -149,7 +149,7 @@ Returns GeoJSON-like output for an existing forecast.
 }
 ```
 
-Notes:
+#### Notes
 - Current contour behavior uses a thresholded cell-point fallback, not mathematically exact contour polygons.
 
 **Response (404)**
