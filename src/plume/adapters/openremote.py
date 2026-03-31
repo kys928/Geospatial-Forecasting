@@ -1,9 +1,20 @@
 from __future__ import annotations
 
+"""Provisional OpenRemote payload translation helpers.
+
+This adapter intentionally provides a generic, minimal translation layer from
+internal forecast results into a payload shape that is convenient for downstream
+integration experiments.
+
+It is NOT a validated OpenRemote schema contract and NOT a live integration
+client. No auth, session handling, or remote API calls are performed here.
+"""
+
 import numpy as np
 
 
 def forecast_to_openremote_attributes(result):
+    """Map core forecast fields to generic OpenRemote-like attributes."""
     grid = result.forecast.concentration_grid
     return {
         "forecastId": result.forecast_id,
@@ -20,6 +31,7 @@ def forecast_to_openremote_attributes(result):
 
 
 def forecast_to_openremote_layer(result):
+    """Build a generic metadata layer; not a validated OpenRemote schema object."""
     min_lat, max_lat, min_lon, max_lon = result.forecast.grid_spec.boundary_limits
     return {
         "type": "raster-metadata",
@@ -38,6 +50,7 @@ def forecast_to_openremote_layer(result):
 
 
 def forecast_to_openremote_payload(result):
+    """Return a provisional generic payload; this is not a live integration contract."""
     return {
         "asset": {
             "attributes": forecast_to_openremote_attributes(result),

@@ -29,6 +29,46 @@ def test_api_forecast_create_and_retrieve():
     assert get_response.json()["forecast_id"] == forecast_id
 
 
+def test_api_forecast_summary_endpoint():
+    app = create_app()
+    client = TestClient(app)
+
+    forecast_id = client.post("/forecast", json={"run_name": "api-summary"}).json()["forecast_id"]
+    response = client.get(f"/forecast/{forecast_id}/summary")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["forecast_id"] == forecast_id
+    assert "summary_statistics" in payload
+
+
+def test_api_forecast_geojson_endpoint():
+    app = create_app()
+    client = TestClient(app)
+
+    forecast_id = client.post("/forecast", json={"run_name": "api-geojson"}).json()["forecast_id"]
+    response = client.get(f"/forecast/{forecast_id}/geojson")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["type"] == "FeatureCollection"
+    assert payload["properties"]["forecast_id"] == forecast_id
+
+
+def test_api_forecast_raster_metadata_endpoint():
+    app = create_app()
+    client = TestClient(app)
+
+    forecast_id = client.post("/forecast", json={"run_name": "api-raster"}).json()["forecast_id"]
+    response = client.get(f"/forecast/{forecast_id}/raster-metadata")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["forecast_id"] == forecast_id
+    assert payload["rows"] > 0
+    assert payload["cols"] > 0
+
+
 def test_api_404_missing_forecast_id():
     app = create_app()
     client = TestClient(app)

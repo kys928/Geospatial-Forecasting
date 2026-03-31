@@ -57,3 +57,15 @@ def test_export_service_geojson_path():
     feature_kinds = {f["properties"]["kind"] for f in payload["features"]}
     assert "source" in feature_kinds
     assert "forecast_extent" in feature_kinds
+
+
+def test_export_service_openremote_payload_path():
+    forecast_service = ForecastService(Config())
+    export_service = ExportService()
+
+    result = forecast_service.run_forecast()
+    payload = export_service.to_openremote_payload(result)
+
+    assert "asset" in payload
+    assert payload["asset"]["attributes"]["forecastId"] == result.forecast_id
+    assert len(payload["asset"]["layers"]) == 1
