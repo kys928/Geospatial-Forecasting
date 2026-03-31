@@ -1,0 +1,10 @@
+.idea/
+**/.idea/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+dist/
+build/
+.env
+frontend/node_modules/
+frontend/dist/
