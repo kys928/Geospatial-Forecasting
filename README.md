@@ -1,35 +1,59 @@
 # Geospatial Forecasting
 
 ## Overview
-Geospatial Forecasting is an early proof-of-concept Python project for forecasting airborne hazard dispersion to support geospatial decision-making. The current repository focuses on a local baseline workflow: define a release scenario, build a grid around the source, run a Gaussian plume calculation, and return a forecast grid that can be inspected locally.
+Geospatial Forecasting is an early proof-of-concept Python project for airborne hazard dispersion forecasting. The current implementation is a Gaussian plume baseline that supports both local script execution and a backend HTTP/JSON boundary.
 
-This project is **not** a production-ready atmospheric dispersion platform. The current implementation is a **Gaussian plume baseline** intended to provide a simple, testable foundation for later work.
+This is **not** a production-ready atmospheric dispersion system. It is a practical baseline intended for local validation and integration scaffolding.
 
-## Current capabilities
-Today the repository provides a small but usable baseline system for:
-- representing release scenarios and forecast grids
-- validating scenario and grid inputs before inference
-- building latitude/longitude coordinate arrays and mesh grids
-- generating a Gaussian plume concentration forecast over a local grid
-- running a local inference/demo script that prints summary statistics and plots the concentration grid
+## What is implemented now
 
-The current model is intentionally simple. It does **not** yet provide realistic atmospheric transport, terrain interaction, uncertainty quantification, or operational service interfaces.
+### Forecasting baseline
+- Scenario + grid schema loading from YAML configs
+- Input validation and grid construction
+- Gaussian plume concentration grid generation
+- Forecast summary statistics (`max_concentration`, `mean_concentration`)
+
+### Backend boundary
+- Service layer for forecast execution and summarization
+- Export service and adapters for:
+  - GeoJSON-like payloads
+  - raster metadata payloads
+  - provisional OpenRemote-oriented payloads
+- FastAPI app exposing forecast creation and retrieval endpoints
+
+### Scripts
+- `scripts/run_local_inference.py`: local baseline flow + optional plotting
+- `scripts/run_demo_forecast.py`: service-layer demo summary output
+- `scripts/export_geojson.py`: generate and write GeoJSON output
+- `scripts/seed_demo_data.py`: deterministic mock payload generation
+
+## Architecture at a glance
+Backend-first layering used in this repo:
+- `src/plume/models`, `src/plume/inference`, `src/plume/schemas`: forecasting core
+- `src/plume/services`: orchestration and application-layer behavior
+- `src/plume/adapters`: external payload translation
+- `src/plume/api`: HTTP API boundary
+- `scripts`: thin local entry points
+
+The backend is intentionally decoupled from frontend concerns.
 
 ## Repository structure
 ```text
 .
-├── configs/                 Example runtime and scenario configuration files
-├── docs/                    Project documentation
-├── scripts/                 Local runnable entry points and demos
+├── configs/                 Runtime/scenario configuration examples
+├── docs/                    Architecture and API documentation
+├── scripts/                 Thin local/demo entry points
 ├── src/plume/
-│   ├── inference/           Validation, grid handling, and inference orchestration
-│   ├── models/              Forecasting model implementations
-│   ├── schemas/             Dataclasses for scenarios, grids, and forecasts
-│   ├── services/            Optional external service integrations
+│   ├── adapters/            Export/payload translators (GeoJSON, raster, OpenRemote)
+│   ├── api/                 FastAPI app and dependency wiring
+│   ├── inference/           Validation, grid handling, inference orchestration
+│   ├── models/              Forecast model implementations
+│   ├── schemas/             Core dataclasses
+│   ├── services/            Forecast/explain/export services
 │   └── utils/               Supporting utilities
-├── tests/                   Automated baseline tests
-├── pyproject.toml           Minimal Python project configuration
-└── requirements.txt         Runtime dependencies
+├── tests/                   Automated tests
+├── pyproject.toml
+└── requirements.txt
 ```
 
 ## Installation
@@ -43,42 +67,60 @@ pip install -r requirements.txt
 pip install -e ".[test]"
 ```
 
-This installs the project in editable mode so imports work from the repository root while preserving the current local development flow.
+## Run local script paths
 
-## Running local inference
-Run the local demo script from the repository root:
-
+### Baseline local inference
 ```bash
 python scripts/run_local_inference.py
 ```
 
-The demo script:
-- builds a sample scenario near Utrecht
-- creates a local latitude/longitude grid
-- runs the Gaussian plume baseline model
-- prints the forecast grid shape, maximum concentration, mean concentration, and forecast timestamp
-- opens a local matplotlib heatmap for visual inspection
+### Service-layer demo run
+```bash
+python scripts/run_demo_forecast.py
+```
 
-The plotting window is intended for local use only and is **not** part of CI.
+### Export GeoJSON artifact
+```bash
+python scripts/export_geojson.py
+```
 
-## Running tests
-Run the automated test suite from the repository root:
+### Seed deterministic demo payloads
+```bash
+python scripts/seed_demo_data.py
+```
 
+## Run API path
+The FastAPI app entrypoint is `src/plume/api/main.py` (`app = create_app()`).
+
+If your environment has an ASGI server available (for example `uvicorn`), run:
+
+```bash
+uvicorn plume.api.main:app --reload
+```
+
+Implemented endpoints:
+- `GET /health`
+- `GET /capabilities`
+- `POST /forecast`
+- `GET /forecast/{forecast_id}`
+- `GET /forecast/{forecast_id}/summary`
+- `GET /forecast/{forecast_id}/geojson`
+- `GET /forecast/{forecast_id}/raster-metadata`
+
+See `docs/api-contract.md` for concrete response shapes.
+
+## Testing
 ```bash
 pytest
 ```
 
-The tests are deterministic and cover the current baseline behavior for grid construction, validation, inference orchestration, and Gaussian plume output.
+Current tests cover baseline inference behavior plus service/export/API contracts.
 
-## Continuous integration
-GitHub Actions runs a single CI workflow on pushes to `main` and pull requests targeting `main`. The workflow installs dependencies with Python 3.11 and runs `pytest` so basic import, syntax, and baseline regression issues fail quickly.
-
-## Roadmap / next steps
-Near-term extensions for this proof of concept are expected to include:
-- wind-aware plume behavior and less symmetric spread patterns
-- more realistic physical dispersion assumptions
-- explicit uncertainty handling around forecasts
-- cleaner service or API integration for downstream applications
-- eventual integration into a geospatial dashboard or OpenRemote-like environment
-
-Those items are future directions only. The current repository remains a local, early-stage baseline for geospatial airborne hazard forecasting.
+## Current limitations
+- Gaussian plume baseline is simplified (not full atmospheric simulation)
+- API forecast storage is in-memory only
+- No auth layer
+- No database persistence
+- OpenRemote adapter is a **provisional generic payload translation** only:
+  - not a validated OpenRemote schema contract
+  - not a live OpenRemote integration client
