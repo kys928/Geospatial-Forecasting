@@ -1,0 +1,25 @@
+{
+  "forecast_id": "demo-industrial-1e-6",
+  "issued_at": "2026-03-31T12:38:44.000000+00:00",
+  "model": "gaussian_plume",
+  "used_llm": false,
+  "summary": {
+    "source_latitude": 51.9244,
+    "source_longitude": 4.4777,
+    "grid_rows": 50,
+    "grid_columns": 50,
+    "projection": "EPSG:4326",
+    "max_concentration": 0.0034,
+    "mean_concentration": 0.00052,
+    "affected_cells_above_threshold": 241,
+    "dominant_spread_direction": "north-east",
+    "threshold_used": 0.000001,
+    "note": "Deterministic baseline summary."
+  },
+  "explanation": {
+    "summary": "Industrial release scenario loaded. The current forecast suggests a broader operational footprint and higher peak concentration than the default baseline.",
+    "risk_level": "critical",
+    "recommendation": "Treat the affected zone conservatively and validate against additional domain and field information.",
+    "uncertainty_note": "This result comes from a simplified Gaussian plume baseline rather than a full atmospheric model."
+  }
+}

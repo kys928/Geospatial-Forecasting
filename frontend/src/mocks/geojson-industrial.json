@@ -1,0 +1,40 @@
+{
+  "type": "FeatureCollection",
+  "features": [
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "Point",
+        "coordinates": [4.4777, 51.9244]
+      },
+      "properties": {
+        "kind": "source",
+        "emissions_rate": 180.0
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [4.22, 51.78],
+            [4.72, 51.78],
+            [4.88, 51.98],
+            [4.38, 52.06],
+            [4.22, 51.78]
+          ]
+        ]
+      },
+      "properties": {
+        "kind": "forecast_extent",
+        "forecast_id": "demo-industrial-1e-6"
+      }
+    }
+  ],
+  "properties": {
+    "forecast_id": "demo-industrial-1e-6",
+    "generated_at": "2026-03-31T12:38:44.000000+00:00",
+    "thresholds": [0.000001, 0.00001, 0.0001]
+  }
+}

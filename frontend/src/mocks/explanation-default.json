@@ -1,0 +1,25 @@
+{
+  "forecast_id": "demo-default-1e-5",
+  "issued_at": "2026-03-31T12:34:56.000000+00:00",
+  "model": "gaussian_plume",
+  "used_llm": false,
+  "summary": {
+    "source_latitude": 52.0907,
+    "source_longitude": 5.1214,
+    "grid_rows": 50,
+    "grid_columns": 50,
+    "projection": "EPSG:4326",
+    "max_concentration": 0.0012,
+    "mean_concentration": 0.00018,
+    "affected_cells_above_threshold": 124,
+    "dominant_spread_direction": "north-east",
+    "threshold_used": 0.00001,
+    "note": "Deterministic baseline summary."
+  },
+  "explanation": {
+    "summary": "Default baseline scenario loaded. The forecast suggests a moderate local impact area around the modeled source.",
+    "risk_level": "high",
+    "recommendation": "Use baseline dispersion output for local triage and validate with domain experts.",
+    "uncertainty_note": "Gaussian plume baseline; not a full atmospheric simulation."
+  }
+}

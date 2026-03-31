@@ -1,0 +1,40 @@
+{
+  "type": "FeatureCollection",
+  "features": [
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "Point",
+        "coordinates": [5.1214, 52.0907]
+      },
+      "properties": {
+        "kind": "source",
+        "emissions_rate": 100.0
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [4.95, 51.98],
+            [5.28, 51.98],
+            [5.35, 52.18],
+            [5.03, 52.24],
+            [4.95, 51.98]
+          ]
+        ]
+      },
+      "properties": {
+        "kind": "forecast_extent",
+        "forecast_id": "demo-default-1e-5"
+      }
+    }
+  ],
+  "properties": {
+    "forecast_id": "demo-default-1e-5",
+    "generated_at": "2026-03-31T12:34:56.000000+00:00",
+    "thresholds": [0.000001, 0.00001, 0.0001]
+  }
+}

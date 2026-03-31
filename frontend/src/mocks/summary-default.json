@@ -1,0 +1,21 @@
+{
+  "forecast_id": "demo-default-1e-5",
+  "issued_at": "2026-03-31T12:34:56.000000+00:00",
+  "model": "gaussian_plume",
+  "model_version": null,
+  "summary_statistics": {
+    "max_concentration": 0.0012,
+    "mean_concentration": 0.00018
+  },
+  "run_name": "default-baseline",
+  "grid": {
+    "rows": 50,
+    "columns": 50,
+    "projection": "EPSG:4326"
+  },
+  "source": {
+    "latitude": 52.0907,
+    "longitude": 5.1214
+  },
+  "timestamp": "2026-03-31T12:34:56.000000"
+}

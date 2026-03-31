@@ -3,8 +3,10 @@ import type {
   ApiMode,
   CapabilitiesResponse,
   ForecastCreateResponse,
+  ForecastExplanation,
   ForecastSummary,
   GeoJsonFeatureCollection,
+  MockForecastRequest,
   RasterMetadata
 } from "./forecast.types";
 
@@ -12,23 +14,29 @@ export async function loadCapabilities(mode: ApiMode): Promise<CapabilitiesRespo
   return apiClient.getCapabilities(mode);
 }
 
-export async function runForecast(mode: ApiMode): Promise<ForecastCreateResponse> {
-  return apiClient.createForecast(mode);
+export async function runForecast(
+  mode: ApiMode,
+  request?: MockForecastRequest
+): Promise<ForecastCreateResponse> {
+  return apiClient.createForecast(mode, request);
 }
 
 export async function loadForecastBundle(
   mode: ApiMode,
-  forecastId: string
+  forecastId: string,
+  options?: { threshold?: number; useLlm?: boolean }
 ): Promise<{
   summary: ForecastSummary;
   geojson: GeoJsonFeatureCollection;
   rasterMetadata: RasterMetadata;
+  explanation: ForecastExplanation;
 }> {
-  const [summary, geojson, rasterMetadata] = await Promise.all([
+  const [summary, geojson, rasterMetadata, explanation] = await Promise.all([
     apiClient.getForecastSummary(mode, forecastId),
     apiClient.getGeoJson(mode, forecastId),
-    apiClient.getRasterMetadata(mode, forecastId)
+    apiClient.getRasterMetadata(mode, forecastId),
+    apiClient.getExplanation(mode, forecastId, options)
   ]);
 
-  return { summary, geojson, rasterMetadata };
+  return { summary, geojson, rasterMetadata, explanation };
 }

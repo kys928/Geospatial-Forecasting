@@ -3,9 +3,14 @@ import type { SelectedFeatureState } from "../features/forecast/forecast.types";
 interface DetailDrawerProps {
   selected: SelectedFeatureState | null;
   explanation: string;
+  explanationSource?: string;
 }
 
-export function DetailDrawer({ selected, explanation }: DetailDrawerProps) {
+export function DetailDrawer({
+  selected,
+  explanation,
+  explanationSource
+}: DetailDrawerProps) {
   return (
     <aside className="detail-drawer panel">
       <div className="panel-header">
@@ -27,6 +32,11 @@ export function DetailDrawer({ selected, explanation }: DetailDrawerProps) {
         <div className="section-spacer" />
 
         <h3>Explanation</h3>
+        {explanationSource && (
+          <p className="muted">
+            Source: {explanationSource}
+          </p>
+        )}
         <p className="muted">{explanation}</p>
 
         <div className="section-spacer" />

@@ -8,26 +8,50 @@ import { ScenarioControls } from "../features/scenario/ScenarioControls";
 import { TimelineSlider } from "../features/timeline/TimelineSlider";
 import { ForecastMap } from "../features/map/ForecastMap";
 import { apiClient } from "../services/api/client";
-import { loadCapabilities, loadForecastBundle, runForecast } from "../features/forecast/forecastApi";
+import {
+  loadCapabilities,
+  loadForecastBundle,
+  runForecast
+} from "../features/forecast/forecastApi";
 import type {
   ApiMode,
   CapabilitiesResponse,
+  ForecastExplanation,
   ForecastSummary,
   GeoJsonFeatureCollection,
-  SelectedFeatureState
+  ScenarioPreset,
+  SelectedFeatureState,
+  ThresholdPreset
 } from "../features/forecast/forecast.types";
 
+function buildExplanationText(
+  explanationPayload: ForecastExplanation | null
+): string {
+  if (!explanationPayload) {
+    return "No explanation loaded.";
+  }
+
+  const parts = [
+    explanationPayload.explanation.summary,
+    explanationPayload.explanation.recommendation,
+    explanationPayload.explanation.uncertainty_note
+  ].filter((value): value is string => Boolean(value && value.trim()));
+
+  return parts.length > 0 ? parts.join(" ") : "No explanation text returned.";
+}
+
 export function MapPage() {
-  const [apiMode] = useState<ApiMode>("mock");
+  const [apiMode] = useState<ApiMode>("live"); // switch to "live" when backend is running
   const [apiHealthy, setApiHealthy] = useState(true);
   const [capabilities, setCapabilities] = useState<CapabilitiesResponse | null>(null);
   const [summary, setSummary] = useState<ForecastSummary | null>(null);
   const [geojson, setGeojson] = useState<GeoJsonFeatureCollection | null>(null);
+  const [explanationPayload, setExplanationPayload] =
+    useState<ForecastExplanation | null>(null);
   const [selected, setSelected] = useState<SelectedFeatureState | null>(null);
   const [statusText, setStatusText] = useState("Loading dashboard...");
-  const [explanation, setExplanation] = useState(
-    "Forecast explanation placeholder. This will later reflect backend explanation output."
-  );
+  const [scenario, setScenario] = useState<ScenarioPreset>("default");
+  const [threshold, setThreshold] = useState<ThresholdPreset>("1e-5");
 
   useEffect(() => {
     async function bootstrap() {
@@ -38,11 +62,15 @@ export function MapPage() {
         const capabilitiesResponse = await loadCapabilities(apiMode);
         setCapabilities(capabilitiesResponse);
 
-        const created = await runForecast(apiMode);
-        const bundle = await loadForecastBundle(apiMode, created.forecast_id);
+        const created = await runForecast(apiMode, { scenario, threshold });
+        const bundle = await loadForecastBundle(apiMode, created.forecast_id, {
+          threshold: Number(threshold),
+          useLlm: true
+        });
 
         setSummary(bundle.summary);
         setGeojson(bundle.geojson);
+        setExplanationPayload(bundle.explanation);
         setStatusText(`Loaded forecast ${created.forecast_id}`);
       } catch (error) {
         console.error(error);
@@ -58,16 +86,27 @@ export function MapPage() {
     return capabilities?.model?.[0] ?? "Gaussian Baseline";
   }, [capabilities]);
 
+  const explanationText = useMemo(() => {
+    return buildExplanationText(explanationPayload);
+  }, [explanationPayload]);
+
   async function handleRunForecast() {
     try {
       setStatusText("Running forecast...");
-      const created = await runForecast(apiMode);
-      const bundle = await loadForecastBundle(apiMode, created.forecast_id);
+
+      const created = await runForecast(apiMode, { scenario, threshold });
+      const bundle = await loadForecastBundle(apiMode, created.forecast_id, {
+        threshold: Number(threshold),
+        useLlm: true
+      });
 
       setSummary(bundle.summary);
       setGeojson(bundle.geojson);
+      setExplanationPayload(bundle.explanation);
       setSelected(null);
-      setStatusText(`Loaded forecast ${created.forecast_id}`);
+
+      const explanationMode = bundle.explanation.used_llm ? "LLM" : "fallback";
+      setStatusText(`Loaded forecast ${created.forecast_id} · explanation: ${explanationMode}`);
     } catch (error) {
       console.error(error);
       setStatusText("Forecast request failed");
@@ -80,14 +119,19 @@ export function MapPage() {
         apiMode={apiMode}
         apiHealthy={apiHealthy}
         modelLabel={modelLabel}
-        scenarioName="Default Scenario"
+        scenarioName={`${scenario} scenario`}
       />
 
       <SummaryCards summary={summary} />
 
       <div className="main-layout">
         <Sidebar onRunForecast={handleRunForecast}>
-          <ScenarioControls />
+          <ScenarioControls
+            scenario={scenario}
+            threshold={threshold}
+            onScenarioChange={setScenario}
+            onThresholdChange={setThreshold}
+          />
         </Sidebar>
 
         <main className="map-column">
@@ -95,7 +139,17 @@ export function MapPage() {
           <TimelineSlider />
         </main>
 
-        <DetailDrawer selected={selected} explanation={explanation} />
+        <DetailDrawer
+          selected={selected}
+          explanation={explanationText}
+          explanationSource={
+            explanationPayload
+              ? explanationPayload.used_llm
+                ? "llm"
+                : "fallback"
+              : undefined
+          }
+        />
       </div>
 
       <StatusBar statusText={statusText} />

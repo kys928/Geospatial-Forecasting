@@ -1,9 +1,47 @@
 export type ApiMode = "mock" | "live";
+export type ScenarioPreset = "default" | "urban" | "industrial";
+export type ThresholdPreset = "1e-6" | "1e-5" | "1e-4";
+
+export interface MockForecastRequest {
+  scenario: ScenarioPreset;
+  threshold: ThresholdPreset;
+}
 
 export interface CapabilitiesResponse {
   model: string[];
   exports: string[];
 }
+
+export interface ForecastExplanationSummary {
+  source_latitude: number;
+  source_longitude: number;
+  grid_rows: number;
+  grid_columns: number;
+  projection: string | null;
+  max_concentration: number;
+  mean_concentration: number;
+  affected_cells_above_threshold: number;
+  dominant_spread_direction: string;
+  threshold_used: number;
+  note: string | null;
+}
+
+export interface ForecastExplanationBody {
+  summary: string | null;
+  risk_level: string | null;
+  recommendation: string | null;
+  uncertainty_note: string | null;
+}
+
+export interface ForecastExplanation {
+  forecast_id: string;
+  issued_at: string;
+  model: string;
+  used_llm: boolean;
+  summary: ForecastExplanationSummary;
+  explanation: ForecastExplanationBody;
+}
+
 
 export interface ForecastCreateResponse {
   forecast_id: string;
