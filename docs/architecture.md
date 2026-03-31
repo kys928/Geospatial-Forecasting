@@ -1,52 +1,61 @@
 # Architecture
 
-## Purpose
-This repository explores geospatial forecasting for airborne hazard dispersion in a form that is easy to run locally and easy to extend. The current focus is an early proof-of-concept baseline for generating a concentration grid from a simple release scenario.
+## Purpose and current state
+This repository is an early proof-of-concept for geospatial forecasting of airborne hazard dispersion. The currently implemented model path is a Gaussian plume baseline.
 
-This is **not** yet a fully realistic atmospheric dispersion platform. It currently uses a Gaussian plume baseline so contributors can validate the end-to-end flow before adding more sophisticated physics or services.
+The codebase now supports both:
+- a local script-driven workflow, and
+- a backend-first HTTP/JSON boundary for running and retrieving forecasts.
 
-## Current baseline flow
-1. **Scenario input**
-   A `Scenario` dataclass captures the release source, timing, emission rate, pollutant type, and release height.
-2. **Validation**
-   `Validator` checks core scenario and grid assumptions such as latitude, longitude, duration, projection, and grid dimensions.
-3. **Grid creation**
-   `GridBuilder` creates one-dimensional latitude and longitude coordinate arrays and converts them into a mesh grid for model evaluation.
-4. **Forecast generation**
-   `InferenceEngine` orchestrates validation and grid preparation, then calls the configured model.
-5. **Gaussian plume baseline**
-   `GaussianPlume` transforms the source and grid into a local projected coordinate system and computes a concentration field using a simple Gaussian formulation.
-6. **Forecast output**
-   The result is returned as a `Forecast` object containing the concentration grid, timestamp, scenario, and grid specification.
-7. **Local visualization/demo**
-   `scripts/run_local_inference.py` provides a local demo that runs the baseline forecast, prints summary statistics, and displays a matplotlib heatmap.
+It is still **not** a production atmospheric dispersion platform.
 
-## Package and folder responsibilities
-- `src/plume/schemas`
-  Defines the core dataclasses used to pass structured inputs and outputs through the pipeline.
-- `src/plume/inference`
-  Contains validation logic, grid construction, and the inference engine that coordinates the baseline run.
-- `src/plume/models`
-  Holds forecasting model implementations. Right now this is the Gaussian plume baseline.
-- `src/plume/services`
-  Contains optional external-service integration code. This is not part of the numeric baseline path.
-- `src/plume/utils`
-  Reserved for small supporting utilities.
-- `scripts`
-  Local entry points for manual runs and demos.
-- `configs`
-  Minimal YAML examples showing how scenarios, grids, and runtime settings can be organized as the project grows.
-- `tests`
-  Automated checks for the current baseline behavior.
-- `docs`
-  Documentation describing the current architecture and intended direction.
+## Backend-first layering (implemented)
+The current Python backend follows a layered separation:
 
-## Near-term direction
-The next meaningful improvements should stay grounded in the existing baseline and focus on:
-- better physical realism than the current symmetric Gaussian approximation
-- wind-aware behavior so plume transport reflects direction and advection more clearly
-- uncertainty handling around scenario assumptions and forecast outputs
-- service or API exposure for downstream consumers when the local baseline stabilizes
-- eventual integration into a geospatial dashboard or OpenRemote-like environment
+1. **Forecasting core** (`src/plume/models`, `src/plume/inference`, `src/plume/schemas`)
+   - Numeric model implementation (`GaussianPlume`)
+   - Validation and grid preparation (`Validator`, `GridBuilder`, `InferenceEngine`)
+   - Core dataclasses (`Scenario`, `GridSpec`, `Forecast`)
 
-Those items are intended future steps. They are not already implemented in this repository.
+2. **Service layer** (`src/plume/services`)
+   - `ForecastService` orchestrates model+engine execution and returns a canonical `ForecastRunResult`
+   - `ExplainService` builds deterministic summary/explanation output and can optionally call `LLMService`
+   - `ExportService` delegates format conversion to adapters and writes GeoJSON files
+
+3. **Export adapters** (`src/plume/adapters`)
+   - `geojson.py` translates forecasts into a GeoJSON-like `FeatureCollection`
+   - `raster.py` translates forecasts into lightweight raster metadata
+   - `openremote.py` translates forecasts into a provisional generic integration payload
+
+4. **HTTP API boundary** (`src/plume/api`)
+   - FastAPI app exposes the current baseline over HTTP/JSON
+   - Route handlers are intentionally thin and rely on service-layer calls
+   - Created forecasts are stored in-memory in the app process
+
+5. **Thin scripts** (`scripts`)
+   - Local CLI-style entry points that call the service layer
+   - No duplicated forecasting logic in scripts
+
+## Implemented execution paths
+
+### A) Local script path
+- `scripts/run_local_inference.py` runs the baseline via core inference path.
+- `scripts/run_demo_forecast.py` runs via `ForecastService` and prints a readable summary.
+- `scripts/export_geojson.py` runs a forecast and writes a GeoJSON artifact.
+- `scripts/seed_demo_data.py` writes deterministic mock payloads for local/demo use.
+
+### B) HTTP API path
+- `src/plume/api/main.py` creates a FastAPI app exposing health, capabilities, forecast creation, and retrieval/export endpoints.
+- The API currently supports the Gaussian plume baseline only.
+
+## Data/export boundary notes
+- Core forecast objects remain internal Python dataclasses/NumPy arrays.
+- External payloads are produced through adapters (`geojson`, `raster`, `openremote`) to avoid coupling export shapes to core model objects.
+- The OpenRemote payload is intentionally documented as a **provisional generic translation**, not a validated upstream schema contract.
+
+## Scope and limitations
+- Forecast results are in-memory only (no persistence layer).
+- No authentication/authorization layer in the API.
+- No frontend coupling in backend services.
+- No live OpenRemote client/auth/session integration in the adapter.
+- Gaussian plume baseline is simplified and intended for local validation, not full atmospheric realism.
