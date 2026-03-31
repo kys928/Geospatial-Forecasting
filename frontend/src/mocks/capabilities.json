@@ -1,0 +1,4 @@
+{
+  "model": ["gaussian_plume"],
+  "exports": ["summary", "geojson", "raster-metadata", "openremote"]
+}

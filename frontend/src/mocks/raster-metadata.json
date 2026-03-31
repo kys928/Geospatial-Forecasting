@@ -1,0 +1,15 @@
+{
+  "forecast_id": "demo-forecast-001",
+  "rows": 50,
+  "cols": 50,
+  "bounds": {
+    "min_lat": 52.0807,
+    "max_lat": 52.1007,
+    "min_lon": 5.1114,
+    "max_lon": 5.1314
+  },
+  "projection": "EPSG:4326",
+  "min_value": 0.0,
+  "max_value": 0.0015915494,
+  "grid_spacing": 0.0004
+}
