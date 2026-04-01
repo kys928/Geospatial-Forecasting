@@ -53,10 +53,12 @@ class LLMService:
         if not self.enabled:
             raise ValueError("LLMService was initialized, but LLM config has enabled=False.")
 
-        if self.provider != "huggingface":
+        supported_providers = {"auto", "hf-inference"}
+
+        if self.provider not in supported_providers:
             raise ValueError(
                 f"Unsupported LLM provider '{self.provider}'. "
-                "This service currently supports only 'huggingface'."
+                f"This service currently supports only: {sorted(supported_providers)}."
             )
 
         resolved_api_key = (
@@ -87,8 +89,8 @@ class LLMService:
         )
 
     def interpret_forecast(
-        self,
-        forecast_summary: ForecastSummary,
+            self,
+            forecast_summary: ForecastSummary,
     ) -> LLMInterpretationResult:
         """
         Accepts already-prepared forecast summary data
