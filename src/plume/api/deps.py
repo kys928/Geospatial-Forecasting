@@ -18,20 +18,14 @@ def get_forecast_service(config_dir: str | None = None):
 
 
 def get_explain_service(config_dir: str | None = None):
-    """
-    Try to construct the configured LLM service from configs/api.yaml.
-
-    Important behavior:
-    - If LLM config/token/provider setup succeeds, ExplainService will use the LLM path.
-    - If it fails for any reason, we fall back cleanly to ExplainService(llm_service=None),
-      which still produces deterministic explanations.
-    """
     config = get_config(config_dir=config_dir)
 
     try:
         api_config_path = Path(config.config_dir) / "api.yaml"
         llm_service = LLMService.from_yaml(api_config_path)
-    except Exception:
+        print("[deps] LLM service initialized successfully")
+    except Exception as e:
+        print(f"[deps] LLM service unavailable, falling back: {e}")
         llm_service = None
 
     return ExplainService(llm_service=llm_service)

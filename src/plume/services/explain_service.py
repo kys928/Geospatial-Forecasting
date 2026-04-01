@@ -67,7 +67,20 @@ class ExplainService:
 
         if use_llm and self.llm_service is not None:
             llm_result = self.llm_service.interpret_forecast(summary)
+
             if llm_result.success:
+                print(
+                    "[explain] LLM success:",
+                    {
+                        "provider": llm_result.provider,
+                        "model": llm_result.model,
+                        "summary": llm_result.summary,
+                        "risk_level": llm_result.risk_level,
+                        "recommendation": llm_result.recommendation,
+                        "uncertainty_note": llm_result.uncertainty_note,
+                        "error": llm_result.error,
+                    },
+                )
                 return ExplanationResult(
                     summary=summary,
                     explanation={
@@ -78,6 +91,16 @@ class ExplainService:
                     },
                     used_llm=True,
                 )
+
+            print(
+                "[explain] LLM failed, using fallback:",
+                {
+                    "provider": llm_result.provider,
+                    "model": llm_result.model,
+                    "error": llm_result.error,
+                    "raw_text": llm_result.raw_text,
+                },
+            )
 
         return ExplanationResult(
             summary=summary,

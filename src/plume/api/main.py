@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from dataclasses import replace
+
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -8,6 +10,35 @@ from plume.api.deps import (
     get_export_service,
     get_forecast_service,
 )
+
+
+def _build_scenario_from_payload(forecast_service, payload: dict | None):
+    payload = payload or {}
+
+    default_scenario = forecast_service.config.load_scenario()
+
+    latitude = float(payload.get("latitude", default_scenario.latitude))
+    longitude = float(payload.get("longitude", default_scenario.longitude))
+    emissions_rate = float(payload.get("emissions_rate", default_scenario.emissions_rate))
+
+    start = payload.get("start", default_scenario.start)
+    end = payload.get("end", default_scenario.end)
+    pollution_type = payload.get("pollution_type", default_scenario.pollution_type)
+    duration = float(payload.get("duration", default_scenario.duration))
+    release_height = float(payload.get("release_height", default_scenario.release_height))
+
+    return replace(
+        default_scenario,
+        source=(latitude, longitude),
+        latitude=latitude,
+        longitude=longitude,
+        emissions_rate=emissions_rate,
+        start=start,
+        end=end,
+        pollution_type=pollution_type,
+        duration=duration,
+        release_height=release_height,
+    )
 
 
 def create_app() -> FastAPI:
@@ -49,7 +80,13 @@ def create_app() -> FastAPI:
     @app.post("/forecast")
     def create_forecast(payload: dict | None = None):
         payload = payload or {}
-        result = forecast_service.run_forecast(run_name=payload.get("run_name"))
+
+        scenario = _build_scenario_from_payload(forecast_service, payload)
+
+        result = forecast_service.run_forecast(
+            scenario=scenario,
+            run_name=payload.get("run_name"),
+        )
         store[result.forecast_id] = result
         return {
             "forecast_id": result.forecast_id,

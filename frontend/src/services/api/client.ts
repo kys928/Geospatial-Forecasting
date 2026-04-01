@@ -87,6 +87,29 @@ function getMockExplanation(): ForecastExplanation {
   }
 }
 
+function getScenarioOverrides(request?: MockForecastRequest) {
+  switch (request?.scenario) {
+    case "urban":
+      return {
+        latitude: 52.3702,
+        longitude: 4.8952,
+        emissions_rate: 130.0
+      };
+    case "industrial":
+      return {
+        latitude: 51.9244,
+        longitude: 4.4777,
+        emissions_rate: 180.0
+      };
+    default:
+      return {
+        latitude: 52.0907,
+        longitude: 5.1214,
+        emissions_rate: 100.0
+      };
+  }
+}
+
 export const apiClient = {
   async getHealth(mode: ApiMode): Promise<{ status: string }> {
     if (mode === "mock") {
@@ -116,8 +139,11 @@ export const apiClient = {
       };
     }
 
+    const scenarioOverrides = getScenarioOverrides(request);
+
     return postJson(`${API_BASE_URL}/forecast`, {
-      run_name: request ? `${request.scenario}-${request.threshold}` : "frontend-run"
+      run_name: request ? `${request.scenario}-${request.threshold}` : "frontend-run",
+      ...scenarioOverrides
     });
   },
 
