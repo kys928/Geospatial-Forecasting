@@ -16,9 +16,6 @@ from ..schemas.scenario import Scenario
 
 
 def load_llm_config(config_path: str | Path) -> LLMConfig:
-    """
-    Load LLM configuration from api.yaml and return a typed config object.
-    """
     path = Path(config_path)
 
     with path.open("r", encoding="utf-8") as f:
@@ -31,16 +28,13 @@ def load_llm_config(config_path: str | Path) -> LLMConfig:
 
 
 class LLMService:
-    """
-    API-backed LLM service using Hugging Face Inference.
-
-    Responsibility:
-    - Accept a prepared forecast summary
-    - Send it to an external LLM through API
-    - Return a structured interpretation
-    """
-
-    def __init__(self, llm_config: LLMConfig, api_key: str | None = None, temperature: float = 0.2, max_output_tokens: int = 500):
+    def __init__(
+        self,
+        llm_config: LLMConfig,
+        api_key: str | None = None,
+        temperature: float = 0.2,
+        max_output_tokens: int = 500,
+    ):
         self.llm_config = llm_config
         self.model_name = llm_config.model
         raw_provider = llm_config.provider
@@ -83,7 +77,13 @@ class LLMService:
         )
 
     @classmethod
-    def from_yaml(cls, config_path: str | Path, api_key: str | None = None, temperature: float = 0.2, max_output_tokens: int = 500):
+    def from_yaml(
+        cls,
+        config_path: str | Path,
+        api_key: str | None = None,
+        temperature: float = 0.2,
+        max_output_tokens: int = 500,
+    ):
         llm_config = load_llm_config(config_path)
         return cls(
             llm_config=llm_config,
@@ -93,13 +93,9 @@ class LLMService:
         )
 
     def interpret_forecast(
-            self,
-            forecast_summary: ForecastSummary,
+        self,
+        forecast_summary: ForecastSummary,
     ) -> LLMInterpretationResult:
-        """
-        Accepts already-prepared forecast summary data
-        and returns a structured interpretation.
-        """
         try:
             system_prompt = self._build_instructions()
             user_input = self._build_user_input(forecast_summary)
@@ -131,7 +127,7 @@ class LLMService:
             parsed = self._safe_parse_json(raw_text)
             if parsed is None:
                 return LLMInterpretationResult(
-                    success=True,
+                    success=False,
                     summary=None,
                     risk_level=None,
                     recommendation=None,
@@ -221,13 +217,19 @@ class LLMService:
 
     def _build_instructions(self) -> str:
         return (
-            "You are a geospatial hazard interpretation assistant. "
-            "You receive a structured forecast summary from a forecasting pipeline. "
-            "Your task is to interpret the summary conservatively. "
-            "Do not invent measurements, physics, times, or locations that were not provided. "
+            "You are a geospatial hazard explanation assistant for non-experts. "
+            "You receive a deterministic forecast summary. "
+            "Write in plain, everyday language that any normal person can understand. "
+            "Do not sound scientific unless necessary. "
+            "Do not invent times, places, weather, physics, casualties, or extra facts. "
             "Return ONLY valid JSON with exactly these fields: "
             "summary, risk_level, recommendation, uncertainty_note. "
-            "Keep summary concise and operational. "
+            "Rules for summary: "
+            "1) Keep it to 2 or 3 short sentences. "
+            "2) Explain whether there is a meaningful plume or not. "
+            "3) Mention how strong it is in simple terms, how many cells are affected, and the main spread direction. "
+            "4) Do not dump long raw decimals unless necessary; round them sensibly. "
+            "5) Make it understandable for a general audience. "
             "Use risk_level as one of: low, moderate, high, critical."
         )
 

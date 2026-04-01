@@ -1,11 +1,26 @@
 export type ApiMode = "mock" | "live";
-export type ScenarioPreset = "default" | "urban" | "industrial";
+export type ScenarioMockVariant = "default" | "urban" | "industrial";
+export type ScenarioPreset = ScenarioMockVariant;
 export type ThresholdPreset = "1e-6" | "1e-5" | "1e-4";
 
-export interface MockForecastRequest {
-  scenario: ScenarioPreset;
+export interface DemoScenario {
+  id: string;
+  label: string;
+  latitude: number;
+  longitude: number;
+  emissionsRate: number;
+  threshold?: ThresholdPreset;
+  severity?: "low" | "moderate" | "high";
+  notes?: string;
+  mockVariant?: ScenarioMockVariant;
+}
+
+export interface ForecastRunRequest {
+  scenario: DemoScenario;
   threshold: ThresholdPreset;
 }
+
+export type MockForecastRequest = ForecastRunRequest;
 
 export interface CapabilitiesResponse {
   model: string[];
@@ -41,7 +56,6 @@ export interface ForecastExplanation {
   summary: ForecastExplanationSummary;
   explanation: ForecastExplanationBody;
 }
-
 
 export interface ForecastCreateResponse {
   forecast_id: string;
@@ -86,18 +100,23 @@ export interface RasterMetadata {
   grid_spacing: number;
 }
 
+export interface GeoJsonFeature {
+  type: "Feature";
+  geometry: GeoJSON.Geometry;
+  properties?: Record<string, unknown>;
+  id?: string | number;
+}
+
 export interface GeoJsonFeatureCollection {
   type: "FeatureCollection";
-  features: Array<{
-    type: "Feature";
-    geometry: GeoJSON.Geometry;
-    properties?: Record<string, unknown>;
-  }>;
+  features: GeoJsonFeature[];
   properties?: Record<string, unknown>;
 }
 
 export interface SelectedFeatureState {
-  id: string | null;
+  id: string;
   title: string;
   properties: Record<string, unknown> | null;
+  geometry: GeoJSON.Geometry | null;
+  feature: GeoJsonFeature | null;
 }

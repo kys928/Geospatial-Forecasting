@@ -1,33 +1,34 @@
-import type { ScenarioPreset, ThresholdPreset } from "../forecast/forecast.types";
+import type { DemoScenario, ThresholdPreset } from "../forecast/forecast.types";
 
 interface ScenarioControlsProps {
-  scenario: ScenarioPreset;
+  activeScenario: DemoScenario;
   threshold: ThresholdPreset;
-  onScenarioChange: (value: ScenarioPreset) => void;
   onThresholdChange: (value: ThresholdPreset) => void;
 }
 
 export function ScenarioControls({
-  scenario,
+  activeScenario,
   threshold,
-  onScenarioChange,
   onThresholdChange
 }: ScenarioControlsProps) {
   return (
     <section className="control-group">
-      <h3>Scenario</h3>
+      <div className="scenario-status">
+        <div className="scenario-status-row">
+          <h3>Scenario</h3>
+          {activeScenario.severity ? (
+            <span className={`severity-badge severity-${activeScenario.severity}`}>
+              {activeScenario.severity}
+            </span>
+          ) : null}
+        </div>
 
-      <label className="field">
-        <span>Preset</span>
-        <select
-          value={scenario}
-          onChange={(event) => onScenarioChange(event.target.value as ScenarioPreset)}
-        >
-          <option value="default">Default baseline</option>
-          <option value="urban">Urban release</option>
-          <option value="industrial">Industrial release</option>
-        </select>
-      </label>
+        <p className="scenario-inline-label">{activeScenario.label}</p>
+
+        {activeScenario.notes ? (
+          <p className="muted scenario-inline-note">{activeScenario.notes}</p>
+        ) : null}
+      </div>
 
       <label className="field">
         <span>Threshold</span>
@@ -40,6 +41,10 @@ export function ScenarioControls({
           <option value="1e-4">1e-4</option>
         </select>
       </label>
+
+      <p className="control-note muted">
+        Run Forecast samples a new bounded scenario each time.
+      </p>
     </section>
   );
 }

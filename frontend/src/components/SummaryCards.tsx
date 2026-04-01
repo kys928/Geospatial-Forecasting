@@ -1,30 +1,74 @@
-import type { ForecastSummary } from "../features/forecast/forecast.types";
+import type {
+  DemoScenario,
+  ForecastExplanation,
+  ForecastSummary
+} from "../features/forecast/forecast.types";
 
 interface SummaryCardsProps {
   summary: ForecastSummary | null;
+  explanationPayload: ForecastExplanation | null;
+  activeScenario: DemoScenario | null;
 }
 
-export function SummaryCards({ summary }: SummaryCardsProps) {
+function formatPeak(value: number | null): string {
+  if (value == null) {
+    return "—";
+  }
+  return value.toExponential(3);
+}
+
+function formatAffectedCells(value: number | null): string {
+  if (value == null) {
+    return "—";
+  }
+  return `${value} cells`;
+}
+
+function formatRisk(value: string | null | undefined): string {
+  if (!value) {
+    return "—";
+  }
+  return value.charAt(0).toUpperCase() + value.slice(1);
+}
+
+function formatDirection(value: string | null | undefined): string {
+  if (!value) {
+    return "—";
+  }
+  return value;
+}
+
+export function SummaryCards({
+  summary,
+  explanationPayload,
+  activeScenario
+}: SummaryCardsProps) {
   const cards = [
     {
-      label: "Max concentration",
-      value: summary ? summary.summary_statistics.max_concentration.toExponential(3) : "—"
+      label: "Scenario",
+      value: activeScenario?.label ?? "—"
     },
     {
-      label: "Mean concentration",
-      value: summary ? summary.summary_statistics.mean_concentration.toExponential(3) : "—"
+      label: "Peak concentration",
+      value: summary ? formatPeak(summary.summary_statistics.max_concentration) : "—"
     },
     {
-      label: "Source",
-      value: summary ? `${summary.source.latitude}, ${summary.source.longitude}` : "—"
+      label: "Dispersion footprint",
+      value: explanationPayload
+        ? formatAffectedCells(explanationPayload.summary.affected_cells_above_threshold)
+        : "—"
     },
     {
-      label: "Grid",
-      value: summary ? `${summary.grid.rows} × ${summary.grid.columns}` : "—"
+      label: "Spread direction",
+      value: explanationPayload
+        ? formatDirection(explanationPayload.summary.dominant_spread_direction)
+        : "—"
     },
     {
-      label: "Timestamp",
-      value: summary ? summary.timestamp : "—"
+      label: "Risk",
+      value: explanationPayload
+        ? formatRisk(explanationPayload.explanation.risk_level)
+        : "—"
     }
   ];
 

@@ -3,12 +3,12 @@ import maplibregl, {
   GeoJSONSource,
   LngLatBounds,
   Map,
-  MapLayerMouseEvent,
   MapMouseEvent
 } from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
 
 import type {
+  GeoJsonFeature,
   GeoJsonFeatureCollection,
   SelectedFeatureState
 } from "../forecast/forecast.types";
@@ -16,10 +16,12 @@ import { isValidFeatureCollection } from "./layers";
 
 interface ForecastMapProps {
   geojson: GeoJsonFeatureCollection | null;
+  selectedFeature: SelectedFeatureState | null;
   onSelectFeature: (feature: SelectedFeatureState | null) => void;
 }
 
-const SOURCE_ID = "forecast-source";
+const FORECAST_SOURCE_ID = "forecast-source";
+const SELECTED_SOURCE_ID = "selected-feature-source";
 
 const DOMAIN_FILL_LAYER_ID = "forecast-domain-fill";
 const DOMAIN_OUTLINE_LAYER_ID = "forecast-domain-outline";
@@ -32,17 +34,77 @@ const PLUME_LOW_OUTLINE_LAYER_ID = "forecast-plume-low-outline";
 const PLUME_MEDIUM_OUTLINE_LAYER_ID = "forecast-plume-medium-outline";
 const PLUME_HIGH_OUTLINE_LAYER_ID = "forecast-plume-high-outline";
 
+const SOURCE_HIT_LAYER_ID = "forecast-source-hit";
 const SOURCE_POINT_LAYER_ID = "forecast-source-point";
 const SOURCE_GLOW_LAYER_ID = "forecast-source-glow";
+
+const SELECTED_POLYGON_OUTLINE_LAYER_ID = "selected-feature-polygon-outline";
+const SELECTED_POLYGON_GLOW_LAYER_ID = "selected-feature-polygon-glow";
+const SELECTED_SOURCE_RING_LAYER_ID = "selected-feature-source-ring";
 
 const MAP_STYLE_URL =
   import.meta.env.VITE_MAP_STYLE_URL ||
   "https://demotiles.maplibre.org/style.json";
 
+const INTERACTIVE_LAYER_ORDER = [
+  SOURCE_HIT_LAYER_ID,
+  SOURCE_POINT_LAYER_ID,
+  PLUME_HIGH_FILL_LAYER_ID,
+  PLUME_MEDIUM_FILL_LAYER_ID,
+  PLUME_LOW_FILL_LAYER_ID
+] as const;
+
+function getFallbackTitle(kind: string | null): string {
+  switch (kind) {
+    case "source":
+      return "Emission source";
+    case "plume_band_high":
+      return "High plume band";
+    case "plume_band_medium":
+      return "Medium plume band";
+    case "plume_band_low":
+      return "Low plume band";
+    case "forecast_extent":
+      return "Forecast domain";
+    default:
+      return "Feature details";
+  }
+}
+
+function buildStableFeatureId(feature: GeoJsonFeature, index: number): string {
+  const kind =
+    feature.properties && typeof feature.properties.kind === "string"
+      ? feature.properties.kind
+      : "feature";
+
+  const threshold =
+    feature.properties &&
+    (typeof feature.properties.threshold === "number" ||
+      typeof feature.properties.threshold === "string")
+      ? String(feature.properties.threshold)
+      : "none";
+
+  return `${kind}-${threshold}-${index}`;
+}
+
+function normalizeGeojson(
+  geojson: GeoJsonFeatureCollection | null
+): GeoJsonFeatureCollection | null {
+  if (!isValidFeatureCollection(geojson)) {
+    return geojson;
+  }
+
+  return {
+    ...geojson,
+    features: geojson.features.map((feature, index) => ({
+      ...feature,
+      id: feature.id ?? buildStableFeatureId(feature, index)
+    }))
+  };
+}
+
 function buildSelectedFeature(
-  feature: maplibregl.MapGeoJSONFeature | undefined,
-  fallbackId: string,
-  fallbackTitle: string
+  feature: maplibregl.MapGeoJSONFeature | undefined
 ): SelectedFeatureState | null {
   if (!feature) {
     return null;
@@ -53,13 +115,21 @@ function buildSelectedFeature(
       ? (feature.properties as Record<string, unknown>)
       : null;
 
+  const kind = typeof properties?.kind === "string" ? properties.kind : null;
+
+  const normalizedFeature: GeoJsonFeature = {
+    type: "Feature",
+    geometry: feature.geometry as GeoJSON.Geometry,
+    properties: properties ?? undefined,
+    id: feature.id != null ? feature.id : undefined
+  };
+
   return {
-    id: feature.id != null ? String(feature.id) : fallbackId,
-    title:
-      properties && typeof properties.kind === "string"
-        ? properties.kind
-        : fallbackTitle,
-    properties
+    id: feature.id != null ? String(feature.id) : `${kind ?? "feature"}-selected`,
+    title: getFallbackTitle(kind),
+    properties,
+    geometry: feature.geometry as GeoJSON.Geometry,
+    feature: normalizedFeature
   };
 }
 
@@ -164,42 +234,83 @@ function applyGeojsonToMap(
   geojson: GeoJsonFeatureCollection | null,
   hasFittedRef: React.MutableRefObject<boolean>
 ) {
-  if (!isValidFeatureCollection(geojson)) {
+  const normalized = normalizeGeojson(geojson);
+
+  if (!isValidFeatureCollection(normalized)) {
     return;
   }
 
-  const source = map.getSource(SOURCE_ID) as GeoJSONSource | undefined;
+  const source = map.getSource(FORECAST_SOURCE_ID) as GeoJSONSource | undefined;
   if (!source) {
     return;
   }
 
-  source.setData(geojson as GeoJSON.FeatureCollection);
+  source.setData(normalized as GeoJSON.FeatureCollection);
 
-  const bounds = getFeatureCollectionBounds(geojson);
+  const bounds = getFeatureCollectionBounds(normalized);
   if (bounds && !bounds.isEmpty()) {
     map.fitBounds(bounds, {
       padding: {
-        top: 72,
-        right: 72,
-        bottom: 72,
-        left: 72
+        top: 56,
+        right: 56,
+        bottom: 56,
+        left: 56
       },
-      duration: hasFittedRef.current ? 700 : 1200,
+      duration: hasFittedRef.current ? 700 : 1100,
       maxZoom: 18
     });
     hasFittedRef.current = true;
   }
 }
 
-export function ForecastMap({ geojson, onSelectFeature }: ForecastMapProps) {
+function applySelectedFeatureToMap(map: Map, selectedFeature: SelectedFeatureState | null) {
+  const selectedSource = map.getSource(SELECTED_SOURCE_ID) as GeoJSONSource | undefined;
+  if (!selectedSource) {
+    return;
+  }
+
+  selectedSource.setData({
+    type: "FeatureCollection",
+    features: selectedFeature?.feature ? [selectedFeature.feature as GeoJSON.Feature] : []
+  });
+}
+
+function getTopPriorityFeature(
+  map: Map,
+  event: MapMouseEvent
+): maplibregl.MapGeoJSONFeature | undefined {
+  const features = map.queryRenderedFeatures(event.point, {
+    layers: [...INTERACTIVE_LAYER_ORDER]
+  });
+
+  for (const layerId of INTERACTIVE_LAYER_ORDER) {
+    const match = features.find((feature) => feature.layer.id === layerId);
+    if (match) {
+      return match;
+    }
+  }
+
+  return undefined;
+}
+
+export function ForecastMap({
+  geojson,
+  selectedFeature,
+  onSelectFeature
+}: ForecastMapProps) {
   const mapContainerRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<Map | null>(null);
   const hasFittedRef = useRef(false);
   const latestGeojsonRef = useRef<GeoJsonFeatureCollection | null>(geojson);
+  const latestSelectedFeatureRef = useRef<SelectedFeatureState | null>(selectedFeature);
 
   useEffect(() => {
     latestGeojsonRef.current = geojson;
   }, [geojson]);
+
+  useEffect(() => {
+    latestSelectedFeatureRef.current = selectedFeature;
+  }, [selectedFeature]);
 
   useEffect(() => {
     if (!mapContainerRef.current || mapRef.current) {
@@ -227,7 +338,7 @@ export function ForecastMap({ geojson, onSelectFeature }: ForecastMapProps) {
     });
 
     map.on("load", () => {
-      map.addSource(SOURCE_ID, {
+      map.addSource(FORECAST_SOURCE_ID, {
         type: "geojson",
         data: {
           type: "FeatureCollection",
@@ -235,14 +346,21 @@ export function ForecastMap({ geojson, onSelectFeature }: ForecastMapProps) {
         }
       });
 
-      // Forecast domain: subtle / mostly for reference
+      map.addSource(SELECTED_SOURCE_ID, {
+        type: "geojson",
+        data: {
+          type: "FeatureCollection",
+          features: []
+        }
+      });
+
       map.addLayer({
         id: DOMAIN_FILL_LAYER_ID,
         type: "fill",
-        source: SOURCE_ID,
+        source: FORECAST_SOURCE_ID,
         paint: {
           "fill-color": "#94a3b8",
-          "fill-opacity": 0.03
+          "fill-opacity": 0.0
         },
         filter: [
           "all",
@@ -254,11 +372,11 @@ export function ForecastMap({ geojson, onSelectFeature }: ForecastMapProps) {
       map.addLayer({
         id: DOMAIN_OUTLINE_LAYER_ID,
         type: "line",
-        source: SOURCE_ID,
+        source: FORECAST_SOURCE_ID,
         paint: {
           "line-color": "#94a3b8",
-          "line-width": 1,
-          "line-opacity": 0.35,
+          "line-width": 0.8,
+          "line-opacity": 0.18,
           "line-dasharray": [2, 2]
         },
         filter: [
@@ -268,101 +386,95 @@ export function ForecastMap({ geojson, onSelectFeature }: ForecastMapProps) {
         ]
       });
 
-      // Low plume band
       map.addLayer({
         id: PLUME_LOW_FILL_LAYER_ID,
         type: "fill",
-        source: SOURCE_ID,
+        source: FORECAST_SOURCE_ID,
         paint: {
           "fill-color": "#fde68a",
-          "fill-opacity": 0.28
+          "fill-opacity": 0.26
         },
-        filter: [
-          "all",
-          ["==", ["get", "kind"], "plume_band_low"]
-        ]
+        filter: ["all", ["==", ["get", "kind"], "plume_band_low"]]
       });
 
       map.addLayer({
         id: PLUME_LOW_OUTLINE_LAYER_ID,
         type: "line",
-        source: SOURCE_ID,
+        source: FORECAST_SOURCE_ID,
         paint: {
           "line-color": "#facc15",
-          "line-width": 1,
-          "line-opacity": 0.35
+          "line-width": 1.0,
+          "line-opacity": 0.28
         },
-        filter: [
-          "all",
-          ["==", ["get", "kind"], "plume_band_low"]
-        ]
+        filter: ["all", ["==", ["get", "kind"], "plume_band_low"]]
       });
 
-      // Medium plume band
       map.addLayer({
         id: PLUME_MEDIUM_FILL_LAYER_ID,
         type: "fill",
-        source: SOURCE_ID,
+        source: FORECAST_SOURCE_ID,
         paint: {
           "fill-color": "#f59e0b",
-          "fill-opacity": 0.42
+          "fill-opacity": 0.44
         },
-        filter: [
-          "all",
-          ["==", ["get", "kind"], "plume_band_medium"]
-        ]
+        filter: ["all", ["==", ["get", "kind"], "plume_band_medium"]]
       });
 
       map.addLayer({
         id: PLUME_MEDIUM_OUTLINE_LAYER_ID,
         type: "line",
-        source: SOURCE_ID,
+        source: FORECAST_SOURCE_ID,
         paint: {
           "line-color": "#d97706",
-          "line-width": 1.1,
-          "line-opacity": 0.5
+          "line-width": 1.2,
+          "line-opacity": 0.34
         },
-        filter: [
-          "all",
-          ["==", ["get", "kind"], "plume_band_medium"]
-        ]
+        filter: ["all", ["==", ["get", "kind"], "plume_band_medium"]]
       });
 
-      // High plume band
       map.addLayer({
         id: PLUME_HIGH_FILL_LAYER_ID,
         type: "fill",
-        source: SOURCE_ID,
+        source: FORECAST_SOURCE_ID,
         paint: {
           "fill-color": "#ef4444",
           "fill-opacity": 0.62
         },
-        filter: [
-          "all",
-          ["==", ["get", "kind"], "plume_band_high"]
-        ]
+        filter: ["all", ["==", ["get", "kind"], "plume_band_high"]]
       });
 
       map.addLayer({
         id: PLUME_HIGH_OUTLINE_LAYER_ID,
         type: "line",
-        source: SOURCE_ID,
+        source: FORECAST_SOURCE_ID,
         paint: {
           "line-color": "#b91c1c",
-          "line-width": 1.2,
-          "line-opacity": 0.65
+          "line-width": 1.35,
+          "line-opacity": 0.42
+        },
+        filter: ["all", ["==", ["get", "kind"], "plume_band_high"]]
+      });
+
+      map.addLayer({
+        id: SOURCE_HIT_LAYER_ID,
+        type: "circle",
+        source: FORECAST_SOURCE_ID,
+        paint: {
+          "circle-radius": 18,
+          "circle-color": "#000000",
+          "circle-opacity": 0
         },
         filter: [
           "all",
-          ["==", ["get", "kind"], "plume_band_high"]
+          ["==", "$type", "Point"],
+          ["==", ["get", "kind"], "source"]
         ]
       });
 
-      // Source marker
       map.addLayer({
         id: SOURCE_GLOW_LAYER_ID,
         type: "circle",
-        source: SOURCE_ID,
+        source: FORECAST_SOURCE_ID,
         paint: {
           "circle-radius": 18,
           "circle-color": "#ef4444",
@@ -378,7 +490,7 @@ export function ForecastMap({ geojson, onSelectFeature }: ForecastMapProps) {
       map.addLayer({
         id: SOURCE_POINT_LAYER_ID,
         type: "circle",
-        source: SOURCE_ID,
+        source: FORECAST_SOURCE_ID,
         paint: {
           "circle-radius": 8,
           "circle-color": "#ef4444",
@@ -392,80 +504,62 @@ export function ForecastMap({ geojson, onSelectFeature }: ForecastMapProps) {
         ]
       });
 
-      for (const layerId of [
-        SOURCE_POINT_LAYER_ID,
-        PLUME_HIGH_FILL_LAYER_ID,
-        PLUME_MEDIUM_FILL_LAYER_ID,
-        PLUME_LOW_FILL_LAYER_ID,
-        DOMAIN_FILL_LAYER_ID
-      ]) {
-        map.on("mouseenter", layerId, () => {
-          map.getCanvas().style.cursor = "pointer";
-        });
-
-        map.on("mouseleave", layerId, () => {
-          map.getCanvas().style.cursor = "";
-        });
-      }
-
-      map.on("click", SOURCE_POINT_LAYER_ID, (event: MapLayerMouseEvent) => {
-        const selected = buildSelectedFeature(event.features?.[0], "source", "Source");
-        onSelectFeature(selected);
+      map.addLayer({
+        id: SELECTED_POLYGON_GLOW_LAYER_ID,
+        type: "line",
+        source: SELECTED_SOURCE_ID,
+        paint: {
+          "line-color": "#ffffff",
+          "line-width": 7,
+          "line-opacity": 0.24
+        },
+        filter: ["any", ["==", "$type", "Polygon"], ["==", "$type", "MultiPolygon"]]
       });
 
-      map.on("click", PLUME_HIGH_FILL_LAYER_ID, (event: MapLayerMouseEvent) => {
-        const selected = buildSelectedFeature(
-          event.features?.[0],
-          "plume-band-high",
-          "High plume band"
-        );
-        onSelectFeature(selected);
+      map.addLayer({
+        id: SELECTED_POLYGON_OUTLINE_LAYER_ID,
+        type: "line",
+        source: SELECTED_SOURCE_ID,
+        paint: {
+          "line-color": "#ffffff",
+          "line-width": 3,
+          "line-opacity": 0.96
+        },
+        filter: ["any", ["==", "$type", "Polygon"], ["==", "$type", "MultiPolygon"]]
       });
 
-      map.on("click", PLUME_MEDIUM_FILL_LAYER_ID, (event: MapLayerMouseEvent) => {
-        const selected = buildSelectedFeature(
-          event.features?.[0],
-          "plume-band-medium",
-          "Medium plume band"
-        );
-        onSelectFeature(selected);
+      map.addLayer({
+        id: SELECTED_SOURCE_RING_LAYER_ID,
+        type: "circle",
+        source: SELECTED_SOURCE_ID,
+        paint: {
+          "circle-radius": 14,
+          "circle-color": "#ffffff",
+          "circle-opacity": 0,
+          "circle-stroke-width": 3,
+          "circle-stroke-color": "#ffffff"
+        },
+        filter: ["==", "$type", "Point"]
       });
 
-      map.on("click", PLUME_LOW_FILL_LAYER_ID, (event: MapLayerMouseEvent) => {
-        const selected = buildSelectedFeature(
-          event.features?.[0],
-          "plume-band-low",
-          "Low plume band"
-        );
-        onSelectFeature(selected);
-      });
-
-      map.on("click", DOMAIN_FILL_LAYER_ID, (event: MapLayerMouseEvent) => {
-        const selected = buildSelectedFeature(
-          event.features?.[0],
-          "forecast-domain",
-          "Forecast domain"
-        );
-        onSelectFeature(selected);
+      map.on("mousemove", (event: MapMouseEvent) => {
+        const hovered = getTopPriorityFeature(map, event);
+        map.getCanvas().style.cursor = hovered ? "pointer" : "";
       });
 
       map.on("click", (event: MapMouseEvent) => {
-        const features = map.queryRenderedFeatures(event.point, {
-          layers: [
-            SOURCE_POINT_LAYER_ID,
-            PLUME_HIGH_FILL_LAYER_ID,
-            PLUME_MEDIUM_FILL_LAYER_ID,
-            PLUME_LOW_FILL_LAYER_ID,
-            DOMAIN_FILL_LAYER_ID
-          ]
-        });
+        const feature = getTopPriorityFeature(map, event);
 
-        if (features.length === 0) {
+        if (!feature) {
           onSelectFeature(null);
+          return;
         }
+
+        onSelectFeature(buildSelectedFeature(feature));
       });
 
       applyGeojsonToMap(map, latestGeojsonRef.current, hasFittedRef);
+      applySelectedFeatureToMap(map, latestSelectedFeatureRef.current);
     });
 
     mapRef.current = map;
@@ -484,6 +578,15 @@ export function ForecastMap({ geojson, onSelectFeature }: ForecastMapProps) {
 
     applyGeojsonToMap(map, geojson, hasFittedRef);
   }, [geojson]);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) {
+      return;
+    }
+
+    applySelectedFeatureToMap(map, selectedFeature);
+  }, [selectedFeature]);
 
   return <div ref={mapContainerRef} className="forecast-map panel forecast-map-canvas" />;
 }
