@@ -7,8 +7,7 @@ import type {
   ForecastRunRequest,
   ForecastSummary,
   GeoJsonFeatureCollection,
-  RasterMetadata,
-  ThresholdPreset
+  RasterMetadata
 } from "../../features/forecast/forecast.types";
 
 import capabilitiesMock from "../../mocks/capabilities.json";
@@ -28,6 +27,7 @@ import explanationUrbanMock from "../../mocks/explanation-urban.json";
 import explanationIndustrialMock from "../../mocks/explanation-industrial.json";
 
 const API_BASE_URL = "http://localhost:8000";
+const FIXED_EXPLANATION_THRESHOLD = 1e-5;
 
 const DEFAULT_SCENARIO: DemoScenario = {
   id: "dense-urban-core",
@@ -35,15 +35,13 @@ const DEFAULT_SCENARIO: DemoScenario = {
   latitude: 52.0907,
   longitude: 5.1214,
   emissionsRate: 100,
-  threshold: "1e-5",
   severity: "moderate",
   notes: "Compact city-center release with strong local context.",
   mockVariant: "default"
 };
 
 let lastMockRequest: ForecastRunRequest = {
-  scenario: DEFAULT_SCENARIO,
-  threshold: "1e-5"
+  scenario: DEFAULT_SCENARIO
 };
 
 async function getJson<T>(url: string): Promise<T> {
@@ -105,13 +103,6 @@ function getMockExplanation(): ForecastExplanation {
   }
 }
 
-function normalizeThreshold(
-  explicitThreshold: ThresholdPreset | undefined,
-  scenarioThreshold: ThresholdPreset | undefined
-): ThresholdPreset {
-  return explicitThreshold ?? scenarioThreshold ?? "1e-5";
-}
-
 export const apiClient = {
   async getHealth(mode: ApiMode): Promise<{ status: string }> {
     if (mode === "mock") {
@@ -131,26 +122,20 @@ export const apiClient = {
     mode: ApiMode,
     request: ForecastRunRequest
   ): Promise<ForecastCreateResponse> {
-    const threshold = normalizeThreshold(request.threshold, request.scenario.threshold);
-
     if (mode === "mock") {
-      lastMockRequest = {
-        ...request,
-        threshold
-      };
+      lastMockRequest = request;
 
       return {
         ...(forecastMock as ForecastCreateResponse),
-        forecast_id: `demo-${request.scenario.id}-${threshold}`
+        forecast_id: `demo-${request.scenario.id}`
       };
     }
 
     return postJson(`${API_BASE_URL}/forecast`, {
-      run_name: `${request.scenario.id}-${threshold}`,
+      run_name: request.scenario.id,
       latitude: request.scenario.latitude,
       longitude: request.scenario.longitude,
-      emissions_rate: request.scenario.emissionsRate,
-      threshold
+      emissions_rate: request.scenario.emissionsRate
     });
   },
 
@@ -178,17 +163,16 @@ export const apiClient = {
   async getExplanation(
     mode: ApiMode,
     forecastId: string,
-    options?: { threshold?: number; useLlm?: boolean }
+    options?: { useLlm?: boolean }
   ): Promise<ForecastExplanation> {
     if (mode === "mock") {
       return getMockExplanation();
     }
 
-    const threshold = options?.threshold ?? 1e-6;
     const useLlm = options?.useLlm ?? true;
 
     const params = new URLSearchParams({
-      threshold: String(threshold),
+      threshold: String(FIXED_EXPLANATION_THRESHOLD),
       use_llm: String(useLlm)
     });
 

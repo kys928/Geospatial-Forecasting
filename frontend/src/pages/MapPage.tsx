@@ -18,8 +18,7 @@ import type {
   ForecastExplanation,
   ForecastSummary,
   GeoJsonFeatureCollection,
-  SelectedFeatureState,
-  ThresholdPreset
+  SelectedFeatureState
 } from "../features/forecast/forecast.types";
 
 type ScenarioSeed = {
@@ -47,7 +46,7 @@ const SCENARIO_SEEDS: ScenarioSeed[] = [
     lonJitter: 0.014,
     emissionMin: 110,
     emissionMax: 180,
-    severity: "moderate",
+//     severity: "moderate",
     mockVariant: "default"
   },
   {
@@ -60,7 +59,7 @@ const SCENARIO_SEEDS: ScenarioSeed[] = [
     lonJitter: 0.016,
     emissionMin: 160,
     emissionMax: 260,
-    severity: "high",
+//     severity: "high",
     mockVariant: "industrial"
   },
   {
@@ -73,7 +72,7 @@ const SCENARIO_SEEDS: ScenarioSeed[] = [
     lonJitter: 0.016,
     emissionMin: 120,
     emissionMax: 190,
-    severity: "moderate",
+//     severity: "moderate",
     mockVariant: "urban"
   },
   {
@@ -86,7 +85,7 @@ const SCENARIO_SEEDS: ScenarioSeed[] = [
     lonJitter: 0.014,
     emissionMin: 90,
     emissionMax: 140,
-    severity: "low",
+//     severity: "low",
     mockVariant: "default"
   }
 ];
@@ -102,7 +101,7 @@ function chooseRandomSeed(): ScenarioSeed {
   return SCENARIO_SEEDS[index];
 }
 
-function buildRandomScenario(threshold: ThresholdPreset): DemoScenario {
+function buildRandomScenario(): DemoScenario {
   const seed = chooseRandomSeed();
   const latitude = seed.centerLat + randomInRange(-seed.latJitter, seed.latJitter);
   const longitude = seed.centerLon + randomInRange(-seed.lonJitter, seed.lonJitter);
@@ -114,8 +113,7 @@ function buildRandomScenario(threshold: ThresholdPreset): DemoScenario {
     latitude: Number(latitude.toFixed(6)),
     longitude: Number(longitude.toFixed(6)),
     emissionsRate,
-    threshold,
-    severity: seed.severity,
+//     severity: seed.severity,
     notes: seed.notes,
     mockVariant: seed.mockVariant
   };
@@ -142,7 +140,6 @@ export function MapPage() {
     useState<ForecastExplanation | null>(null);
   const [selected, setSelected] = useState<SelectedFeatureState | null>(null);
   const [statusText, setStatusText] = useState("Loading dashboard...");
-  const [threshold, setThreshold] = useState<ThresholdPreset>("1e-6");
   const [activeScenario, setActiveScenario] = useState<DemoScenario | null>(null);
 
   const latestRequestIdRef = useRef(0);
@@ -205,11 +202,10 @@ export function MapPage() {
     let bestForecastId: string | null = null;
 
     for (let attempt = 0; attempt < MAX_RANDOM_ATTEMPTS; attempt += 1) {
-      const scenario = buildRandomScenario(threshold);
+      const scenario = buildRandomScenario();
 
       const created = await runForecast(apiMode, {
-        scenario,
-        threshold
+        scenario
       });
 
       if (requestId !== latestRequestIdRef.current) {
@@ -217,7 +213,6 @@ export function MapPage() {
       }
 
       const bundle = await loadForecastBundle(apiMode, created.forecast_id, {
-        threshold: Number(threshold),
         useLlm: true
       });
 
@@ -287,13 +282,7 @@ export function MapPage() {
 
       <div className="main-layout">
         <Sidebar onRunForecast={handleRunForecast}>
-          {activeScenario ? (
-            <ScenarioControls
-              activeScenario={activeScenario}
-              threshold={threshold}
-              onThresholdChange={setThreshold}
-            />
-          ) : null}
+          {activeScenario ? <ScenarioControls activeScenario={activeScenario} /> : null}
         </Sidebar>
 
         <main className="map-column">

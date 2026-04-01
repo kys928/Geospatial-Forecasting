@@ -197,6 +197,8 @@ class LLMService:
         max_concentration: float,
         mean_concentration: float,
         affected_cells_above_threshold: int,
+        affected_area_m2: float,
+        affected_area_hectares: float,
         dominant_spread_direction: str,
         threshold_used: float,
         note: str | None = None,
@@ -210,6 +212,8 @@ class LLMService:
             max_concentration=float(max_concentration),
             mean_concentration=float(mean_concentration),
             affected_cells_above_threshold=int(affected_cells_above_threshold),
+            affected_area_m2=float(affected_area_m2),
+            affected_area_hectares=float(affected_area_hectares),
             dominant_spread_direction=str(dominant_spread_direction),
             threshold_used=float(threshold_used),
             note=note,
@@ -218,18 +222,18 @@ class LLMService:
     def _build_instructions(self) -> str:
         return (
             "You are a geospatial hazard explanation assistant for non-experts. "
-            "You receive a deterministic forecast summary. "
-            "Write in plain, everyday language that any normal person can understand. "
-            "Do not sound scientific unless necessary. "
-            "Do not invent times, places, weather, physics, casualties, or extra facts. "
+            "Write like a calm operations briefing, not like a lab report. "
+            "Do not invent times, places, weather, physics, casualties, or actions that were not provided. "
             "Return ONLY valid JSON with exactly these fields: "
             "summary, risk_level, recommendation, uncertainty_note. "
             "Rules for summary: "
-            "1) Keep it to 2 or 3 short sentences. "
-            "2) Explain whether there is a meaningful plume or not. "
-            "3) Mention how strong it is in simple terms, how many cells are affected, and the main spread direction. "
-            "4) Do not dump long raw decimals unless necessary; round them sensibly. "
-            "5) Make it understandable for a general audience. "
+            "1) Use 2 or 3 short sentences. "
+            "2) Focus on what is happening, where the plume is moving, and how serious it feels. "
+            "3) Avoid repeating raw numbers unless they are absolutely necessary. "
+            "4) Prefer phrases like 'small affected area', 'moderate plume', 'strong inner core', "
+            "'spreading mainly to the north-east', 'staying close to the source'. "
+            "5) Do not repeat the exact area numbers or concentration numbers if the UI can show structural details elsewhere. "
+            "6) If no meaningful plume is present, say that clearly and simply. "
             "Use risk_level as one of: low, moderate, high, critical."
         )
 
@@ -243,6 +247,8 @@ class LLMService:
             "max_concentration": forecast_summary.max_concentration,
             "mean_concentration": forecast_summary.mean_concentration,
             "affected_cells_above_threshold": forecast_summary.affected_cells_above_threshold,
+            "affected_area_m2": forecast_summary.affected_area_m2,
+            "affected_area_hectares": forecast_summary.affected_area_hectares,
             "dominant_spread_direction": forecast_summary.dominant_spread_direction,
             "threshold_used": forecast_summary.threshold_used,
             "note": forecast_summary.note,

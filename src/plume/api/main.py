@@ -124,7 +124,7 @@ def create_app() -> FastAPI:
     @app.get("/forecast/{forecast_id}/explanation")
     def get_forecast_explanation(
         forecast_id: str,
-        threshold: float = 1e-6,
+        threshold: float = 1e-5,
         use_llm: bool = True,
     ):
         result = store.get(forecast_id)
@@ -151,6 +151,8 @@ def create_app() -> FastAPI:
                 "max_concentration": explanation_result.summary.max_concentration,
                 "mean_concentration": explanation_result.summary.mean_concentration,
                 "affected_cells_above_threshold": explanation_result.summary.affected_cells_above_threshold,
+                "affected_area_m2": explanation_result.summary.affected_area_m2,
+                "affected_area_hectares": explanation_result.summary.affected_area_hectares,
                 "dominant_spread_direction": explanation_result.summary.dominant_spread_direction,
                 "threshold_used": explanation_result.summary.threshold_used,
                 "note": explanation_result.summary.note,

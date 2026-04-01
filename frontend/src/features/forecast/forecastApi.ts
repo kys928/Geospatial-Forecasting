@@ -24,7 +24,7 @@ export async function runForecast(
 export async function loadForecastBundle(
   mode: ApiMode,
   forecastId: string,
-  options?: { threshold?: number; useLlm?: boolean }
+  options?: { useLlm?: boolean }
 ): Promise<{
   summary: ForecastSummary;
   geojson: GeoJsonFeatureCollection;

@@ -3,6 +3,7 @@ import maplibregl, {
   GeoJSONSource,
   LngLatBounds,
   Map,
+  MapLayerMouseEvent,
   MapMouseEvent
 } from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
@@ -25,6 +26,10 @@ const SELECTED_SOURCE_ID = "selected-feature-source";
 
 const DOMAIN_FILL_LAYER_ID = "forecast-domain-fill";
 const DOMAIN_OUTLINE_LAYER_ID = "forecast-domain-outline";
+
+const PLUME_LOW_HIT_LAYER_ID = "forecast-plume-low-hit";
+const PLUME_MEDIUM_HIT_LAYER_ID = "forecast-plume-medium-hit";
+const PLUME_HIGH_HIT_LAYER_ID = "forecast-plume-high-hit";
 
 const PLUME_LOW_FILL_LAYER_ID = "forecast-plume-low-fill";
 const PLUME_MEDIUM_FILL_LAYER_ID = "forecast-plume-medium-fill";
@@ -49,9 +54,9 @@ const MAP_STYLE_URL =
 const INTERACTIVE_LAYER_ORDER = [
   SOURCE_HIT_LAYER_ID,
   SOURCE_POINT_LAYER_ID,
-  PLUME_HIGH_FILL_LAYER_ID,
-  PLUME_MEDIUM_FILL_LAYER_ID,
-  PLUME_LOW_FILL_LAYER_ID
+  PLUME_HIGH_HIT_LAYER_ID,
+  PLUME_MEDIUM_HIT_LAYER_ID,
+  PLUME_LOW_HIT_LAYER_ID
 ] as const;
 
 function getFallbackTitle(kind: string | null): string {
@@ -275,22 +280,8 @@ function applySelectedFeatureToMap(map: Map, selectedFeature: SelectedFeatureSta
   });
 }
 
-function getTopPriorityFeature(
-  map: Map,
-  event: MapMouseEvent
-): maplibregl.MapGeoJSONFeature | undefined {
-  const features = map.queryRenderedFeatures(event.point, {
-    layers: [...INTERACTIVE_LAYER_ORDER]
-  });
-
-  for (const layerId of INTERACTIVE_LAYER_ORDER) {
-    const match = features.find((feature) => feature.layer.id === layerId);
-    if (match) {
-      return match;
-    }
-  }
-
-  return undefined;
+function getExistingInteractiveLayers(map: Map): string[] {
+  return INTERACTIVE_LAYER_ORDER.filter((layerId) => Boolean(map.getLayer(layerId)));
 }
 
 export function ForecastMap({
@@ -325,12 +316,23 @@ export function ForecastMap({
       pitch: 58,
       bearing: -18,
       maxZoom: 20,
-      antialias: true
+      antialias: true,
+      clickTolerance: 8,
+      maplibreLogo: false,
+      attributionControl: false
     });
 
     map.addControl(
       new maplibregl.NavigationControl({ visualizePitch: true }),
       "top-right"
+    );
+
+    map.addControl(
+      new maplibregl.AttributionControl({
+        compact: true,
+        customAttribution: "© OpenMapTiles · Data from OpenStreetMap"
+      }),
+      "bottom-right"
     );
 
     map.on("style.load", () => {
@@ -384,6 +386,39 @@ export function ForecastMap({
           ["==", "$type", "Polygon"],
           ["==", ["get", "kind"], "forecast_extent"]
         ]
+      });
+
+      map.addLayer({
+        id: PLUME_LOW_HIT_LAYER_ID,
+        type: "fill",
+        source: FORECAST_SOURCE_ID,
+        paint: {
+          "fill-color": "#000000",
+          "fill-opacity": 0
+        },
+        filter: ["all", ["==", ["get", "kind"], "plume_band_low"]]
+      });
+
+      map.addLayer({
+        id: PLUME_MEDIUM_HIT_LAYER_ID,
+        type: "fill",
+        source: FORECAST_SOURCE_ID,
+        paint: {
+          "fill-color": "#000000",
+          "fill-opacity": 0
+        },
+        filter: ["all", ["==", ["get", "kind"], "plume_band_medium"]]
+      });
+
+      map.addLayer({
+        id: PLUME_HIGH_HIT_LAYER_ID,
+        type: "fill",
+        source: FORECAST_SOURCE_ID,
+        paint: {
+          "fill-color": "#000000",
+          "fill-opacity": 0
+        },
+        filter: ["all", ["==", ["get", "kind"], "plume_band_high"]]
       });
 
       map.addLayer({
@@ -460,7 +495,7 @@ export function ForecastMap({
         type: "circle",
         source: FORECAST_SOURCE_ID,
         paint: {
-          "circle-radius": 18,
+          "circle-radius": 20,
           "circle-color": "#000000",
           "circle-opacity": 0
         },
@@ -542,20 +577,37 @@ export function ForecastMap({
         filter: ["==", "$type", "Point"]
       });
 
-      map.on("mousemove", (event: MapMouseEvent) => {
-        const hovered = getTopPriorityFeature(map, event);
-        map.getCanvas().style.cursor = hovered ? "pointer" : "";
-      });
+      const handleLayerClick = (event: MapLayerMouseEvent) => {
+        onSelectFeature(buildSelectedFeature(event.features?.[0]));
+      };
+
+      for (const layerId of getExistingInteractiveLayers(map)) {
+        map.on("click", layerId, handleLayerClick);
+
+        map.on("mouseenter", layerId, () => {
+          map.getCanvas().style.cursor = "pointer";
+        });
+
+        map.on("mouseleave", layerId, () => {
+          map.getCanvas().style.cursor = "";
+        });
+      }
 
       map.on("click", (event: MapMouseEvent) => {
-        const feature = getTopPriorityFeature(map, event);
+        const existingLayers = getExistingInteractiveLayers(map);
 
-        if (!feature) {
+        if (existingLayers.length === 0) {
           onSelectFeature(null);
           return;
         }
 
-        onSelectFeature(buildSelectedFeature(feature));
+        const features = map.queryRenderedFeatures(event.point, {
+          layers: existingLayers
+        });
+
+        if (features.length === 0) {
+          onSelectFeature(null);
+        }
       });
 
       applyGeojsonToMap(map, latestGeojsonRef.current, hasFittedRef);
