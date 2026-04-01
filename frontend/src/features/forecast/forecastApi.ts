@@ -4,9 +4,9 @@ import type {
   CapabilitiesResponse,
   ForecastCreateResponse,
   ForecastExplanation,
+  ForecastRunRequest,
   ForecastSummary,
   GeoJsonFeatureCollection,
-  MockForecastRequest,
   RasterMetadata
 } from "./forecast.types";
 
@@ -16,7 +16,7 @@ export async function loadCapabilities(mode: ApiMode): Promise<CapabilitiesRespo
 
 export async function runForecast(
   mode: ApiMode,
-  request?: MockForecastRequest
+  request: ForecastRunRequest
 ): Promise<ForecastCreateResponse> {
   return apiClient.createForecast(mode, request);
 }

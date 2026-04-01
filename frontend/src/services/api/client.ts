@@ -1,12 +1,14 @@
 import type {
   ApiMode,
   CapabilitiesResponse,
+  DemoScenario,
   ForecastCreateResponse,
   ForecastExplanation,
+  ForecastRunRequest,
   ForecastSummary,
   GeoJsonFeatureCollection,
-  MockForecastRequest,
-  RasterMetadata
+  RasterMetadata,
+  ThresholdPreset
 } from "../../features/forecast/forecast.types";
 
 import capabilitiesMock from "../../mocks/capabilities.json";
@@ -27,8 +29,20 @@ import explanationIndustrialMock from "../../mocks/explanation-industrial.json";
 
 const API_BASE_URL = "http://localhost:8000";
 
-let lastMockRequest: MockForecastRequest = {
-  scenario: "default",
+const DEFAULT_SCENARIO: DemoScenario = {
+  id: "dense-urban-core",
+  label: "Dense urban core",
+  latitude: 52.0907,
+  longitude: 5.1214,
+  emissionsRate: 100,
+  threshold: "1e-5",
+  severity: "moderate",
+  notes: "Compact city-center release with strong local context.",
+  mockVariant: "default"
+};
+
+let lastMockRequest: ForecastRunRequest = {
+  scenario: DEFAULT_SCENARIO,
   threshold: "1e-5"
 };
 
@@ -54,8 +68,12 @@ async function postJson<T>(url: string, body?: unknown): Promise<T> {
   return response.json() as Promise<T>;
 }
 
+function getMockVariant(request: ForecastRunRequest): "default" | "urban" | "industrial" {
+  return request.scenario.mockVariant ?? "default";
+}
+
 function getMockSummary(): ForecastSummary {
-  switch (lastMockRequest.scenario) {
+  switch (getMockVariant(lastMockRequest)) {
     case "urban":
       return summaryUrbanMock as ForecastSummary;
     case "industrial":
@@ -66,7 +84,7 @@ function getMockSummary(): ForecastSummary {
 }
 
 function getMockGeojson(): GeoJsonFeatureCollection {
-  switch (lastMockRequest.scenario) {
+  switch (getMockVariant(lastMockRequest)) {
     case "urban":
       return geojsonUrbanMock as GeoJsonFeatureCollection;
     case "industrial":
@@ -77,7 +95,7 @@ function getMockGeojson(): GeoJsonFeatureCollection {
 }
 
 function getMockExplanation(): ForecastExplanation {
-  switch (lastMockRequest.scenario) {
+  switch (getMockVariant(lastMockRequest)) {
     case "urban":
       return explanationUrbanMock as ForecastExplanation;
     case "industrial":
@@ -87,27 +105,11 @@ function getMockExplanation(): ForecastExplanation {
   }
 }
 
-function getScenarioOverrides(request?: MockForecastRequest) {
-  switch (request?.scenario) {
-    case "urban":
-      return {
-        latitude: 52.3702,
-        longitude: 4.8952,
-        emissions_rate: 130.0
-      };
-    case "industrial":
-      return {
-        latitude: 51.9244,
-        longitude: 4.4777,
-        emissions_rate: 180.0
-      };
-    default:
-      return {
-        latitude: 52.0907,
-        longitude: 5.1214,
-        emissions_rate: 100.0
-      };
-  }
+function normalizeThreshold(
+  explicitThreshold: ThresholdPreset | undefined,
+  scenarioThreshold: ThresholdPreset | undefined
+): ThresholdPreset {
+  return explicitThreshold ?? scenarioThreshold ?? "1e-5";
 }
 
 export const apiClient = {
@@ -127,23 +129,28 @@ export const apiClient = {
 
   async createForecast(
     mode: ApiMode,
-    request?: MockForecastRequest
+    request: ForecastRunRequest
   ): Promise<ForecastCreateResponse> {
+    const threshold = normalizeThreshold(request.threshold, request.scenario.threshold);
+
     if (mode === "mock") {
-      if (request) {
-        lastMockRequest = request;
-      }
+      lastMockRequest = {
+        ...request,
+        threshold
+      };
+
       return {
         ...(forecastMock as ForecastCreateResponse),
-        forecast_id: `demo-${lastMockRequest.scenario}-${lastMockRequest.threshold}`
+        forecast_id: `demo-${request.scenario.id}-${threshold}`
       };
     }
 
-    const scenarioOverrides = getScenarioOverrides(request);
-
     return postJson(`${API_BASE_URL}/forecast`, {
-      run_name: request ? `${request.scenario}-${request.threshold}` : "frontend-run",
-      ...scenarioOverrides
+      run_name: `${request.scenario.id}-${threshold}`,
+      latitude: request.scenario.latitude,
+      longitude: request.scenario.longitude,
+      emissions_rate: request.scenario.emissionsRate,
+      threshold
     });
   },
 

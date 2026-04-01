@@ -52,14 +52,29 @@ class ExplainService:
         elif summary.max_concentration >= 1e-5:
             risk = "moderate"
 
+        if summary.affected_cells_above_threshold == 0:
+            return {
+                "summary": (
+                    "No meaningful plume above the selected threshold was detected. "
+                    f"Peak concentration was {summary.max_concentration:.6e}, "
+                    f"with 0 cells above threshold and a nominal {summary.dominant_spread_direction} spread indication. "
+                    f"Overall risk is {risk}."
+                ),
+                "risk_level": risk,
+                "recommendation": "No immediate action required; continue monitoring if conditions change.",
+                "uncertainty_note": "Deterministic Gaussian plume baseline; not a full atmospheric simulation.",
+            }
+
         return {
             "summary": (
-                f"Peak concentration {summary.max_concentration:.6e}; "
-                f"{summary.affected_cells_above_threshold} cells above threshold."
+                f"Peak concentration reached {summary.max_concentration:.6e}, "
+                f"with {summary.affected_cells_above_threshold} cells above threshold and a dominant "
+                f"{summary.dominant_spread_direction} spread direction. "
+                f"Overall risk is {risk}."
             ),
             "risk_level": risk,
-            "recommendation": "Use baseline dispersion output for local triage and validate with domain experts.",
-            "uncertainty_note": "Gaussian plume baseline; not a full atmospheric simulation.",
+            "recommendation": "Use the forecast as a local triage aid and validate with domain experts.",
+            "uncertainty_note": "Deterministic Gaussian plume baseline; not a full atmospheric simulation.",
         }
 
     def explain(self, result, *, threshold=1e-6, use_llm=True):

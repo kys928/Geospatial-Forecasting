@@ -12,7 +12,7 @@ export function Sidebar({ children, onRunForecast }: SidebarProps) {
         <h2>Controls</h2>
       </div>
 
-      <div className="panel-body">
+      <div className="panel-body sidebar-body">
         {children}
       </div>
 
