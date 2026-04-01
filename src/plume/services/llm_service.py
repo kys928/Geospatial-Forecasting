@@ -43,7 +43,11 @@ class LLMService:
     def __init__(self, llm_config: LLMConfig, api_key: str | None = None, temperature: float = 0.2, max_output_tokens: int = 500):
         self.llm_config = llm_config
         self.model_name = llm_config.model
-        self.provider = llm_config.provider
+        raw_provider = llm_config.provider
+        provider_aliases = {
+            "huggingface": "hf-inference",
+        }
+        self.provider = provider_aliases.get(raw_provider, raw_provider)
         self.temperature = temperature
         self.max_output_tokens = max_output_tokens
         self.timeout_seconds = llm_config.timeout_seconds
@@ -53,10 +57,12 @@ class LLMService:
         if not self.enabled:
             raise ValueError("LLMService was initialized, but LLM config has enabled=False.")
 
-        if self.provider != "huggingface":
+        supported_providers = {"auto", "hf-inference"}
+
+        if self.provider not in supported_providers:
             raise ValueError(
                 f"Unsupported LLM provider '{self.provider}'. "
-                "This service currently supports only 'huggingface'."
+                f"This service currently supports only: {sorted(supported_providers)}."
             )
 
         resolved_api_key = (
@@ -87,8 +93,8 @@ class LLMService:
         )
 
     def interpret_forecast(
-        self,
-        forecast_summary: ForecastSummary,
+            self,
+            forecast_summary: ForecastSummary,
     ) -> LLMInterpretationResult:
         """
         Accepts already-prepared forecast summary data
