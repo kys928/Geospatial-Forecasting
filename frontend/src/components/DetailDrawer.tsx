@@ -1,4 +1,7 @@
-import type { ForecastExplanation, SelectedFeatureState } from "../features/forecast/forecast.types";
+import type {
+  ForecastExplanation,
+  SelectedFeatureState
+} from "../features/forecast/forecast.types";
 
 interface DetailDrawerProps {
   selected: SelectedFeatureState | null;
@@ -34,11 +37,11 @@ function getFeatureDescription(selected: SelectedFeatureState): string | null {
     case "forecast_extent":
       return "Spatial domain used for the current forecast grid.";
     case "plume_band_low":
-      return "Outer hazard band for the lowest configured concentration threshold.";
+      return "Outer edge of the plume where concentration is weakest.";
     case "plume_band_medium":
-      return "Intermediate hazard band for the medium configured concentration threshold.";
+      return "Middle plume zone where concentration is more noticeable.";
     case "plume_band_high":
-      return "Core hazard band for the highest configured concentration threshold.";
+      return "Core plume zone where concentration is strongest.";
     default:
       return null;
   }
@@ -59,8 +62,108 @@ function formatExplanationSource(explanationSource?: string): string {
   }
 }
 
+function getThresholdLabel(threshold: unknown): string {
+  const value = typeof threshold === "number" ? threshold : Number(threshold);
+
+  if (!Number.isFinite(value)) {
+    return "Unknown detection level";
+  }
+
+  if (value <= 1e-6) {
+    return "Very low concentration band";
+  }
+
+  if (value <= 1e-5) {
+    return "Moderate concentration band";
+  }
+
+  return "High concentration band";
+}
+
+function getStrengthLabel(maxValue: unknown): string {
+  const value = typeof maxValue === "number" ? maxValue : Number(maxValue);
+
+  if (!Number.isFinite(value)) {
+    return "Unknown plume strength";
+  }
+
+  if (value >= 1e-3) {
+    return "Strong inner plume";
+  }
+
+  if (value >= 1e-4) {
+    return "Moderately strong plume";
+  }
+
+  if (value >= 1e-5) {
+    return "Noticeable outer plume";
+  }
+
+  return "Faint plume";
+}
+
+function formatArea(areaM2: number | null | undefined, areaHectares: number | null | undefined): string {
+  if (typeof areaHectares === "number" && Number.isFinite(areaHectares) && areaHectares >= 1) {
+    return `About ${areaHectares.toFixed(2)} hectares`;
+  }
+
+  if (typeof areaM2 === "number" && Number.isFinite(areaM2)) {
+    return `About ${Math.round(areaM2).toLocaleString()} m²`;
+  }
+
+  return "Unknown affected area";
+}
+
+function formatThresholdRaw(threshold: unknown): string {
+  const value = typeof threshold === "number" ? threshold : Number(threshold);
+  return Number.isFinite(value) ? value.toExponential(1) : "—";
+}
+
+function formatMaxRaw(maxValue: unknown): string {
+  const value = typeof maxValue === "number" ? maxValue : Number(maxValue);
+  return Number.isFinite(value) ? value.toExponential(3) : "—";
+}
+
+function getCoverageText(
+  selected: SelectedFeatureState,
+  explanationPayload: ForecastExplanation | null
+): string {
+  const kind = selected.properties?.kind;
+  const summary = explanationPayload?.summary;
+
+  if (!summary) {
+    const cellCount = selected.properties?.cell_count;
+    const count = typeof cellCount === "number" ? cellCount : Number(cellCount);
+
+    if (!Number.isFinite(count)) {
+      return "Unknown footprint";
+    }
+
+    if (count <= 25) return "Very small local footprint";
+    if (count <= 100) return "Small local footprint";
+    if (count <= 250) return "Moderate footprint";
+    if (count <= 500) return "Large footprint";
+    return "Very large footprint";
+  }
+
+  if (kind === "plume_band_high") {
+    return `${formatArea(summary.affected_area_m2, summary.affected_area_hectares)} in the strongest plume core`;
+  }
+
+  if (kind === "plume_band_medium") {
+    return `${formatArea(summary.affected_area_m2, summary.affected_area_hectares)} across the main affected zone`;
+  }
+
+  if (kind === "plume_band_low") {
+    return `${formatArea(summary.affected_area_m2, summary.affected_area_hectares)} including the weaker outer edge`;
+  }
+
+  return formatArea(summary.affected_area_m2, summary.affected_area_hectares);
+}
+
 function getDetailRows(
-  selected: SelectedFeatureState
+  selected: SelectedFeatureState,
+  explanationPayload: ForecastExplanation | null
 ): Array<{ label: string; value: string }> {
   const properties = selected.properties ?? {};
   const kind = properties.kind;
@@ -69,14 +172,14 @@ function getDetailRows(
     const emissionsRate = properties.emissions_rate;
     return [
       {
-        label: "Kind",
-        value: "Point source"
+        label: "Type",
+        value: "Release origin"
       },
       {
-        label: "Emission rate",
+        label: "Emission level",
         value:
           typeof emissionsRate === "number" || typeof emissionsRate === "string"
-            ? String(emissionsRate)
+            ? `${emissionsRate} units`
             : "Unknown"
       }
     ];
@@ -88,30 +191,20 @@ function getDetailRows(
     kind === "plume_band_high"
   ) {
     const threshold = properties.threshold;
-    const cellCount = properties.cell_count;
     const maxValue = properties.max_value;
 
     return [
       {
-        label: "Threshold",
-        value:
-          typeof threshold === "number" || typeof threshold === "string"
-            ? String(threshold)
-            : "Unknown"
+        label: "Detection level",
+        value: getThresholdLabel(threshold)
       },
       {
-        label: "Active cells",
-        value:
-          typeof cellCount === "number" || typeof cellCount === "string"
-            ? String(cellCount)
-            : "Unknown"
+        label: "Coverage",
+        value: getCoverageText(selected, explanationPayload)
       },
       {
-        label: "Max value",
-        value:
-          typeof maxValue === "number" || typeof maxValue === "string"
-            ? String(maxValue)
-            : "Unknown"
+        label: "Strength",
+        value: getStrengthLabel(maxValue)
       }
     ];
   }
@@ -119,8 +212,8 @@ function getDetailRows(
   if (kind === "forecast_extent") {
     return [
       {
-        label: "Kind",
-        value: "Reference domain"
+        label: "Type",
+        value: "Forecast reference domain"
       }
     ];
   }
@@ -133,13 +226,76 @@ function getDetailRows(
     }));
 }
 
+function getRawRows(
+  selected: SelectedFeatureState,
+  explanationPayload: ForecastExplanation | null
+): Array<{ label: string; value: string }> {
+  const properties = selected.properties ?? {};
+  const kind = properties.kind;
+
+  if (
+    kind === "plume_band_low" ||
+    kind === "plume_band_medium" ||
+    kind === "plume_band_high"
+  ) {
+    const summary = explanationPayload?.summary;
+
+    return [
+      {
+        label: "Threshold",
+        value: formatThresholdRaw(properties.threshold)
+      },
+      {
+        label: "Active cells",
+        value:
+          typeof properties.cell_count === "number" || typeof properties.cell_count === "string"
+            ? String(properties.cell_count)
+            : "—"
+      },
+      {
+        label: "Peak value",
+        value: formatMaxRaw(properties.max_value)
+      },
+      {
+        label: "Affected area (m²)",
+        value:
+          summary && Number.isFinite(summary.affected_area_m2)
+            ? Math.round(summary.affected_area_m2).toLocaleString()
+            : "—"
+      },
+      {
+        label: "Affected area (ha)",
+        value:
+          summary && Number.isFinite(summary.affected_area_hectares)
+            ? summary.affected_area_hectares.toFixed(2)
+            : "—"
+      }
+    ];
+  }
+
+  if (kind === "source") {
+    return [
+      {
+        label: "Emission rate",
+        value:
+          typeof properties.emissions_rate === "number" || typeof properties.emissions_rate === "string"
+            ? String(properties.emissions_rate)
+            : "—"
+      }
+    ];
+  }
+
+  return [];
+}
+
 export function DetailDrawer({
   selected,
   explanationPayload,
   explanationSource
 }: DetailDrawerProps) {
   const prettySource = formatExplanationSource(explanationSource);
-  const detailRows = selected ? getDetailRows(selected) : [];
+  const detailRows = selected ? getDetailRows(selected, explanationPayload) : [];
+  const rawRows = selected ? getRawRows(selected, explanationPayload) : [];
   const explanationText = explanationPayload?.explanation.summary ?? "No explanation loaded.";
   const recommendation = explanationPayload?.explanation.recommendation ?? null;
   const uncertainty = explanationPayload?.explanation.uncertainty_note ?? null;
@@ -157,9 +313,7 @@ export function DetailDrawer({
 
         {risk ? (
           <div className="detail-inline-meta">
-            <span className="detail-chip">
-              Risk: {risk}
-            </span>
+            <span className="detail-chip">Risk: {risk}</span>
           </div>
         ) : null}
 
@@ -201,6 +355,20 @@ export function DetailDrawer({
                 </div>
               ))}
             </dl>
+
+            {rawRows.length > 0 ? (
+              <details className="raw-details">
+                <summary>Technical values</summary>
+                <dl className="detail-list">
+                  {rawRows.map((row) => (
+                    <div key={row.label} className="detail-list-row">
+                      <dt>{row.label}</dt>
+                      <dd>{row.value}</dd>
+                    </div>
+                  ))}
+                </dl>
+              </details>
+            ) : null}
           </div>
         )}
       </div>

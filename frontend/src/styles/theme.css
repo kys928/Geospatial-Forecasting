@@ -255,11 +255,8 @@ input {
   border: 1px solid #bbf7d0;
 }
 
-.severity-moderate {
-  background: #fff7ed;
-  color: #b45309;
-  border: 1px solid #fed7aa;
-}
+
+
 
 .severity-high {
   background: #fef2f2;

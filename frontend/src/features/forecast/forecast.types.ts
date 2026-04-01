@@ -1,7 +1,6 @@
 export type ApiMode = "mock" | "live";
 export type ScenarioMockVariant = "default" | "urban" | "industrial";
 export type ScenarioPreset = ScenarioMockVariant;
-export type ThresholdPreset = "1e-6" | "1e-5" | "1e-4";
 
 export interface DemoScenario {
   id: string;
@@ -9,7 +8,6 @@ export interface DemoScenario {
   latitude: number;
   longitude: number;
   emissionsRate: number;
-  threshold?: ThresholdPreset;
   severity?: "low" | "moderate" | "high";
   notes?: string;
   mockVariant?: ScenarioMockVariant;
@@ -17,7 +15,6 @@ export interface DemoScenario {
 
 export interface ForecastRunRequest {
   scenario: DemoScenario;
-  threshold: ThresholdPreset;
 }
 
 export type MockForecastRequest = ForecastRunRequest;
@@ -36,6 +33,8 @@ export interface ForecastExplanationSummary {
   max_concentration: number;
   mean_concentration: number;
   affected_cells_above_threshold: number;
+  affected_area_m2: number;
+  affected_area_hectares: number;
   dominant_spread_direction: string;
   threshold_used: number;
   note: string | null;
