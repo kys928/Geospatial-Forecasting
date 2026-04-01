@@ -36,7 +36,7 @@ def test_api_yaml_loads_into_llmconfig(tmp_path: Path):
 def test_llmservice_uses_configured_model_provider_and_timeout(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     payload = {
         "enabled": True,
-        "provider": "huggingface",
+        "provider": "hf-inference",
         "model": "meta-llama/Llama-3.2-3B-Instruct",
         "forecast_summary_only": True,
         "timeout_seconds": 12,
@@ -59,7 +59,7 @@ def test_llmservice_uses_configured_model_provider_and_timeout(tmp_path: Path, m
 
     assert len(constructor_calls) == 1
     assert constructor_calls[0]["model"] == "meta-llama/Llama-3.2-3B-Instruct"
-    assert constructor_calls[0]["provider"] == "huggingface"
+    assert constructor_calls[0]["provider"] == "hf-inference"
     assert constructor_calls[0]["token"] == "test-token"
     assert constructor_calls[0]["timeout"] == 12
 
