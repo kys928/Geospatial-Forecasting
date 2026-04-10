@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from math import cos, radians
 
@@ -7,6 +8,8 @@ import numpy as np
 
 from plume.schemas.ForecastSummary import ForecastSummary
 from plume.services.llm_service import LLMService
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -133,17 +136,10 @@ class ExplainService:
             llm_result = self.llm_service.interpret_forecast(summary)
 
             if llm_result.success:
-                print(
-                    "[explain] LLM success:",
-                    {
-                        "provider": llm_result.provider,
-                        "model": llm_result.model,
-                        "summary": llm_result.summary,
-                        "risk_level": llm_result.risk_level,
-                        "recommendation": llm_result.recommendation,
-                        "uncertainty_note": llm_result.uncertainty_note,
-                        "error": llm_result.error,
-                    },
+                logger.info(
+                    "LLM interpretation succeeded (provider=%s, model=%s)",
+                    llm_result.provider,
+                    llm_result.model,
                 )
                 return ExplanationResult(
                     summary=summary,
@@ -156,14 +152,11 @@ class ExplainService:
                     used_llm=True,
                 )
 
-            print(
-                "[explain] LLM failed, using fallback:",
-                {
-                    "provider": llm_result.provider,
-                    "model": llm_result.model,
-                    "error": llm_result.error,
-                    "raw_text": llm_result.raw_text,
-                },
+            logger.warning(
+                "LLM interpretation failed, using fallback (provider=%s, model=%s, error=%s)",
+                llm_result.provider,
+                llm_result.model,
+                llm_result.error,
             )
 
         return ExplanationResult(
