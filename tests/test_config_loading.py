@@ -129,6 +129,23 @@ def test_load_llm_config_returns_valid_llmconfig(tmp_path: Path):
     assert llm_config.timeout_seconds == 20
 
 
+def test_load_backend_returns_valid_backend_config(tmp_path: Path):
+    backend_payload = {
+        "default_backend": "mock_online",
+        "fallback_backend": "gaussian_fallback",
+        "state_store": "in_memory",
+        "max_recent_observations": 250,
+        "auto_update_on_ingest": True,
+    }
+    _write_yaml(tmp_path / "backend.yaml", backend_payload)
+
+    backend = Config(config_dir=tmp_path).load_backend()
+
+    assert backend["default_backend"] == "mock_online"
+    assert backend["fallback_backend"] == "gaussian_fallback"
+    assert backend["state_store"] == "in_memory"
+
+
 def test_load_inference_fails_when_plot_enabled_missing(tmp_path: Path):
     malformed_payload = {
         "mode": "local_demo",

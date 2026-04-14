@@ -6,6 +6,9 @@ from plume.services.explain_service import ExplainService
 from plume.services.export_service import ExportService
 from plume.services.forecast_service import ForecastService
 from plume.services.llm_service import LLMService
+from plume.services.online_forecast_service import OnlineForecastService
+from plume.state.base import BaseStateStore
+from plume.state.in_memory import InMemoryStateStore
 from plume.utils.config import Config
 
 
@@ -15,6 +18,17 @@ def get_config(config_dir: str | None = None):
 
 def get_forecast_service(config_dir: str | None = None):
     return ForecastService(config=get_config(config_dir=config_dir))
+
+
+def get_state_store() -> BaseStateStore:
+    return InMemoryStateStore()
+
+
+def get_online_forecast_service(config_dir: str | None = None) -> OnlineForecastService:
+    return OnlineForecastService(
+        config=get_config(config_dir=config_dir),
+        state_store=get_state_store(),
+    )
 
 
 def get_explain_service(config_dir: str | None = None):

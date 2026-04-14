@@ -1,61 +1,56 @@
 # Architecture
 
 ## Purpose and current state
-This repository is an early proof-of-concept for geospatial forecasting of airborne hazard dispersion. The currently implemented model path is a Gaussian plume baseline.
+This repository is an early proof-of-concept for airborne hazard dispersion forecasting. It now separates:
 
-The codebase now supports both:
-- a local script-driven workflow, and
-- a backend-first HTTP/JSON boundary for running and retrieving forecasts.
+- **Batch forecasting** (one-off Gaussian baseline runs), and
+- **Online backend runtime flow** (session/state lifecycle).
 
-It is still **not** a production atmospheric dispersion platform.
+The project remains non-production and intentionally lightweight.
 
-## Backend-first layering (implemented)
-The current Python backend follows a layered separation:
+## Layered architecture
 
 1. **Forecasting core** (`src/plume/models`, `src/plume/inference`, `src/plume/schemas`)
-   - Numeric model implementation (`GaussianPlume`)
-   - Validation and grid preparation (`Validator`, `GridBuilder`, `InferenceEngine`)
-   - Core dataclasses (`Scenario`, `GridSpec`, `Forecast`)
+   - Numeric/model logic and canonical data structures.
+   - No HTTP concerns.
 
-2. **Service layer** (`src/plume/services`)
-   - `ForecastService` orchestrates model+engine execution and returns a canonical `ForecastRunResult`
-   - `ExplainService` builds deterministic summary/explanation output and can optionally call `LLMService`
-   - `ExportService` delegates format conversion to adapters and writes GeoJSON files
+2. **Backend runtimes** (`src/plume/backends`)
+   - `BaseBackend` defines runtime interface.
+   - `MockOnlineBackend` simulates online behavior (ingest/update/predict).
+   - `GaussianFallbackBackend` wraps existing Gaussian plume path as interchangeable fallback backend.
 
-3. **Export adapters** (`src/plume/adapters`)
-   - `geojson.py` translates forecasts into a GeoJSON-like `FeatureCollection`
-   - `raster.py` translates forecasts into lightweight raster metadata
-   - `openremote.py` translates forecasts into a provisional generic integration payload
+3. **State layer** (`src/plume/state`)
+   - `BaseStateStore` abstraction.
+   - `InMemoryStateStore` process-local session/state persistence.
 
-4. **HTTP API boundary** (`src/plume/api`)
-   - FastAPI app exposes the current baseline over HTTP/JSON
-   - Route handlers are intentionally thin and rely on service-layer calls
-   - Created forecasts are stored in-memory in the app process
+4. **Service layer** (`src/plume/services`)
+   - `OnlineForecastService`: session lifecycle, ingest, update, predict orchestration via backend + state store.
+   - `ForecastService`: batch one-off forecast path retained for current scripts and batch API routes.
+   - `ExplainService` and `ExportService`: unchanged responsibility for explanation/export concerns.
 
-5. **Thin scripts** (`scripts`)
-   - Local CLI-style entry points that call the service layer
-   - No duplicated forecasting logic in scripts
+5. **HTTP API** (`src/plume/api`)
+   - Thin FastAPI route handlers.
+   - Session lifecycle endpoints delegate to `OnlineForecastService`.
+   - Batch endpoints remain available and isolated from online runtime concerns.
 
-## Implemented execution paths
+## Session lifecycle
 
-### A) Local script path
-- `scripts/run_local_inference.py` runs the baseline via core inference path.
-- `scripts/run_demo_forecast.py` runs via `ForecastService` and prints a readable summary.
-- `scripts/export_geojson.py` runs a forecast and writes a GeoJSON artifact.
-- `scripts/seed_demo_data.py` writes deterministic mock payloads for local/demo use.
+Online flow:
+1. Create session (`POST /sessions`), selecting backend runtime.
+2. Ingest observations (`POST /sessions/{id}/observations`).
+3. Trigger state updates (`POST /sessions/{id}/update`) or rely on auto-update-on-ingest config.
+4. Request prediction (`POST /sessions/{id}/predict`).
+5. Inspect state summary (`GET /sessions/{id}/state`).
 
-### B) HTTP API path
-- `src/plume/api/main.py` creates a FastAPI app exposing health, capabilities, forecast creation, and retrieval/export endpoints.
-- The API currently supports the Gaussian plume baseline only.
+This creates a practical online-backend skeleton without adding external infra.
 
-## Data/export boundary notes
-- Core forecast objects remain internal Python dataclasses/NumPy arrays.
-- External payloads are produced through adapters (`geojson`, `raster`, `openremote`) to avoid coupling export shapes to core model objects.
-- The OpenRemote payload is intentionally documented as a **provisional generic translation**, not a validated upstream schema contract.
+## Why this separation
 
-## Scope and limitations
-- Forecast results are in-memory only (no persistence layer).
-- No authentication/authorization layer in the API.
-- No frontend coupling in backend services.
-- No live OpenRemote client/auth/session integration in the adapter.
-- Gaussian plume baseline is simplified and intended for local validation, not full atmospheric realism.
+The Gaussian plume baseline remains useful, but the architecture now centers on backend runtime and state lifecycle rather than a single batch inference path. This makes future backend evolution possible while preserving current batch behavior.
+
+## Scope boundaries
+
+- No databases/Redis/background workers/WebSockets.
+- No live OpenRemote integration client.
+- No claim of full online learning yet.
+- OpenRemote payload remains a provisional generic translation.
