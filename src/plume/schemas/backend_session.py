@@ -13,3 +13,6 @@ class BackendSession:
     created_at: datetime
     updated_at: datetime
     metadata: dict[str, object] = field(default_factory=dict)
+    last_error: str | None = None
+    capabilities: dict[str, object] = field(default_factory=dict)
+    runtime_metadata: dict[str, object] = field(default_factory=dict)

@@ -12,3 +12,6 @@ class UpdateResult:
     state_version: int
     message: str
     metadata: dict[str, object] = field(default_factory=dict)
+    previous_state_version: int | None = None
+    observation_count: int | None = None
+    changed: bool = True

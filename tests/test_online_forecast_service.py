@@ -18,9 +18,10 @@ def test_online_service_create_session():
     session = service.create_session(backend_name="mock_online")
 
     assert session.backend_name == "mock_online"
+    assert session.status == "created"
 
 
-def test_online_service_ingest_update_predict():
+def test_online_service_ingest_update_predict_returns_forecast_run_result_compatible_shape():
     service = OnlineForecastService(config=Config(), state_store=InMemoryStateStore())
     session = service.create_session(backend_name="mock_online")
 
@@ -43,6 +44,9 @@ def test_online_service_ingest_update_predict():
 
     assert state.observation_count == 1
     assert update_result.success is True
+    assert prediction.forecast_id == session.session_id
+    assert prediction.execution_metadata["path"] == "online"
+    assert prediction.summary_statistics.keys() >= {"max_concentration", "mean_concentration"}
     assert prediction.forecast.concentration_grid.shape == (
         prediction.forecast.grid_spec.number_of_rows,
         prediction.forecast.grid_spec.number_of_columns,

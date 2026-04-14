@@ -14,6 +14,7 @@ def _observation_payload() -> dict:
         "longitude": 5.1215,
         "value": 11.0,
         "source_type": "sensor",
+        "pollutant_type": "SMOKE",
     }
 
 
@@ -49,7 +50,34 @@ def test_online_session_lifecycle_endpoints():
 
     state_response = client.get(f"/sessions/{session_id}/state")
     assert state_response.status_code == 200
-    assert state_response.json()["session_id"] == session_id
+    state_json = state_response.json()
+    assert state_json["session_id"] == session_id
+    assert state_json["backend_name"] == "mock_online"
+
+
+def test_state_store_persists_session_across_requests_same_app_lifetime():
+    app = create_app()
+    client = TestClient(app)
+
+    created = client.post("/sessions", json={"backend_name": "mock_online"}).json()
+    session_id = created["session_id"]
+
+    second_request = client.get(f"/sessions/{session_id}")
+    assert second_request.status_code == 200
+    assert second_request.json()["session_id"] == session_id
+
+
+def test_online_observation_validation_errors_return_400():
+    app = create_app()
+    client = TestClient(app)
+    session_id = client.post("/sessions", json={"backend_name": "mock_online"}).json()["session_id"]
+
+    response = client.post(
+        f"/sessions/{session_id}/observations",
+        json={"observations": [{"latitude": 999, "longitude": 5.0, "value": 1.0, "source_type": "sensor"}]},
+    )
+
+    assert response.status_code == 400
 
 
 def test_online_session_404_for_missing_session():

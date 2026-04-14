@@ -1,26 +1,27 @@
 # Geospatial Forecasting
 
 ## Overview
-Geospatial Forecasting is an early proof-of-concept Python project for airborne hazard dispersion forecasting. The system now supports both:
+Geospatial Forecasting is an early proof-of-concept Python project for airborne hazard dispersion forecasting. The system supports both:
 
 - **Batch one-off forecasting** (Gaussian plume baseline), and
 - **Online backend session workflows** (runtime/session/state skeleton).
 
-This is **not** a production atmospheric dispersion platform, and online learning is **not** implemented yet.
+This is **not** a production atmospheric dispersion platform, and real online learning is **not** implemented yet.
 
 ## Architecture direction (current)
 
-The architecture is now centered on backend runtime behavior and session lifecycle:
+The architecture is centered on backend runtime behavior and session lifecycle:
 
 - `src/plume/backends`: runtime backend interface + implementations
   - `mock_online` backend for online skeleton behavior
   - `gaussian_fallback` backend wrapping Gaussian plume as fallback
 - `src/plume/state`: state-store abstraction and in-memory implementation
 - `src/plume/services/online_forecast_service.py`: session, ingest, update, predict orchestration
+- `src/plume/services/observation_service.py`: observation validation/normalization boundary
 - `src/plume/services/forecast_service.py`: batch one-off forecasting service (legacy path preserved)
 - `src/plume/api`: thin FastAPI routes for both batch and online session APIs
 
-Gaussian plume remains available, but now as a **fallback backend path**, not the architectural center.
+Gaussian plume remains available as the baseline and fallback runtime path.
 
 ## What is implemented now
 
@@ -33,10 +34,30 @@ Gaussian plume remains available, but now as a **fallback backend path**, not th
 ### Online backend skeleton
 - Backend abstraction (`BaseBackend`)
 - Session/state schemas (`BackendSession`, `BackendState`, observation/prediction/update schemas)
-- In-memory state store (`InMemoryStateStore`)
+- In-memory state store (`InMemoryStateStore`), process-lifetime singleton in API wiring
 - `MockOnlineBackend` with deterministic hotspot-style grid prediction
 - `GaussianFallbackBackend` wrapping existing Gaussian logic
 - Online service orchestration (`OnlineForecastService`)
+
+### Session lifecycle semantics
+Session statuses are explicit and lightweight:
+- `created` on session creation
+- `active` after observation ingest
+- `updated` after explicit/update-on-ingest update
+- `predicting` during prediction
+- `idle` after successful prediction
+- `error` if prediction fails
+
+### Observation validation and normalization
+`ObservationService` enforces a clean ingestion boundary:
+- timestamp required and ISO-8601 parseable
+- latitude in `[-90, 90]`
+- longitude in `[-180, 180]`
+- value numeric, non-NaN, non-negative
+- `source_type` required non-empty string
+- optional `pollutant_type` normalized to lowercase
+- `metadata` normalized to `{}`
+- batch observations sorted by timestamp ascending
 
 ### API surface
 Existing batch endpoints remain:
@@ -48,7 +69,7 @@ Existing batch endpoints remain:
 - `GET /forecast/{forecast_id}/geojson`
 - `GET /forecast/{forecast_id}/raster-metadata`
 
-New online endpoints:
+Online endpoints:
 - `POST /sessions`
 - `GET /sessions`
 - `GET /sessions/{session_id}`
@@ -86,11 +107,25 @@ python scripts/export_geojson.py
 python scripts/seed_demo_data.py
 ```
 
-## Run API
+## Run API only
 
 ```bash
 uvicorn plume.api.main:app --reload
 ```
+
+## Run backend + frontend (one command)
+
+From repo root:
+
+```bash
+python scripts/start_dev.py
+```
+
+This launches:
+- backend: `uvicorn plume.api.main:app --reload`
+- frontend: `npm run dev` in `frontend/`
+
+The script fails fast if the frontend directory is missing.
 
 See `docs/api-contract.md` for response examples.
 
@@ -101,7 +136,7 @@ pytest
 ```
 
 ## Current limitations
-- Online backend is a mock skeleton (no real online training)
+- Online backend is still a skeleton (no real online training)
 - State store is process-local in-memory only
 - No auth or persistence layer
 - OpenRemote adapter is a **provisional generic payload translation** only (not validated contract, not live integration)

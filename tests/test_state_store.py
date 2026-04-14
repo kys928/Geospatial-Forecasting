@@ -13,7 +13,7 @@ def _sample_session(session_id: str) -> BackendSession:
         session_id=session_id,
         backend_name="mock_online",
         model_name=None,
-        status="active",
+        status="created",
         created_at=now,
         updated_at=now,
         metadata={},
@@ -51,6 +51,17 @@ def test_in_memory_save_and_get_state():
     store.save_state("s1", state)
 
     assert store.get_state("s1").state_version == 2
+
+
+def test_in_memory_save_session_updates_record():
+    store = InMemoryStateStore()
+    session = _sample_session("s1")
+    store.create_session(session, _sample_state("s1"))
+
+    session.status = "updated"
+    store.save_session(session)
+
+    assert store.get_session("s1").status == "updated"
 
 
 def test_in_memory_list_sessions():

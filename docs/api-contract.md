@@ -6,7 +6,7 @@ This document describes the currently implemented FastAPI contract in `src/plume
 - Protocol: HTTP/JSON
 - Storage model:
   - Batch forecast responses: in-memory dict in API process
-  - Online sessions/states: in-memory state store
+  - Online sessions/states: singleton in-memory state store in API process
 - Backends:
   - Batch path: Gaussian plume baseline
   - Online path: `mock_online` (default), `gaussian_fallback`
@@ -27,7 +27,7 @@ This document describes the currently implemented FastAPI contract in `src/plume
 }
 ```
 
-## Batch endpoints (unchanged)
+## Batch endpoints
 
 - `POST /forecast`
 - `GET /forecast/{forecast_id}`
@@ -61,10 +61,13 @@ Response (200):
   "session_id": "uuid",
   "backend_name": "mock_online",
   "model_name": "optional-model-name",
-  "status": "active",
+  "status": "created",
   "created_at": "2026-04-14T12:00:00+00:00",
   "updated_at": "2026-04-14T12:00:00+00:00",
-  "metadata": {"site": "demo"}
+  "metadata": {"site": "demo"},
+  "last_error": null,
+  "capabilities": {"supports_online_updates": true},
+  "runtime_metadata": {}
 }
 ```
 
@@ -80,15 +83,26 @@ Returns a single session record.
 ```
 
 ### `GET /sessions/{session_id}/state`
-Returns backend state summary:
+Returns backend state summary, including backend/session ids, observation counters, timestamps, state/internal summaries, and backend limitations.
+
+Example:
 ```json
 {
+  "backend_name": "mock_online",
   "session_id": "uuid",
   "observation_count": 3,
   "state_version": 4,
-  "last_update_time": "2026-04-14T12:01:00+00:00",
+  "timestamps": {
+    "last_update_time": "2026-04-14T12:01:00+00:00",
+    "last_ingest_time": "2026-04-14T12:00:40+00:00",
+    "last_observation_time": "2026-04-14T12:00:39+00:00",
+    "last_prediction_time": "2026-04-14T12:01:00+00:00"
+  },
+  "status_message": "prediction generated",
   "internal_state": {"center_lat": 52.09, "center_lon": 5.12},
-  "recent_observations": 3
+  "recent_observations": 3,
+  "capabilities": {"supports_online_updates": true},
+  "limitations": "Mock backend; no true online training is performed"
 }
 ```
 
@@ -112,10 +126,27 @@ Request body:
 }
 ```
 
-Response includes state counters and optional auto-update result.
+Validation behavior:
+- `timestamp` required and parseable
+- latitude range `[-90, 90]`
+- longitude range `[-180, 180]`
+- numeric non-NaN non-negative value
+- required non-empty `source_type`
+- optional `pollutant_type` normalized to lowercase
+- `metadata` defaults to `{}`
+- observations sorted by timestamp in a batch
+
+Invalid payloads return HTTP 400.
 
 ### `POST /sessions/{session_id}/update`
 Manually triggers backend update.
+
+Response includes:
+- `previous_state_version`
+- new `state_version`
+- `observation_count`
+- `changed`
+- `metadata`
 
 ### `POST /sessions/{session_id}/predict`
 Requests prediction for a session.
@@ -132,5 +163,5 @@ Response shape follows the existing summary response style used by batch forecas
 
 - Missing sessions return HTTP 404.
 - Malformed observation/prediction payloads return HTTP 400.
-- Online backend currently simulates runtime behavior; it is not a full online training implementation.
+- Online backends currently simulate runtime behavior; this is not real online learning.
 - OpenRemote adapter remains a provisional generic payload translation only.

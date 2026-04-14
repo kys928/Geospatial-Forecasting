@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from dataclasses import replace
-from datetime import datetime
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -12,9 +11,6 @@ from plume.api.deps import (
     get_forecast_service,
     get_online_forecast_service,
 )
-from plume.schemas.observation import Observation
-from plume.schemas.observation_batch import ObservationBatch
-from plume.schemas.prediction_request import PredictionRequest
 
 
 def _build_scenario_from_payload(forecast_service, payload: dict | None):
@@ -46,24 +42,19 @@ def _build_scenario_from_payload(forecast_service, payload: dict | None):
     )
 
 
-def _build_observation(observation_payload: dict) -> Observation:
-    timestamp_raw = observation_payload.get("timestamp")
-    if timestamp_raw is None:
-        raise HTTPException(status_code=400, detail="Each observation requires timestamp")
-    if isinstance(timestamp_raw, str):
-        timestamp = datetime.fromisoformat(timestamp_raw.replace("Z", "+00:00"))
-    else:
-        timestamp = timestamp_raw
-
-    return Observation(
-        timestamp=timestamp,
-        latitude=float(observation_payload["latitude"]),
-        longitude=float(observation_payload["longitude"]),
-        value=float(observation_payload["value"]),
-        source_type=str(observation_payload["source_type"]),
-        pollutant_type=observation_payload.get("pollutant_type"),
-        metadata=observation_payload.get("metadata") or {},
-    )
+def _session_response(session) -> dict[str, object]:
+    return {
+        "session_id": session.session_id,
+        "backend_name": session.backend_name,
+        "model_name": session.model_name,
+        "status": session.status,
+        "created_at": session.created_at.isoformat(),
+        "updated_at": session.updated_at.isoformat(),
+        "metadata": session.metadata,
+        "last_error": session.last_error,
+        "capabilities": session.capabilities,
+        "runtime_metadata": session.runtime_metadata,
+    }
 
 
 def create_app() -> FastAPI:
@@ -198,31 +189,12 @@ def create_app() -> FastAPI:
             model_name=payload.get("model_name"),
             metadata=payload.get("metadata") or {},
         )
-        return {
-            "session_id": session.session_id,
-            "backend_name": session.backend_name,
-            "model_name": session.model_name,
-            "status": session.status,
-            "created_at": session.created_at.isoformat(),
-            "updated_at": session.updated_at.isoformat(),
-            "metadata": session.metadata,
-        }
+        return _session_response(session)
 
     @app.get("/sessions")
     def list_sessions():
         sessions = online_forecast_service.list_sessions()
-        return [
-            {
-                "session_id": session.session_id,
-                "backend_name": session.backend_name,
-                "model_name": session.model_name,
-                "status": session.status,
-                "created_at": session.created_at.isoformat(),
-                "updated_at": session.updated_at.isoformat(),
-                "metadata": session.metadata,
-            }
-            for session in sessions
-        ]
+        return [_session_response(session) for session in sessions]
 
     @app.get("/sessions/{session_id}")
     def get_session(session_id: str):
@@ -230,16 +202,7 @@ def create_app() -> FastAPI:
             session = online_forecast_service.get_session(session_id)
         except KeyError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
-
-        return {
-            "session_id": session.session_id,
-            "backend_name": session.backend_name,
-            "model_name": session.model_name,
-            "status": session.status,
-            "created_at": session.created_at.isoformat(),
-            "updated_at": session.updated_at.isoformat(),
-            "metadata": session.metadata,
-        }
+        return _session_response(session)
 
     @app.get("/sessions/{session_id}/state")
     def get_session_state(session_id: str):
@@ -252,18 +215,12 @@ def create_app() -> FastAPI:
     def ingest_observations(session_id: str, payload: dict):
         observations_payload = payload.get("observations", [])
         try:
-            observations = [_build_observation(obs) for obs in observations_payload]
-        except KeyError as exc:
-            raise HTTPException(status_code=400, detail=f"Missing observation field: {exc}") from exc
-        except (TypeError, ValueError) as exc:
-            raise HTTPException(status_code=400, detail=f"Invalid observation payload: {exc}") from exc
-
-        try:
-            state = online_forecast_service.ingest_observations(
-                ObservationBatch(session_id=session_id, observations=observations)
-            )
+            batch = online_forecast_service.normalize_observation_batch(session_id, observations_payload)
+            state = online_forecast_service.ingest_observations(batch)
         except KeyError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail=f"Invalid observation payload: {exc}") from exc
 
         update_result = None
         if bool(backend_config.get("auto_update_on_ingest", True)):
@@ -281,6 +238,7 @@ def create_app() -> FastAPI:
                 "updated_at": update_result.updated_at.isoformat(),
                 "state_version": update_result.state_version,
                 "message": update_result.message,
+                "changed": update_result.changed,
             },
         }
 
@@ -298,31 +256,15 @@ def create_app() -> FastAPI:
             "state_version": result.state_version,
             "message": result.message,
             "metadata": result.metadata,
+            "previous_state_version": result.previous_state_version,
+            "observation_count": result.observation_count,
+            "changed": result.changed,
         }
 
     @app.post("/sessions/{session_id}/predict")
     def predict_session(session_id: str, payload: dict | None = None):
-        payload = payload or {}
-        scenario_payload = payload.get("scenario")
-        grid_payload = payload.get("grid_spec")
-
-        scenario = None
-        grid_spec = None
         try:
-            if scenario_payload is not None:
-                scenario = _build_scenario_from_payload(forecast_service, scenario_payload)
-            if grid_payload is not None:
-                grid_spec = forecast_service.config.load_grid()
-                for key, value in grid_payload.items():
-                    setattr(grid_spec, key, tuple(value) if key in {"grid_center", "boundary_limits"} else value)
-
-            request = PredictionRequest(
-                session_id=session_id,
-                scenario=scenario,
-                grid_spec=grid_spec,
-                horizon_seconds=payload.get("horizon_seconds"),
-                metadata=payload.get("metadata") or {},
-            )
+            request = online_forecast_service.build_prediction_request(session_id=session_id, payload=payload)
             result = online_forecast_service.predict(request)
         except KeyError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc

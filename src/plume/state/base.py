@@ -16,6 +16,10 @@ class BaseStateStore(ABC):
         raise NotImplementedError
 
     @abstractmethod
+    def save_session(self, session: BackendSession) -> None:
+        raise NotImplementedError
+
+    @abstractmethod
     def get_state(self, session_id: str) -> BackendState | None:
         raise NotImplementedError
 
