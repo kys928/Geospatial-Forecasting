@@ -41,3 +41,9 @@ class Config:
         with base_yaml.open("r", encoding="utf-8") as f:
             base = yaml.safe_load(f)
         return Base(**base)
+
+    def load_backend(self) -> dict[str, object]:
+        backend_yaml = self.config_dir / "backend.yaml"
+        with backend_yaml.open("r", encoding="utf-8") as f:
+            backend = yaml.safe_load(f)
+        return backend
