@@ -14,3 +14,8 @@ class BackendState:
     state_version: int
     internal_state: dict[str, object] = field(default_factory=dict)
     recent_observations: list[Observation] = field(default_factory=list)
+    last_prediction_time: datetime | None = None
+    last_ingest_time: datetime | None = None
+    last_observation_time: datetime | None = None
+    status_message: str = "initialized"
+    metadata: dict[str, object] = field(default_factory=dict)

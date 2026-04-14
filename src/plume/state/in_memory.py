@@ -17,6 +17,10 @@ class InMemoryStateStore(BaseStateStore):
     def get_session(self, session_id: str) -> BackendSession | None:
         return self._sessions.get(session_id)
 
+    def save_session(self, session: BackendSession) -> None:
+        if session.session_id in self._sessions:
+            self._sessions[session.session_id] = session
+
     def get_state(self, session_id: str) -> BackendState | None:
         return self._states.get(session_id)
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import datetime, timezone
 from uuid import uuid4
 
@@ -34,24 +35,33 @@ class MockOnlineBackend(BaseBackend):
         return BackendSession(
             session_id=str(uuid4()),
             backend_name="mock_online",
-            model_name=model_name,
-            status="active",
+            model_name=model_name or "mock_online_model",
+            status="created",
             created_at=now,
             updated_at=now,
             metadata=metadata or {},
+            capabilities={
+                "supports_online_updates": True,
+                "supports_observation_conditioned_prediction": True,
+            },
+            runtime_metadata={"backend_limitations": "Deterministic mock backend for development/testing"},
         )
 
     def initialize_state(self, session: BackendSession) -> BackendState:
+        now = datetime.now(timezone.utc)
         return BackendState(
             session_id=session.session_id,
-            last_update_time=datetime.now(timezone.utc),
+            last_update_time=now,
             observation_count=0,
             state_version=0,
             internal_state={},
             recent_observations=[],
+            status_message="session initialized",
+            metadata={"backend_name": "mock_online", "capabilities": session.capabilities},
         )
 
     def ingest_observations(self, state: BackendState, batch: ObservationBatch) -> BackendState:
+        now = datetime.now(timezone.utc)
         merged = [*state.recent_observations, *batch.observations]
         recent = merged[-self.max_recent_observations :]
 
@@ -62,13 +72,16 @@ class MockOnlineBackend(BaseBackend):
             internal_state["center_lon"] = center_lon
             internal_state["mean_value"] = mean_value
 
-        return BackendState(
-            session_id=state.session_id,
-            last_update_time=datetime.now(timezone.utc),
+        return replace(
+            state,
+            last_update_time=now,
             observation_count=state.observation_count + len(batch.observations),
             state_version=state.state_version + 1,
             internal_state=internal_state,
             recent_observations=recent,
+            last_ingest_time=now,
+            last_observation_time=max(obs.timestamp for obs in batch.observations),
+            status_message="observations ingested",
         )
 
     def update_state(self, state: BackendState) -> UpdateResult:
@@ -77,8 +90,11 @@ class MockOnlineBackend(BaseBackend):
             success=True,
             updated_at=datetime.now(timezone.utc),
             state_version=state.state_version + 1,
+            previous_state_version=state.state_version,
+            observation_count=state.observation_count,
+            changed=state.observation_count > 0,
             message="Mock online state updated",
-            metadata={"observation_count": state.observation_count},
+            metadata={"observation_count": state.observation_count, "backend_name": "mock_online"},
         )
 
     def predict(self, state: BackendState, request: PredictionRequest) -> Forecast:
@@ -94,12 +110,21 @@ class MockOnlineBackend(BaseBackend):
 
     def summarize_state(self, state: BackendState) -> dict[str, object]:
         return {
+            "backend_name": "mock_online",
             "session_id": state.session_id,
             "observation_count": state.observation_count,
             "state_version": state.state_version,
-            "last_update_time": state.last_update_time.isoformat(),
+            "timestamps": {
+                "last_update_time": state.last_update_time.isoformat(),
+                "last_ingest_time": state.last_ingest_time.isoformat() if state.last_ingest_time else None,
+                "last_observation_time": state.last_observation_time.isoformat() if state.last_observation_time else None,
+                "last_prediction_time": state.last_prediction_time.isoformat() if state.last_prediction_time else None,
+            },
+            "status_message": state.status_message,
             "internal_state": state.internal_state,
             "recent_observations": len(state.recent_observations),
+            "capabilities": state.metadata.get("capabilities", {}),
+            "limitations": "Mock backend; no true online training is performed",
         }
 
     def _resolve_grid_spec(self, request: PredictionRequest) -> GridSpec:
