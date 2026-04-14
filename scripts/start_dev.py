@@ -1,13 +1,14 @@
 from __future__ import annotations
 
+import os
 import signal
 import subprocess
 import sys
 from pathlib import Path
 
 
-def _start_process(cmd: list[str], cwd: Path) -> subprocess.Popen:
-    return subprocess.Popen(cmd, cwd=str(cwd))
+def _start_process(cmd: list[str], cwd: Path, env: dict[str, str] | None = None) -> subprocess.Popen:
+    return subprocess.Popen(cmd, cwd=str(cwd), env=env)
 
 
 def main() -> int:
@@ -18,13 +19,20 @@ def main() -> int:
         print(f"Frontend directory missing: {frontend_dir}", file=sys.stderr)
         return 1
 
-    backend_cmd = ["uvicorn", "plume.api.main:app", "--reload"]
-    frontend_cmd = ["npm", "run", "dev"]
+    env = os.environ.copy()
+    src_path = str(repo_root / "src")
+    existing = env.get("PYTHONPATH", "")
+    env["PYTHONPATH"] = src_path if not existing else src_path + os.pathsep + existing
+
+    npm_executable = "npm.cmd" if os.name == "nt" else "npm"
+
+    backend_cmd = [sys.executable, "-m", "uvicorn", "plume.api.main:app", "--reload"]
+    frontend_cmd = [npm_executable, "run", "dev"]
 
     processes: list[subprocess.Popen] = []
     try:
-        processes.append(_start_process(backend_cmd, repo_root))
-        processes.append(_start_process(frontend_cmd, frontend_dir))
+        processes.append(_start_process(backend_cmd, repo_root, env=env))
+        processes.append(_start_process(frontend_cmd, frontend_dir, env=env))
 
         def _shutdown(*_: object) -> None:
             for process in processes:
