@@ -4,14 +4,14 @@ from dataclasses import asdict, is_dataclass
 from typing import Any, Iterable
 from urllib.parse import quote
 
-from src.plume.openremote.builders import (
+from plume.openremote.builders import (
     build_forecast_run_asset_payload,
     build_hazard_source_asset_payload,
     build_sensor_asset_payload,
     build_sensor_observation_write,
     build_zone_predicted_concentration_write, build_forecast_zone_asset_payload,
 )
-from src.plume.openremote.models import (
+from plume.openremote.models import (
     AlertLevel,
     ForecastRunAssetModel,
     ForecastRunStatus,
@@ -21,7 +21,7 @@ from src.plume.openremote.models import (
     QualityFlag,
     SensorAssetModel,
 )
-from src.plume.openremote.sink import OpenRemoteResultSink
+from plume.openremote.sink import OpenRemoteResultSink
 
 
 class OpenRemotePublishingService:
@@ -348,7 +348,7 @@ class OpenRemotePublishingService:
         if not boundary_limits or len(boundary_limits) != 4:
             return None
 
-        from src.plume.openremote.models import BoundingBox
+        from plume.openremote.models import BoundingBox
 
         min_lat, max_lat, min_lon, max_lon = boundary_limits
         return BoundingBox(

@@ -1,8 +1,13 @@
 from __future__ import annotations
 
 from functools import lru_cache
+import os
 from pathlib import Path
+from typing import Any
 
+from plume.openremote.fake_sink import InMemoryOpenRemoteResultSink
+from plume.openremote.publishing_service import OpenRemotePublishingService
+from plume.openremote.sink import HttpOpenRemoteResultSink, OpenRemoteResultSink
 from plume.services.explain_service import ExplainService
 from plume.services.export_service import ExportService
 from plume.services.forecast_service import ForecastService
@@ -57,3 +62,81 @@ def get_explain_service(config_dir: str | None = None):
 
 def get_export_service():
     return ExportService()
+
+
+def _env_enabled(name: str, default: bool) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def load_openremote_settings(config_dir: str | None = None) -> dict[str, object]:
+    config = get_config(config_dir=config_dir)
+    settings = dict(config.load_openremote())
+
+    settings["enabled"] = _env_enabled("PLUME_OPENREMOTE_ENABLED", bool(settings.get("enabled", False)))
+    settings["sink_mode"] = os.getenv("PLUME_OPENREMOTE_SINK_MODE", str(settings.get("sink_mode", "disabled")))
+    settings["base_url"] = os.getenv("PLUME_OPENREMOTE_BASE_URL", str(settings.get("base_url", "")))
+    settings["realm"] = os.getenv("PLUME_OPENREMOTE_REALM", str(settings.get("realm") or ""))
+    settings["site_asset_id"] = os.getenv("PLUME_OPENREMOTE_SITE_ASSET_ID", str(settings.get("site_asset_id") or ""))
+    settings["parent_asset_id"] = os.getenv(
+        "PLUME_OPENREMOTE_PARENT_ASSET_ID",
+        str(settings.get("parent_asset_id") or ""),
+    )
+    settings["geojson_public_base_url"] = os.getenv(
+        "PLUME_OPENREMOTE_GEOJSON_PUBLIC_BASE_URL",
+        str(settings.get("geojson_public_base_url") or ""),
+    )
+
+    token_env_var = os.getenv(
+        "PLUME_OPENREMOTE_ACCESS_TOKEN_ENV_VAR",
+        str(settings.get("access_token_env_var", "OPENREMOTE_ACCESS_TOKEN")),
+    )
+    settings["access_token_env_var"] = token_env_var
+    settings["access_token"] = os.getenv(token_env_var)
+    return settings
+
+
+def get_openremote_publishing_runtime(config_dir: str | None = None) -> dict[str, Any]:
+    settings = load_openremote_settings(config_dir=config_dir)
+    enabled = bool(settings.get("enabled", False))
+    sink_mode = str(settings.get("sink_mode", "disabled")).strip().lower()
+    runtime: dict[str, Any] = {
+        "enabled": enabled,
+        "sink_mode": sink_mode,
+        "service": None,
+        "error": None,
+        "settings": settings,
+    }
+
+    if not enabled or sink_mode == "disabled":
+        return runtime
+
+    if sink_mode == "fake":
+        sink: OpenRemoteResultSink = InMemoryOpenRemoteResultSink()
+    elif sink_mode == "http":
+        base_url = str(settings.get("base_url", "")).strip()
+        access_token = settings.get("access_token")
+        if not base_url:
+            runtime["error"] = "OpenRemote HTTP sink requires a non-empty base_url"
+            return runtime
+        if not access_token:
+            runtime["error"] = (
+                "OpenRemote HTTP sink requires access token env var "
+                f"{settings.get('access_token_env_var', 'OPENREMOTE_ACCESS_TOKEN')}"
+            )
+            return runtime
+        sink = HttpOpenRemoteResultSink(base_url=base_url, access_token=str(access_token))
+    else:
+        runtime["error"] = f"Unsupported OpenRemote sink_mode: {sink_mode}"
+        return runtime
+
+    runtime["service"] = OpenRemotePublishingService(
+        sink=sink,
+        realm=str(settings.get("realm") or "") or None,
+        default_site_asset_id=str(settings.get("site_asset_id") or "") or None,
+        default_site_parent_id=str(settings.get("parent_asset_id") or "") or None,
+        geojson_base_url=str(settings.get("geojson_public_base_url") or "") or None,
+    )
+    return runtime
