@@ -146,6 +146,14 @@ def test_load_backend_returns_valid_backend_config(tmp_path: Path):
     assert backend["state_store"] == "in_memory"
 
 
+def test_load_openremote_returns_defaults_when_missing(tmp_path: Path):
+    openremote = Config(config_dir=tmp_path).load_openremote()
+
+    assert openremote["enabled"] is False
+    assert openremote["sink_mode"] == "disabled"
+    assert openremote["access_token_env_var"] == "OPENREMOTE_ACCESS_TOKEN"
+
+
 def test_load_inference_fails_when_plot_enabled_missing(tmp_path: Path):
     malformed_payload = {
         "mode": "local_demo",

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from src.plume.openremote.models import ProjectAssetType
+from plume.openremote.models import ProjectAssetType
 
 ASSET_TYPE_SITE = ProjectAssetType.SITE.value
 ASSET_TYPE_HAZARD_SOURCE = ProjectAssetType.HAZARD_SOURCE.value
