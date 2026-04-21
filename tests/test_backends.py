@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 
 import pytest
 
+from plume.backends.convlstm_backend import ConvLSTMBackend
 from plume.backends.gaussian_fallback_backend import GaussianFallbackBackend
 from plume.backends.mock_online_backend import MockOnlineBackend
 from plume.schemas.observation import Observation
@@ -15,6 +16,7 @@ from plume.utils.config import Config
 @pytest.mark.parametrize(
     "backend_cls,backend_name",
     [
+        (ConvLSTMBackend, "convlstm_online"),
         (MockOnlineBackend, "mock_online"),
         (GaussianFallbackBackend, "gaussian_fallback"),
     ],

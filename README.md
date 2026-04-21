@@ -13,15 +13,16 @@ This is **not** a production atmospheric dispersion platform, and real online le
 The architecture is centered on backend runtime behavior and session lifecycle:
 
 - `src/plume/backends`: runtime backend interface + implementations
-  - `mock_online` backend for online skeleton behavior
+  - `convlstm_online` backend as the primary online runtime path
   - `gaussian_fallback` backend wrapping Gaussian plume as fallback
+  - `mock_online` retained as legacy/dev scaffolding
 - `src/plume/state`: state-store abstraction and in-memory implementation
 - `src/plume/services/online_forecast_service.py`: session, ingest, update, predict orchestration
 - `src/plume/services/observation_service.py`: observation validation/normalization boundary
 - `src/plume/services/forecast_service.py`: batch one-off forecasting service (legacy path preserved)
 - `src/plume/api`: thin FastAPI routes for both batch and online session APIs
 
-Gaussian plume remains available as the baseline and fallback runtime path.
+Gaussian plume remains available as the baseline batch model and online fallback path.
 
 ## What is implemented now
 
@@ -35,8 +36,9 @@ Gaussian plume remains available as the baseline and fallback runtime path.
 - Backend abstraction (`BaseBackend`)
 - Session/state schemas (`BackendSession`, `BackendState`, observation/prediction/update schemas)
 - In-memory state store (`InMemoryStateStore`), process-lifetime singleton in API wiring
-- `MockOnlineBackend` with deterministic hotspot-style grid prediction
+- `ConvLSTMBackend` primary online path (random/untrained demo weights currently)
 - `GaussianFallbackBackend` wrapping existing Gaussian logic
+- `MockOnlineBackend` retained for legacy/dev testing
 - Online service orchestration (`OnlineForecastService`)
 
 ### Session lifecycle semantics
@@ -155,7 +157,8 @@ pytest
 ```
 
 ## Current limitations
-- Online backend is still a skeleton (no real online training)
+- ConvLSTM online path currently runs inference with random/untrained demo weights unless trained weights are wired in
+- Online backend does not implement gradient-based online training
 - State store is process-local in-memory only
 - No auth or persistence layer
 - OpenRemote adapter is a **provisional generic payload translation** only (not validated contract, not live integration)

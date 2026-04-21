@@ -131,7 +131,7 @@ def test_load_llm_config_returns_valid_llmconfig(tmp_path: Path):
 
 def test_load_backend_returns_valid_backend_config(tmp_path: Path):
     backend_payload = {
-        "default_backend": "mock_online",
+        "default_backend": "convlstm_online",
         "fallback_backend": "gaussian_fallback",
         "state_store": "in_memory",
         "max_recent_observations": 250,
@@ -141,7 +141,7 @@ def test_load_backend_returns_valid_backend_config(tmp_path: Path):
 
     backend = Config(config_dir=tmp_path).load_backend()
 
-    assert backend["default_backend"] == "mock_online"
+    assert backend["default_backend"] == "convlstm_online"
     assert backend["fallback_backend"] == "gaussian_fallback"
     assert backend["state_store"] == "in_memory"
 

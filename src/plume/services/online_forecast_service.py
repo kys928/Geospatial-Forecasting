@@ -7,6 +7,7 @@ from plume.backends.registry import build_backend
 from plume.inference.postprocessor import ForecastPostprocessor
 from plume.schemas.backend_session import BackendSession
 from plume.schemas.backend_state import BackendState
+from plume.schemas.forecast import Forecast
 from plume.schemas.observation_batch import ObservationBatch
 from plume.schemas.prediction_request import PredictionRequest
 from plume.schemas.update_result import UpdateResult
@@ -102,18 +103,26 @@ class OnlineForecastService:
         self._update_session_status(
             session,
             status="updated",
-            runtime_metadata={"last_operation": "update", "update_changed": update_result.changed},
+            runtime_metadata={
+                "last_operation": "update",
+                "update_changed": update_result.changed,
+                "update_message": update_result.message,
+                "update_metadata": update_result.metadata,
+            },
         )
         return update_result
 
     def predict(self, request: PredictionRequest) -> ForecastRunResult:
         session = self.get_session(request.session_id)
         state = self._get_state(request.session_id)
-        backend = build_backend(name=session.backend_name, config=self.config)
 
         self._update_session_status(session, status="predicting", runtime_metadata={"last_operation": "predict"})
         try:
-            forecast = backend.predict(state=state, request=request)
+            forecast, execution_backend_name, fallback_metadata = self._predict_with_optional_fallback(
+                session=session,
+                state=state,
+                request=request,
+            )
         except Exception as exc:
             self._update_session_status(session, status="error", last_error=str(exc))
             raise
@@ -130,6 +139,8 @@ class OnlineForecastService:
             runtime_metadata={
                 "last_operation": "predict",
                 "last_prediction_time": now.isoformat(),
+                "effective_backend_name": execution_backend_name,
+                **fallback_metadata,
             },
         )
 
@@ -137,7 +148,7 @@ class OnlineForecastService:
         return ForecastRunResult(
             forecast_id=request.session_id,
             issued_at=now,
-            model_name=session.model_name or session.backend_name,
+            model_name=session.model_name or execution_backend_name,
             model_version=None,
             forecast=forecast,
             summary_statistics=summary_statistics,
@@ -145,9 +156,64 @@ class OnlineForecastService:
                 "path": "online",
                 "session_id": session.session_id,
                 "backend_name": session.backend_name,
+                "primary_backend_name": session.backend_name,
+                "effective_backend_name": execution_backend_name,
+                "fallback_used": bool(fallback_metadata.get("fallback_used", False)),
+                "fallback_backend_name": fallback_metadata.get("fallback_backend_name"),
+                "fallback_reason": fallback_metadata.get("fallback_reason"),
                 "request_metadata": request.metadata,
             },
         )
+
+    def _predict_with_optional_fallback(
+        self,
+        *,
+        session: BackendSession,
+        state: BackendState,
+        request: PredictionRequest,
+    ) -> tuple[Forecast, str, dict[str, object]]:
+        primary_backend_name = session.backend_name
+        supports_gaussian_fallback = primary_backend_name == "convlstm_online"
+        fallback_backend_name = str(self.config.load_backend().get("fallback_backend", "gaussian_fallback"))
+
+        primary_backend = None
+        primary_error: Exception | None = None
+        try:
+            primary_backend = build_backend(name=primary_backend_name, config=self.config)
+        except Exception as exc:
+            primary_error = exc
+
+        if primary_backend is not None:
+            try:
+                forecast = primary_backend.predict(state=state, request=request)
+                return forecast, primary_backend_name, {
+                    "fallback_used": False,
+                    "primary_backend_name": primary_backend_name,
+                    "fallback_backend_name": None,
+                    "fallback_reason": None,
+                }
+            except Exception as exc:
+                primary_error = exc
+
+        if not supports_gaussian_fallback or primary_error is None:
+            if primary_error is not None:
+                raise primary_error
+            raise RuntimeError("Prediction failed without an explicit backend error")
+
+        try:
+            fallback_backend = build_backend(name=fallback_backend_name, config=self.config)
+            forecast = fallback_backend.predict(state=state, request=request)
+            return forecast, fallback_backend_name, {
+                "fallback_used": True,
+                "primary_backend_name": primary_backend_name,
+                "fallback_backend_name": fallback_backend_name,
+                "fallback_reason": str(primary_error),
+            }
+        except Exception as fallback_exc:
+            raise RuntimeError(
+                "ConvLSTM prediction failed and gaussian fallback also failed: "
+                f"primary_error={primary_error}; fallback_error={fallback_exc}"
+            ) from fallback_exc
 
     def get_state_summary(self, session_id: str) -> dict[str, object]:
         session = self.get_session(session_id)
