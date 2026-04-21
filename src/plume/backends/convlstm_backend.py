@@ -4,14 +4,13 @@ from dataclasses import replace
 from datetime import datetime, timezone
 from uuid import uuid4
 
-import numpy as np
-
+from plume.adapters.convlstm_input_adapter import ConvLSTMInputAdapter
 from plume.backends.base import BaseBackend
+from plume.models.convlstm import MinimalConvLSTMModel
 from plume.schemas.backend_session import BackendSession
 from plume.schemas.backend_state import BackendState
 from plume.schemas.forecast import Forecast
 from plume.schemas.grid import GridSpec
-from plume.schemas.observation import Observation
 from plume.schemas.observation_batch import ObservationBatch
 from plume.schemas.prediction_request import PredictionRequest
 from plume.schemas.scenario import Scenario
@@ -19,34 +18,45 @@ from plume.schemas.update_result import UpdateResult
 from plume.utils.config import Config
 
 
-class MockOnlineBackend(BaseBackend):
-    """Legacy/dev backend retained for deterministic local testing."""
-
+class ConvLSTMBackend(BaseBackend):
     def __init__(self, config: Config):
         self.config = config
         self.backend_config = self.config.load_backend()
         self.max_recent_observations = int(self.backend_config.get("max_recent_observations", 500))
+        self.sequence_length = int(self.backend_config.get("convlstm_sequence_length", 4))
+        self.input_channels = int(self.backend_config.get("convlstm_input_channels", 1))
+        hidden_channels = int(self.backend_config.get("convlstm_hidden_channels", 8))
+        seed = int(self.backend_config.get("convlstm_random_seed", 7))
+        self.input_adapter = ConvLSTMInputAdapter(
+            sequence_length=self.sequence_length,
+            input_channels=self.input_channels,
+        )
+        self.model = MinimalConvLSTMModel(
+            input_channels=self.input_channels,
+            hidden_channels=hidden_channels,
+            seed=seed,
+        )
 
-    def create_session(
-        self,
-        *,
-        model_name: str | None = None,
-        metadata: dict[str, object] | None = None,
-    ) -> BackendSession:
+    def create_session(self, *, model_name: str | None = None, metadata: dict[str, object] | None = None) -> BackendSession:
         now = datetime.now(timezone.utc)
         return BackendSession(
             session_id=str(uuid4()),
-            backend_name="mock_online",
-            model_name=model_name or "mock_online_model",
+            backend_name="convlstm_online",
+            model_name=model_name or "convlstm_random_init",
             status="created",
             created_at=now,
             updated_at=now,
             metadata=metadata or {},
             capabilities={
-                "supports_online_updates": True,
+                "supports_online_updates": False,
                 "supports_observation_conditioned_prediction": True,
             },
-            runtime_metadata={"backend_limitations": "Deterministic mock backend for development/testing"},
+            runtime_metadata={
+                "backend_limitations": (
+                    "ConvLSTM runs inference with current state; "
+                    "gradient-based online training is not implemented."
+                )
+            },
         )
 
     def initialize_state(self, session: BackendSession) -> BackendState:
@@ -56,30 +66,31 @@ class MockOnlineBackend(BaseBackend):
             last_update_time=now,
             observation_count=0,
             state_version=0,
-            internal_state={},
+            internal_state={
+                "model_name": session.model_name or "convlstm_random_init",
+                "sequence_length": self.sequence_length,
+                "expected_input_shape": (self.sequence_length, self.input_channels, 0, 0),
+                "buffered_observation_count": 0,
+                "last_update_mode": "state_refresh_only",
+            },
             recent_observations=[],
             status_message="session initialized",
-            metadata={"backend_name": "mock_online", "capabilities": session.capabilities},
+            metadata={"backend_name": "convlstm_online", "capabilities": session.capabilities},
         )
 
     def ingest_observations(self, state: BackendState, batch: ObservationBatch) -> BackendState:
         now = datetime.now(timezone.utc)
-        merged = [*state.recent_observations, *batch.observations]
-        recent = merged[-self.max_recent_observations :]
-
-        internal_state = {**state.internal_state, "last_ingest_count": len(batch.observations)}
-        center_lat, center_lon, mean_value = self._estimate_center(recent)
-        if center_lat is not None and center_lon is not None:
-            internal_state["center_lat"] = center_lat
-            internal_state["center_lon"] = center_lon
-            internal_state["mean_value"] = mean_value
-
+        recent = [*state.recent_observations, *batch.observations][-self.max_recent_observations :]
         return replace(
             state,
             last_update_time=now,
             observation_count=state.observation_count + len(batch.observations),
             state_version=state.state_version + 1,
-            internal_state=internal_state,
+            internal_state={
+                **state.internal_state,
+                "last_ingest_count": len(batch.observations),
+                "buffered_observation_count": len(recent),
+            },
             recent_observations=recent,
             last_ingest_time=now,
             last_observation_time=max(obs.timestamp for obs in batch.observations),
@@ -94,15 +105,18 @@ class MockOnlineBackend(BaseBackend):
             state_version=state.state_version + 1,
             previous_state_version=state.state_version,
             observation_count=state.observation_count,
-            changed=state.observation_count > 0,
-            message="Mock online state updated",
-            metadata={"observation_count": state.observation_count, "backend_name": "mock_online"},
+            changed=False,
+            message="ConvLSTM state refreshed; online training is not implemented",
+            metadata={"backend_name": "convlstm_online", "update_mode": "state_refresh_only"},
         )
 
     def predict(self, state: BackendState, request: PredictionRequest) -> Forecast:
         scenario = self._resolve_scenario(request)
         grid_spec = self._resolve_grid_spec(request)
-        concentration_grid = self._build_concentration_grid(state.recent_observations, grid_spec)
+        adapter_result = self.input_adapter.prepare(state=state, scenario=scenario, grid_spec=grid_spec)
+        state.internal_state["expected_input_shape"] = adapter_result.tensor.shape
+        state.internal_state["last_input_adapter_metadata"] = adapter_result.metadata
+        concentration_grid = self.model.forward(adapter_result.tensor)
         return Forecast(
             concentration_grid=concentration_grid,
             timestamp=datetime.now(timezone.utc),
@@ -112,7 +126,7 @@ class MockOnlineBackend(BaseBackend):
 
     def summarize_state(self, state: BackendState) -> dict[str, object]:
         return {
-            "backend_name": "mock_online",
+            "backend_name": "convlstm_online",
             "session_id": state.session_id,
             "observation_count": state.observation_count,
             "state_version": state.state_version,
@@ -126,7 +140,7 @@ class MockOnlineBackend(BaseBackend):
             "internal_state": state.internal_state,
             "recent_observations": len(state.recent_observations),
             "capabilities": state.metadata.get("capabilities", {}),
-            "limitations": "Mock backend; no true online training is performed",
+            "limitations": "No gradient-based online learning; inference with current state only",
         }
 
     def _resolve_grid_spec(self, request: PredictionRequest) -> GridSpec:
@@ -134,47 +148,3 @@ class MockOnlineBackend(BaseBackend):
 
     def _resolve_scenario(self, request: PredictionRequest) -> Scenario:
         return request.scenario or self.config.load_scenario()
-
-    def _estimate_center(self, observations: list[Observation]) -> tuple[float | None, float | None, float]:
-        if not observations:
-            return None, None, 0.0
-
-        weights = np.array([max(obs.value, 0.0) for obs in observations], dtype=float)
-        if float(weights.sum()) <= 0.0:
-            weights = np.ones(len(observations), dtype=float)
-
-        lats = np.array([obs.latitude for obs in observations], dtype=float)
-        lons = np.array([obs.longitude for obs in observations], dtype=float)
-        values = np.array([obs.value for obs in observations], dtype=float)
-        return (
-            float(np.average(lats, weights=weights)),
-            float(np.average(lons, weights=weights)),
-            float(values.mean()),
-        )
-
-    def _build_concentration_grid(self, observations: list[Observation], grid_spec: GridSpec) -> np.ndarray:
-        rows = grid_spec.number_of_rows
-        cols = grid_spec.number_of_columns
-        grid = np.zeros((rows, cols), dtype=float)
-        if not observations:
-            return grid
-
-        center_lat, center_lon, mean_value = self._estimate_center(observations)
-        if center_lat is None or center_lon is None:
-            return grid
-
-        min_lat, max_lat, min_lon, max_lon = grid_spec.boundary_limits
-        lat_axis = np.linspace(min_lat, max_lat, rows)
-        lon_axis = np.linspace(min_lon, max_lon, cols)
-        lon_mesh, lat_mesh = np.meshgrid(lon_axis, lat_axis)
-
-        lat_std = max((max_lat - min_lat) / 6.0, 1e-6)
-        lon_std = max((max_lon - min_lon) / 6.0, 1e-6)
-        amplitude = max(mean_value, 1e-9)
-
-        return amplitude * np.exp(
-            -(
-                ((lat_mesh - center_lat) ** 2) / (2 * lat_std**2)
-                + ((lon_mesh - center_lon) ** 2) / (2 * lon_std**2)
-            )
-        )

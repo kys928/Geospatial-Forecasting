@@ -90,7 +90,7 @@ def create_app() -> FastAPI:
     def capabilities():
         return {
             "model": ["gaussian_plume"],
-            "backends": ["mock_online", "gaussian_fallback"],
+            "backends": ["convlstm_online", "gaussian_fallback", "mock_online"],
             "exports": [
                 "summary",
                 "geojson",
@@ -216,7 +216,7 @@ def create_app() -> FastAPI:
     @app.post("/sessions")
     def create_session(payload: dict | None = None):
         payload = payload or {}
-        backend_name = payload.get("backend_name") or backend_config.get("default_backend", "mock_online")
+        backend_name = payload.get("backend_name") or backend_config.get("default_backend", "convlstm_online")
         session = online_forecast_service.create_session(
             backend_name=str(backend_name),
             model_name=payload.get("model_name"),

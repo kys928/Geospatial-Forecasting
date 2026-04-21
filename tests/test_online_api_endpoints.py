@@ -2,9 +2,13 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
+import numpy as np
 from fastapi.testclient import TestClient
 
 from plume.api.main import create_app
+from plume.schemas.backend_session import BackendSession
+from plume.schemas.backend_state import BackendState
+from plume.schemas.forecast import Forecast
 
 
 def _observation_payload() -> dict:
@@ -87,3 +91,95 @@ def test_online_session_404_for_missing_session():
     response = client.get("/sessions/does-not-exist")
 
     assert response.status_code == 404
+
+
+def test_create_session_defaults_to_convlstm_online():
+    app = create_app()
+    client = TestClient(app)
+
+    response = client.post("/sessions", json={})
+
+    assert response.status_code == 200
+    assert response.json()["backend_name"] == "convlstm_online"
+
+
+def test_capabilities_lists_convlstm_first_and_mock_legacy():
+    app = create_app()
+    client = TestClient(app)
+
+    response = client.get("/capabilities")
+
+    assert response.status_code == 200
+    backends = response.json()["backends"]
+    assert backends[0] == "convlstm_online"
+    assert "gaussian_fallback" in backends
+    assert "mock_online" in backends
+
+
+def test_online_predict_endpoint_with_convlstm_shape_flows_to_summary(monkeypatch):
+    class FakeConvLSTMBackend:
+        def create_session(self, *, model_name=None, metadata=None):
+            now = datetime.now(timezone.utc)
+            return BackendSession(
+                session_id="session-conv-api",
+                backend_name="convlstm_online",
+                model_name=model_name or "convlstm_random_init",
+                status="created",
+                created_at=now,
+                updated_at=now,
+                metadata=metadata or {},
+            )
+
+        def initialize_state(self, session):
+            return BackendState(
+                session_id=session.session_id,
+                last_update_time=datetime.now(timezone.utc),
+                observation_count=0,
+                state_version=0,
+            )
+
+        def predict(self, state, request):
+            from plume.utils.config import Config
+
+            config = Config()
+            grid = config.load_grid()
+            scenario = config.load_scenario()
+            return Forecast(
+                concentration_grid=np.ones((grid.number_of_rows, grid.number_of_columns), dtype=float),
+                timestamp=datetime.now(timezone.utc),
+                scenario=scenario,
+                grid_spec=grid,
+            )
+
+        def ingest_observations(self, state, batch):
+            return state
+
+        def update_state(self, state):
+            from plume.schemas.update_result import UpdateResult
+
+            return UpdateResult(
+                session_id=state.session_id,
+                success=True,
+                updated_at=datetime.now(timezone.utc),
+                state_version=state.state_version + 1,
+                message="state refreshed",
+                changed=False,
+            )
+
+        def summarize_state(self, state):
+            return {"session_id": state.session_id, "backend_name": "convlstm_online"}
+
+    monkeypatch.setattr(
+        "plume.services.online_forecast_service.build_backend",
+        lambda name, config: FakeConvLSTMBackend(),
+    )
+
+    app = create_app()
+    client = TestClient(app)
+
+    session_id = client.post("/sessions", json={"backend_name": "convlstm_online"}).json()["session_id"]
+    predict_response = client.post(f"/sessions/{session_id}/predict", json={})
+
+    assert predict_response.status_code == 200
+    assert predict_response.json()["forecast_id"] == session_id
+    assert predict_response.json()["grid"]["rows"] > 0
