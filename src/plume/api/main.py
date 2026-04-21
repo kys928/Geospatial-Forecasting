@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from dataclasses import replace
 
 from fastapi import FastAPI, HTTPException
@@ -9,6 +10,7 @@ from plume.api.deps import (
     get_explain_service,
     get_export_service,
     get_forecast_service,
+    get_openremote_publishing_runtime,
     get_online_forecast_service,
 )
 
@@ -76,6 +78,7 @@ def create_app() -> FastAPI:
     explain_service = get_explain_service()
     export_service = get_export_service()
     backend_config = forecast_service.config.load_backend()
+    app.state.openremote_publishing_runtime = get_openremote_publishing_runtime()
 
     store: dict[str, object] = {}
 
@@ -108,10 +111,40 @@ def create_app() -> FastAPI:
             run_name=payload.get("run_name"),
         )
         store[result.forecast_id] = result
-        return {
+        response = {
             "forecast_id": result.forecast_id,
             "issued_at": result.issued_at.isoformat(),
         }
+        publishing_runtime = getattr(app.state, "openremote_publishing_runtime", None) or {}
+        if not publishing_runtime.get("enabled", False):
+            response["publishing"] = {"enabled": False, "status": "disabled"}
+            return response
+
+        publishing_service = publishing_runtime.get("service")
+        if publishing_service is None:
+            response["publishing"] = {
+                "enabled": True,
+                "status": "failed",
+                "error": publishing_runtime.get("error")
+                or "OpenRemote publishing is enabled but no publishing service is configured",
+            }
+            return response
+
+        try:
+            publish_result = asyncio.run(publishing_service.publish_forecast_result(result))
+            response["publishing"] = {
+                "enabled": True,
+                "status": "succeeded",
+                "source_asset_id": publish_result.get("source_asset_id"),
+                "forecast_asset_id": publish_result.get("forecast_asset_id"),
+            }
+        except Exception as exc:
+            response["publishing"] = {
+                "enabled": True,
+                "status": "failed",
+                "error": str(exc),
+            }
+        return response
 
     @app.get("/forecast/{forecast_id}")
     def get_forecast(forecast_id: str):

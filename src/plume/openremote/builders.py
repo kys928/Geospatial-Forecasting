@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from src.plume.openremote.constants import *
-from src.plume.openremote.models import (
+from plume.openremote.constants import *
+from plume.openremote.models import (
     HazardSourceAssetModel,
     SensorAssetModel,
     ForecastRunAssetModel,
@@ -213,7 +213,7 @@ def build_zone_predicted_concentration_write(
     """
     datapoints: list[(timestamp, value)]
     """
-    from src.plume.openremote.models import ORPredictedDatapoint
+    from plume.openremote.models import ORPredictedDatapoint
 
     return ORPredictedDatapointWrite(
         asset_id=asset_id,

@@ -1,0 +1,8 @@
+enabled: false
+sink_mode: disabled
+base_url: ""
+realm: null
+site_asset_id: null
+parent_asset_id: null
+geojson_public_base_url: null
+access_token_env_var: OPENREMOTE_ACCESS_TOKEN

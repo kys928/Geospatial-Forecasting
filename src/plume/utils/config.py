@@ -47,3 +47,24 @@ class Config:
         with backend_yaml.open("r", encoding="utf-8") as f:
             backend = yaml.safe_load(f)
         return backend
+
+    def load_openremote(self) -> dict[str, object]:
+        openremote_yaml = self.config_dir / "openremote.yaml"
+        if openremote_yaml.exists():
+            with openremote_yaml.open("r", encoding="utf-8") as f:
+                openremote = yaml.safe_load(f) or {}
+        else:
+            openremote = {}
+
+        defaults: dict[str, object] = {
+            "enabled": False,
+            "sink_mode": "disabled",
+            "base_url": "",
+            "realm": None,
+            "site_asset_id": None,
+            "parent_asset_id": None,
+            "geojson_public_base_url": None,
+            "access_token_env_var": "OPENREMOTE_ACCESS_TOKEN",
+        }
+        defaults.update(openremote)
+        return defaults

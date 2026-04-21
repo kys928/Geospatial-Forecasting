@@ -87,6 +87,25 @@ Backend/session behavior is configured in `configs/backend.yaml`:
 - `max_recent_observations`
 - `auto_update_on_ingest`
 
+OpenRemote publishing behavior is configured in `configs/openremote.yaml` (or env overrides):
+
+- `enabled`
+- `sink_mode` (`disabled`, `fake`, `http`)
+- `base_url`
+- `realm`
+- `site_asset_id`
+- `parent_asset_id`
+- `geojson_public_base_url`
+- `access_token_env_var` (name of env var containing token)
+
+`POST /forecast` always stores the forecast locally first, then publishes if enabled. A `publishing` field in the response reports `disabled`, `succeeded`, or `failed`.
+
+### OpenRemote demo modes
+
+- **Disabled mode (safe default)**: no publish attempt.
+- **Fake mode (recommended for demos)**: publishes to in-memory sink with no network dependency.
+- **HTTP mode (live)**: uses real HTTP calls; if token/base URL is missing or request fails, forecast creation still succeeds and response reports publish failure.
+
 ## Installation
 Use Python 3.11.
 
@@ -140,3 +159,4 @@ pytest
 - State store is process-local in-memory only
 - No auth or persistence layer
 - OpenRemote adapter is a **provisional generic payload translation** only (not validated contract, not live integration)
+- OpenRemote HTTP endpoint shapes can vary by deployed OpenRemote version; timestamped/predicted routes may need minor path adjustments for a target instance
