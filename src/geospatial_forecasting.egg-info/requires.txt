@@ -1,0 +1,12 @@
+huggingface_hub<1.0,>=0.27
+matplotlib<4.0,>=3.8
+numpy<3.0,>=1.26
+openai<2.0,>=1.30
+pyproj<4.0,>=3.6
+PyYAML<7.0,>=6.0
+fastapi<1.0,>=0.111
+httpx<1.0,>=0.27
+
+[test]
+pytest<9.0,>=8.0
+httpx<1.0,>=0.27
