@@ -8,6 +8,17 @@ from uuid import uuid4
 from plume.adapters.convlstm_input_adapter import ConvLSTMInputAdapter
 from plume.backends.base import BaseBackend
 from plume.models.convlstm import MinimalConvLSTMModel
+from plume.models.convlstm_contract import (
+    CONVLSTM_CHANNEL_MANIFEST,
+    CONVLSTM_CONTRACT_VERSION,
+    CONVLSTM_GRID_HEIGHT,
+    CONVLSTM_GRID_WIDTH,
+    CONVLSTM_INPUT_CHANNELS,
+    CONVLSTM_NORMALIZATION_MODE,
+    CONVLSTM_SEQUENCE_LENGTH,
+    CONVLSTM_TEMPORAL_PATTERN,
+    CONVLSTM_TEMPORAL_SPACING,
+)
 from plume.schemas.backend_session import BackendSession
 from plume.schemas.backend_state import BackendState
 from plume.schemas.forecast import Forecast
@@ -24,13 +35,17 @@ class ConvLSTMBackend(BaseBackend):
         self.config = config
         self.backend_config = self.config.load_backend()
         self.max_recent_observations = int(self.backend_config.get("max_recent_observations", 500))
-        self.sequence_length = int(self.backend_config.get("convlstm_sequence_length", 4))
-        self.input_channels = int(self.backend_config.get("convlstm_input_channels", 1))
+        self.sequence_length = self._require_contract_value("convlstm_sequence_length", CONVLSTM_SEQUENCE_LENGTH)
+        self.input_channels = self._require_contract_value("convlstm_input_channels", CONVLSTM_INPUT_CHANNELS)
         hidden_channels = int(self.backend_config.get("convlstm_hidden_channels", 8))
         seed = int(self.backend_config.get("convlstm_random_seed", 7))
+        self.input_mode = str(self.backend_config.get("convlstm_input_mode", "degraded")).strip().lower()
+        if self.input_mode not in {"strict", "degraded"}:
+            raise ValueError(f"Unsupported convlstm_input_mode: {self.input_mode}")
         self.input_adapter = ConvLSTMInputAdapter(
             sequence_length=self.sequence_length,
             input_channels=self.input_channels,
+            input_mode=self.input_mode,
         )
         self.model = MinimalConvLSTMModel(
             input_channels=self.input_channels,
@@ -55,6 +70,14 @@ class ConvLSTMBackend(BaseBackend):
             "load_status": "not_attempted",
         }
         self._initialize_model_weights()
+
+
+    def _require_contract_value(self, key: str, expected: int) -> int:
+        configured = self.backend_config.get(key, expected)
+        value = int(configured)
+        if value != expected:
+            raise ValueError(f"ConvLSTM backend requires {key}={expected}, got {value}")
+        return value
 
     def _initialize_model_weights(self) -> None:
         checkpoint = self.checkpoint_path
@@ -103,6 +126,7 @@ class ConvLSTMBackend(BaseBackend):
                 "model_source": self.model_source,
                 "model_version": self.model_version,
                 "model_load": self.load_metadata,
+                "input_mode": self.input_mode,
                 "backend_limitations": (
                     "ConvLSTM runs inference with current state; "
                     "gradient-based online training is not implemented."
@@ -124,11 +148,19 @@ class ConvLSTMBackend(BaseBackend):
                 "model_load": self.load_metadata,
                 "sequence_length": self.sequence_length,
                 "expected_input_shape": (self.sequence_length, self.input_channels, 0, 0),
+                "inference_input_mode": self.input_mode,
                 "inference_contract": {
+                    "contract_version": CONVLSTM_CONTRACT_VERSION,
                     "input_shape_order": "(T, C, H, W)",
                     "output_shape_order": "(H, W)",
+                    "default_sequence_length": CONVLSTM_SEQUENCE_LENGTH,
+                    "default_input_channels": CONVLSTM_INPUT_CHANNELS,
+                    "default_grid_size": [CONVLSTM_GRID_HEIGHT, CONVLSTM_GRID_WIDTH],
+                    "channel_manifest": list(CONVLSTM_CHANNEL_MANIFEST),
+                    "temporal_spacing": CONVLSTM_TEMPORAL_SPACING,
+                    "temporal_pattern": CONVLSTM_TEMPORAL_PATTERN,
+                    "normalization_mode": CONVLSTM_NORMALIZATION_MODE,
                     "spatial_source": "GridSpec.number_of_rows/number_of_columns",
-                    "normalization_mode": "none_raw_observation_values",
                 },
                 "buffered_observation_count": 0,
                 "last_update_mode": "state_refresh_only",
