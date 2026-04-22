@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 from datetime import datetime, timezone
+from pathlib import Path
 from uuid import uuid4
 
 from plume.adapters.convlstm_input_adapter import ConvLSTMInputAdapter
@@ -36,13 +37,60 @@ class ConvLSTMBackend(BaseBackend):
             hidden_channels=hidden_channels,
             seed=seed,
         )
+        self.device = str(self.backend_config.get("convlstm_device", "cpu")).strip().lower()
+        if self.device != "cpu":
+            raise ValueError(
+                f"ConvLSTM backend currently supports only 'cpu' device for numpy inference, got: {self.device}"
+            )
+        self.init_mode = str(self.backend_config.get("convlstm_init_mode", "random_init"))
+        self.checkpoint_path = self.backend_config.get("convlstm_checkpoint_path")
+        self.checkpoint_strict = bool(self.backend_config.get("convlstm_checkpoint_strict", True))
+        self.model_version: str | None = None
+        self.model_source = "random_init"
+        self.load_metadata: dict[str, object] = {
+            "device": self.device,
+            "init_mode": self.init_mode,
+            "checkpoint_path": self.checkpoint_path,
+            "checkpoint_strict": self.checkpoint_strict,
+            "load_status": "not_attempted",
+        }
+        self._initialize_model_weights()
+
+    def _initialize_model_weights(self) -> None:
+        checkpoint = self.checkpoint_path
+        if checkpoint is not None and str(checkpoint).strip():
+            metadata = self.model.load_checkpoint(str(Path(checkpoint)), strict=self.checkpoint_strict)
+            self.model_source = "checkpoint"
+            self.model_version = str(metadata.get("model_version") or "unknown")
+            self.load_metadata = {
+                **self.load_metadata,
+                "load_status": "loaded",
+                "model_source": self.model_source,
+                "model_version": self.model_version,
+                "checkpoint_metadata": metadata,
+            }
+            return
+
+        if self.init_mode == "checkpoint_required":
+            raise ValueError("ConvLSTM init_mode=checkpoint_required but convlstm_checkpoint_path was not provided")
+        if self.init_mode != "random_init":
+            raise ValueError(f"Unsupported convlstm_init_mode: {self.init_mode}")
+
+        self.model_source = "random_init"
+        self.model_version = f"random_seed_{self.backend_config.get('convlstm_random_seed', 7)}"
+        self.load_metadata = {
+            **self.load_metadata,
+            "load_status": "random_init",
+            "model_source": self.model_source,
+            "model_version": self.model_version,
+        }
 
     def create_session(self, *, model_name: str | None = None, metadata: dict[str, object] | None = None) -> BackendSession:
         now = datetime.now(timezone.utc)
         return BackendSession(
             session_id=str(uuid4()),
             backend_name="convlstm_online",
-            model_name=model_name or "convlstm_random_init",
+            model_name=model_name or f"convlstm_{self.model_source}",
             status="created",
             created_at=now,
             updated_at=now,
@@ -52,6 +100,9 @@ class ConvLSTMBackend(BaseBackend):
                 "supports_observation_conditioned_prediction": True,
             },
             runtime_metadata={
+                "model_source": self.model_source,
+                "model_version": self.model_version,
+                "model_load": self.load_metadata,
                 "backend_limitations": (
                     "ConvLSTM runs inference with current state; "
                     "gradient-based online training is not implemented."
@@ -67,9 +118,18 @@ class ConvLSTMBackend(BaseBackend):
             observation_count=0,
             state_version=0,
             internal_state={
-                "model_name": session.model_name or "convlstm_random_init",
+                "model_name": session.model_name or f"convlstm_{self.model_source}",
+                "model_source": self.model_source,
+                "model_version": self.model_version,
+                "model_load": self.load_metadata,
                 "sequence_length": self.sequence_length,
                 "expected_input_shape": (self.sequence_length, self.input_channels, 0, 0),
+                "inference_contract": {
+                    "input_shape_order": "(T, C, H, W)",
+                    "output_shape_order": "(H, W)",
+                    "spatial_source": "GridSpec.number_of_rows/number_of_columns",
+                    "normalization_mode": "none_raw_observation_values",
+                },
                 "buffered_observation_count": 0,
                 "last_update_mode": "state_refresh_only",
             },
