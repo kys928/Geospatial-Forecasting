@@ -2,7 +2,7 @@ import type {
   DemoScenario,
   ForecastExplanation,
   ForecastSummary
-} from "../features/forecast/forecast.types";
+} from "../features/forecast/types/forecast.types";
 
 interface SummaryCardsProps {
   summary: ForecastSummary | null;
