@@ -42,6 +42,17 @@ class ConvLSTMTrainingConfig:
     smoothness_loss_mode: str = "finite_difference_l2"
     mass_loss_mode: str = "mean_mass_mse"
     mass_loss_space: str = "transformed"
+    physics_schedule_enabled: bool = False
+    physics_schedule_type: str = "epoch"
+    physics_schedule_stage_boundaries: tuple[int, ...] = (0,)
+    physics_schedule_lambda_smooth: tuple[float, ...] = (0.0,)
+    physics_schedule_lambda_mass: tuple[float, ...] = (0.0,)
+    smoothness_ramp_type: str = "none"
+    smoothness_ramp_start: int = 0
+    smoothness_ramp_end: int = 0
+    mass_ramp_type: str = "none"
+    mass_ramp_start: int = 0
+    mass_ramp_end: int = 0
 
 
 class CanonicalConvLSTMSampleDataset:
@@ -162,12 +173,32 @@ class ConvLSTMPlumeTrainer:
             raise ValueError(f"lambda_smooth must be >= 0, got {self.config.lambda_smooth}")
         if self.config.lambda_mass < 0.0:
             raise ValueError(f"lambda_mass must be >= 0, got {self.config.lambda_mass}")
+        if self.config.physics_schedule_type != "epoch":
+            raise ValueError(
+                "Only physics_schedule_type='epoch' is supported in Phase-H, "
+                f"got {self.config.physics_schedule_type}"
+            )
+        if self.config.smoothness_ramp_type not in {"none", "linear"}:
+            raise ValueError(
+                "smoothness_ramp_type must be 'none' or 'linear', "
+                f"got {self.config.smoothness_ramp_type}"
+            )
+        if self.config.mass_ramp_type not in {"none", "linear"}:
+            raise ValueError(
+                "mass_ramp_type must be 'none' or 'linear', "
+                f"got {self.config.mass_ramp_type}"
+            )
+        self._validate_physics_schedule_config()
 
         self.best_checkpoint_metric_name: str | None = None
         self.best_checkpoint_metric_value: float | None = None
         self.best_checkpoint_epoch: int | None = None
         self.best_checkpoint_step: int | None = None
         self.last_train_step_metrics: dict[str, float] | None = None
+        self._train_steps_completed: int = 0
+        self._last_effective_lambda_smooth: float = 0.0
+        self._last_effective_lambda_mass: float = 0.0
+        self._last_active_stage: int = 0
 
     @property
     def metadata(self) -> dict[str, object]:
@@ -192,19 +223,48 @@ class ConvLSTMPlumeTrainer:
             "smoothness_loss_mode": self.config.smoothness_loss_mode,
             "mass_loss_mode": self.config.mass_loss_mode,
             "mass_loss_space": self.config.mass_loss_space,
+            "physics_schedule_enabled": self.config.physics_schedule_enabled,
+            "physics_schedule_type": self.config.physics_schedule_type,
+            "physics_schedule_stage_boundaries": self.config.physics_schedule_stage_boundaries,
+            "physics_schedule_lambda_smooth": self.config.physics_schedule_lambda_smooth,
+            "physics_schedule_lambda_mass": self.config.physics_schedule_lambda_mass,
+            "smoothness_ramp_type": self.config.smoothness_ramp_type,
+            "smoothness_ramp_start": self.config.smoothness_ramp_start,
+            "smoothness_ramp_end": self.config.smoothness_ramp_end,
+            "mass_ramp_type": self.config.mass_ramp_type,
+            "mass_ramp_start": self.config.mass_ramp_start,
+            "mass_ramp_end": self.config.mass_ramp_end,
+            "effective_lambda_smooth": self._last_effective_lambda_smooth,
+            "effective_lambda_mass": self._last_effective_lambda_mass,
+            "active_stage": self._last_active_stage,
             "best_checkpoint_metric_name": self.best_checkpoint_metric_name,
             "best_checkpoint_metric_value": self.best_checkpoint_metric_value,
             "best_checkpoint_epoch": self.best_checkpoint_epoch,
             "best_checkpoint_step": self.best_checkpoint_step,
         }
 
-    def train_step(self, batch_input: np.ndarray, batch_target: np.ndarray) -> float:
-        metrics = self.train_step_with_metrics(batch_input=batch_input, batch_target=batch_target)
+    def train_step(
+        self,
+        batch_input: np.ndarray,
+        batch_target: np.ndarray,
+        *,
+        epoch: int | None = None,
+        step: int | None = None,
+    ) -> float:
+        metrics = self.train_step_with_metrics(batch_input=batch_input, batch_target=batch_target, epoch=epoch, step=step)
         return float(metrics["train_total_loss"])
 
-    def train_step_with_metrics(self, *, batch_input: np.ndarray, batch_target: np.ndarray) -> dict[str, float]:
+    def train_step_with_metrics(
+        self,
+        *,
+        batch_input: np.ndarray,
+        batch_target: np.ndarray,
+        epoch: int | None = None,
+        step: int | None = None,
+    ) -> dict[str, float]:
         self._validate_batch(batch_input=batch_input, batch_target=batch_target)
         plume_target = slice_plume_target(batch_target)
+        effective_weights = self._effective_physics_weights(epoch=epoch, step=step)
 
         batch_size = batch_input.shape[0]
         grads = self._zero_parameter_grads()
@@ -218,12 +278,22 @@ class ConvLSTMPlumeTrainer:
             pred_linear = np.einsum("h,hrc->rc", self.model.w_out, cache["h_last"]) + self.model.b_out
             pred = np.clip(pred_linear, a_min=0.0, a_max=None)
             target = plume_target[i, 0, 0]
-            components = self._loss_components(pred=pred, target=target)
+            components = self._loss_components(
+                pred=pred,
+                target=target,
+                effective_lambda_smooth=effective_weights["lambda_smooth"],
+                effective_lambda_mass=effective_weights["lambda_mass"],
+            )
             supervised_loss_total += components["supervised_loss"]
             smoothness_loss_total += components["smoothness_loss"]
             mass_loss_total += components["mass_loss"]
 
-            grad_pred = self._loss_grad_wrt_prediction(pred=pred, target=target)
+            grad_pred = self._loss_grad_wrt_prediction(
+                pred=pred,
+                target=target,
+                effective_lambda_smooth=effective_weights["lambda_smooth"],
+                effective_lambda_mass=effective_weights["lambda_mass"],
+            )
             grad_pred *= (pred_linear > 0.0).astype(float)
             sample_grads = self._backward_through_time(cache=cache, grad_pred=grad_pred)
             self._accumulate_grads(grads=grads, sample_grads=sample_grads)
@@ -236,15 +306,22 @@ class ConvLSTMPlumeTrainer:
             smoothness_loss_total=smoothness_loss_total,
             mass_loss_total=mass_loss_total,
             count=batch_size,
+            effective_lambda_smooth=effective_weights["lambda_smooth"],
+            effective_lambda_mass=effective_weights["lambda_mass"],
+            active_stage=effective_weights["active_stage"],
         )
+        self._last_effective_lambda_smooth = float(effective_weights["lambda_smooth"])
+        self._last_effective_lambda_mass = float(effective_weights["lambda_mass"])
+        self._last_active_stage = int(effective_weights["active_stage"])
         self.last_train_step_metrics = metrics
+        self._train_steps_completed += 1
         return metrics
 
-    def train_epoch(self, batch_iterable: list[tuple[np.ndarray, np.ndarray]]) -> float:
+    def train_epoch(self, batch_iterable: list[tuple[np.ndarray, np.ndarray]], *, epoch: int = 0) -> float:
         """Run a narrow epoch helper over already-batched tensors."""
         if not batch_iterable:
             raise ValueError("train_epoch requires at least one batch")
-        losses = [self.train_step(batch_input=x, batch_target=y) for x, y in batch_iterable]
+        losses = [self.train_step(batch_input=x, batch_target=y, epoch=epoch) for x, y in batch_iterable]
         return float(np.mean(losses))
 
     def evaluate_batch(
@@ -339,6 +416,7 @@ class ConvLSTMPlumeTrainer:
                 )
             )
         if include_loss_components:
+            effective_weights = self._effective_physics_weights(epoch=0, step=self._train_steps_completed)
             metrics.update(
                 self._mean_loss_metrics(
                     metric_prefix=metric_prefix,
@@ -346,6 +424,9 @@ class ConvLSTMPlumeTrainer:
                     smoothness_loss_total=total_smoothness_loss,
                     mass_loss_total=total_mass_loss,
                     count=total_samples,
+                    effective_lambda_smooth=effective_weights["lambda_smooth"],
+                    effective_lambda_mass=effective_weights["lambda_mass"],
+                    active_stage=int(effective_weights["active_stage"]),
                 )
             )
         return metrics
@@ -457,13 +538,27 @@ class ConvLSTMPlumeTrainer:
     def _predict_batch(self, batch_input: np.ndarray) -> np.ndarray:
         return np.stack([self.model.forward(batch_input[i]) for i in range(batch_input.shape[0])], axis=0)
 
-    def _physics_terms_active(self) -> bool:
-        return bool(self.config.physics_loss_enabled and (self.config.lambda_smooth > 0.0 or self.config.lambda_mass > 0.0))
+    def _physics_terms_active(self, *, effective_lambda_smooth: float, effective_lambda_mass: float) -> bool:
+        return bool(self.config.physics_loss_enabled and (effective_lambda_smooth > 0.0 or effective_lambda_mass > 0.0))
 
-    def _loss_components(self, *, pred: np.ndarray, target: np.ndarray) -> dict[str, float]:
+    def _loss_components(
+        self,
+        *,
+        pred: np.ndarray,
+        target: np.ndarray,
+        effective_lambda_smooth: float | None = None,
+        effective_lambda_mass: float | None = None,
+    ) -> dict[str, float]:
+        if effective_lambda_smooth is None or effective_lambda_mass is None:
+            defaults = self._effective_physics_weights(epoch=0, step=self._train_steps_completed)
+            effective_lambda_smooth = defaults["lambda_smooth"]
+            effective_lambda_mass = defaults["lambda_mass"]
         supervised_error = pred - target
         supervised_loss = float(np.mean(supervised_error**2))
-        if not self._physics_terms_active():
+        if not self._physics_terms_active(
+            effective_lambda_smooth=effective_lambda_smooth,
+            effective_lambda_mass=effective_lambda_mass,
+        ):
             return {
                 "supervised_loss": supervised_loss,
                 "smoothness_loss": 0.0,
@@ -473,12 +568,12 @@ class ConvLSTMPlumeTrainer:
 
         smoothness_loss = 0.0
         mass_loss = 0.0
-        if self.config.lambda_smooth > 0.0:
+        if effective_lambda_smooth > 0.0:
             smoothness_loss, _ = self._smoothness_loss_and_grad(pred)
-        if self.config.lambda_mass > 0.0:
+        if effective_lambda_mass > 0.0:
             mass_loss, _ = self._mass_loss_and_grad(pred=pred, target=target)
 
-        total_loss = supervised_loss + self.config.lambda_smooth * smoothness_loss + self.config.lambda_mass * mass_loss
+        total_loss = supervised_loss + effective_lambda_smooth * smoothness_loss + effective_lambda_mass * mass_loss
         return {
             "supervised_loss": supervised_loss,
             "smoothness_loss": float(smoothness_loss),
@@ -486,16 +581,26 @@ class ConvLSTMPlumeTrainer:
             "total_loss": float(total_loss),
         }
 
-    def _loss_grad_wrt_prediction(self, *, pred: np.ndarray, target: np.ndarray) -> np.ndarray:
+    def _loss_grad_wrt_prediction(
+        self,
+        *,
+        pred: np.ndarray,
+        target: np.ndarray,
+        effective_lambda_smooth: float,
+        effective_lambda_mass: float,
+    ) -> np.ndarray:
         grad = (2.0 / pred.size) * (pred - target)
-        if not self._physics_terms_active():
+        if not self._physics_terms_active(
+            effective_lambda_smooth=effective_lambda_smooth,
+            effective_lambda_mass=effective_lambda_mass,
+        ):
             return grad
-        if self.config.lambda_smooth > 0.0:
+        if effective_lambda_smooth > 0.0:
             _, smooth_grad = self._smoothness_loss_and_grad(pred)
-            grad += self.config.lambda_smooth * smooth_grad
-        if self.config.lambda_mass > 0.0:
+            grad += effective_lambda_smooth * smooth_grad
+        if effective_lambda_mass > 0.0:
             _, mass_grad = self._mass_loss_and_grad(pred=pred, target=target)
-            grad += self.config.lambda_mass * mass_grad
+            grad += effective_lambda_mass * mass_grad
         return grad
 
     def _smoothness_loss_and_grad(self, pred: np.ndarray) -> tuple[float, np.ndarray]:
@@ -542,18 +647,24 @@ class ConvLSTMPlumeTrainer:
         smoothness_loss_total: float,
         mass_loss_total: float,
         count: int,
+        effective_lambda_smooth: float,
+        effective_lambda_mass: float,
+        active_stage: int,
     ) -> dict[str, float]:
         if count <= 0:
             raise ValueError("Cannot aggregate loss components for empty tensors")
         supervised_loss = supervised_loss_total / float(count)
         smoothness_loss = smoothness_loss_total / float(count)
         mass_loss = mass_loss_total / float(count)
-        total_loss = supervised_loss + self.config.lambda_smooth * smoothness_loss + self.config.lambda_mass * mass_loss
+        total_loss = supervised_loss + effective_lambda_smooth * smoothness_loss + effective_lambda_mass * mass_loss
         return {
             f"{metric_prefix}_supervised_loss": float(supervised_loss),
             f"{metric_prefix}_smoothness_loss": float(smoothness_loss),
             f"{metric_prefix}_mass_loss": float(mass_loss),
             f"{metric_prefix}_total_loss": float(total_loss),
+            f"{metric_prefix}_effective_lambda_smooth": float(effective_lambda_smooth),
+            f"{metric_prefix}_effective_lambda_mass": float(effective_lambda_mass),
+            f"{metric_prefix}_active_stage": float(active_stage),
         }
 
     def _evaluate_loss_component_metrics(self, *, pred: np.ndarray, target: np.ndarray, metric_prefix: str) -> dict[str, float]:
@@ -565,13 +676,105 @@ class ConvLSTMPlumeTrainer:
             supervised_total += components["supervised_loss"]
             smoothness_total += components["smoothness_loss"]
             mass_total += components["mass_loss"]
+        effective_weights = self._effective_physics_weights(epoch=0, step=self._train_steps_completed)
         return self._mean_loss_metrics(
             metric_prefix=metric_prefix,
             supervised_loss_total=supervised_total,
             smoothness_loss_total=smoothness_total,
             mass_loss_total=mass_total,
             count=int(pred.shape[0]),
+            effective_lambda_smooth=effective_weights["lambda_smooth"],
+            effective_lambda_mass=effective_weights["lambda_mass"],
+            active_stage=effective_weights["active_stage"],
         )
+
+    def _validate_physics_schedule_config(self) -> None:
+        if not self.config.physics_schedule_enabled:
+            return
+        boundaries = self.config.physics_schedule_stage_boundaries
+        lambda_smooth = self.config.physics_schedule_lambda_smooth
+        lambda_mass = self.config.physics_schedule_lambda_mass
+        if not boundaries:
+            raise ValueError("physics_schedule_stage_boundaries must be non-empty when physics_schedule_enabled=True")
+        if boundaries[0] != 0:
+            raise ValueError("physics_schedule_stage_boundaries must start at 0")
+        if any(b < 0 for b in boundaries):
+            raise ValueError("physics_schedule_stage_boundaries must be non-negative")
+        if tuple(sorted(boundaries)) != tuple(boundaries):
+            raise ValueError("physics_schedule_stage_boundaries must be sorted in ascending order")
+        if len(set(boundaries)) != len(boundaries):
+            raise ValueError("physics_schedule_stage_boundaries must not contain duplicates")
+        if len(lambda_smooth) != len(boundaries):
+            raise ValueError("physics_schedule_lambda_smooth length must match stage boundaries length")
+        if len(lambda_mass) != len(boundaries):
+            raise ValueError("physics_schedule_lambda_mass length must match stage boundaries length")
+        if any(v < 0.0 for v in lambda_smooth):
+            raise ValueError("physics_schedule_lambda_smooth values must be >= 0")
+        if any(v < 0.0 for v in lambda_mass):
+            raise ValueError("physics_schedule_lambda_mass values must be >= 0")
+        self._validate_linear_ramp_bounds(self.config.smoothness_ramp_type, self.config.smoothness_ramp_start, self.config.smoothness_ramp_end)
+        self._validate_linear_ramp_bounds(self.config.mass_ramp_type, self.config.mass_ramp_start, self.config.mass_ramp_end)
+
+    @staticmethod
+    def _validate_linear_ramp_bounds(ramp_type: str, ramp_start: int, ramp_end: int) -> None:
+        if ramp_start < 0 or ramp_end < 0:
+            raise ValueError("Ramp boundaries must be non-negative")
+        if ramp_type == "linear" and ramp_end < ramp_start:
+            raise ValueError("Linear ramp requires ramp_end >= ramp_start")
+
+    def _effective_physics_weights(self, *, epoch: int | None, step: int | None) -> dict[str, float]:
+        if not self.config.physics_loss_enabled:
+            return {"lambda_smooth": 0.0, "lambda_mass": 0.0, "active_stage": 0.0}
+
+        if not self.config.physics_schedule_enabled:
+            return {
+                "lambda_smooth": float(self.config.lambda_smooth),
+                "lambda_mass": float(self.config.lambda_mass),
+                "active_stage": 0.0,
+            }
+
+        progress = 0 if epoch is None else int(epoch)
+        boundaries = self.config.physics_schedule_stage_boundaries
+        active_stage = 0
+        for idx, start in enumerate(boundaries):
+            if progress >= start:
+                active_stage = idx
+            else:
+                break
+        lambda_smooth = float(self.config.physics_schedule_lambda_smooth[active_stage])
+        lambda_mass = float(self.config.physics_schedule_lambda_mass[active_stage])
+        lambda_smooth = self._apply_linear_ramp(
+            value=lambda_smooth,
+            progress=progress,
+            ramp_type=self.config.smoothness_ramp_type,
+            ramp_start=self.config.smoothness_ramp_start,
+            ramp_end=self.config.smoothness_ramp_end,
+        )
+        lambda_mass = self._apply_linear_ramp(
+            value=lambda_mass,
+            progress=progress,
+            ramp_type=self.config.mass_ramp_type,
+            ramp_start=self.config.mass_ramp_start,
+            ramp_end=self.config.mass_ramp_end,
+        )
+        return {
+            "lambda_smooth": float(lambda_smooth),
+            "lambda_mass": float(lambda_mass),
+            "active_stage": float(active_stage),
+        }
+
+    @staticmethod
+    def _apply_linear_ramp(*, value: float, progress: int, ramp_type: str, ramp_start: int, ramp_end: int) -> float:
+        if ramp_type == "none":
+            return value
+        if progress <= ramp_start:
+            return 0.0
+        if progress >= ramp_end:
+            return value
+        if ramp_end == ramp_start:
+            return value
+        alpha = (progress - ramp_start) / float(ramp_end - ramp_start)
+        return float(alpha * value)
 
     def _validate_batch(self, *, batch_input: np.ndarray, batch_target: np.ndarray) -> None:
         if batch_input.ndim != 5:

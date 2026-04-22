@@ -31,3 +31,20 @@ convlstm_training:
   # transformed = transformed-space mass consistency
   # raw = inverse-transformed mass consistency (not full physical conservation)
   mass_loss_space: transformed
+
+  # Phase-H staged scheduling for physics losses (epoch-based only).
+  # When disabled, lambda_smooth/lambda_mass behave exactly as static Phase-G settings.
+  physics_schedule_enabled: false
+  physics_schedule_type: epoch
+  physics_schedule_stage_boundaries: [0]
+  physics_schedule_lambda_smooth: [0.0]
+  physics_schedule_lambda_mass: [0.0]
+
+  # Optional linear ramps for each physics loss component.
+  # none = immediate stage weight; linear = ramp 0->stage weight across [start, end] epochs.
+  smoothness_ramp_type: none
+  smoothness_ramp_start: 0
+  smoothness_ramp_end: 0
+  mass_ramp_type: none
+  mass_ramp_start: 0
+  mass_ramp_end: 0
