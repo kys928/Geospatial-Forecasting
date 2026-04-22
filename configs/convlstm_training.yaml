@@ -15,3 +15,9 @@ convlstm_training:
   raw_interpretation_formula: "raw = (exp(pred) - 1) / 1e12"
   learning_rate: 0.001
   trainable_parameter_scope: full_model
+
+  eval_metric: val_mse
+  eval_direction: min
+  checkpoint_metric: val_mse
+  checkpoint_direction: min
+  save_best_only: true

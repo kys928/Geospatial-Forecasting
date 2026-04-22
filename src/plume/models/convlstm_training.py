@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import json
 from pathlib import Path
 
 import numpy as np
@@ -10,11 +11,13 @@ from plume.models.convlstm_contract import (
     CONVLSTM_GRID_HEIGHT,
     CONVLSTM_GRID_WIDTH,
     CONVLSTM_INPUT_CHANNELS,
+    CONVLSTM_CONTRACT_VERSION,
     CONVLSTM_NORMALIZATION_MODE,
     CONVLSTM_PLUME_TARGET_CHANNEL,
     CONVLSTM_SEQUENCE_LENGTH,
     CONVLSTM_STORED_INPUT_SHAPE,
     CONVLSTM_STORED_TARGET_SHAPE,
+    plume_to_physical_space,
 )
 
 
@@ -28,6 +31,11 @@ class ConvLSTMTrainingConfig:
     loss_space: str = "transformed_plume"
     raw_interpretation_formula: str = "raw = (exp(pred) - 1) / 1e12"
     trainable_parameter_scope: str = "full_model"
+    eval_metric: str = "val_mse"
+    eval_direction: str = "min"
+    checkpoint_metric: str = "val_mse"
+    checkpoint_direction: str = "min"
+    save_best_only: bool = True
 
 
 class CanonicalConvLSTMSampleDataset:
@@ -123,10 +131,22 @@ class ConvLSTMPlumeTrainer:
                 "Phase-E trainer requires trainable_parameter_scope='full_model' for end-to-end optimization; "
                 f"got {self.config.trainable_parameter_scope}"
             )
+        if self.config.eval_direction not in {"min", "max"}:
+            raise ValueError(f"eval_direction must be 'min' or 'max', got {self.config.eval_direction}")
+        if self.config.checkpoint_direction not in {"min", "max"}:
+            raise ValueError(
+                f"checkpoint_direction must be 'min' or 'max', got {self.config.checkpoint_direction}"
+            )
+
+        self.best_checkpoint_metric_name: str | None = None
+        self.best_checkpoint_metric_value: float | None = None
+        self.best_checkpoint_epoch: int | None = None
+        self.best_checkpoint_step: int | None = None
 
     @property
     def metadata(self) -> dict[str, object]:
         return {
+            "contract_version": CONVLSTM_CONTRACT_VERSION,
             "target_policy": self.config.target_policy,
             "stored_target_contract": CONVLSTM_STORED_TARGET_SHAPE,
             "supervised_target_contract": (1, 1, CONVLSTM_GRID_HEIGHT, CONVLSTM_GRID_WIDTH),
@@ -135,6 +155,15 @@ class ConvLSTMPlumeTrainer:
             "raw_interpretation_formula": self.config.raw_interpretation_formula,
             "trainable_parameter_scope": self.config.trainable_parameter_scope,
             "trainable_parameters": self._trainable_parameter_names(),
+            "eval_metric": self.config.eval_metric,
+            "eval_direction": self.config.eval_direction,
+            "checkpoint_metric": self.config.checkpoint_metric,
+            "checkpoint_direction": self.config.checkpoint_direction,
+            "save_best_only": self.config.save_best_only,
+            "best_checkpoint_metric_name": self.best_checkpoint_metric_name,
+            "best_checkpoint_metric_value": self.best_checkpoint_metric_value,
+            "best_checkpoint_epoch": self.best_checkpoint_epoch,
+            "best_checkpoint_step": self.best_checkpoint_step,
         }
 
     def train_step(self, batch_input: np.ndarray, batch_target: np.ndarray) -> float:
@@ -169,6 +198,177 @@ class ConvLSTMPlumeTrainer:
             raise ValueError("train_epoch requires at least one batch")
         losses = [self.train_step(batch_input=x, batch_target=y) for x, y in batch_iterable]
         return float(np.mean(losses))
+
+    def evaluate_batch(
+        self, *, batch_input: np.ndarray, batch_target: np.ndarray, metric_prefix: str = "val", include_raw_space: bool = False
+    ) -> dict[str, float]:
+        self._validate_batch(batch_input=batch_input, batch_target=batch_target)
+        plume_target = slice_plume_target(batch_target)[:, 0, 0]
+        predictions = self._predict_batch(batch_input)
+        transformed_metrics = self._regression_metrics(
+            pred=predictions, target=plume_target, metric_prefix=metric_prefix, metric_space="transformed"
+        )
+        if not include_raw_space:
+            return transformed_metrics
+
+        raw_pred = plume_to_physical_space(predictions)
+        raw_target = plume_to_physical_space(plume_target)
+        raw_metrics = self._regression_metrics(pred=raw_pred, target=raw_target, metric_prefix=metric_prefix, metric_space="raw")
+        return {**transformed_metrics, **raw_metrics}
+
+    def evaluate_epoch(
+        self, batch_iterable: list[tuple[np.ndarray, np.ndarray]], metric_prefix: str = "val", include_raw_space: bool = False
+    ) -> dict[str, float]:
+        if not batch_iterable:
+            raise ValueError("evaluate_epoch requires at least one batch")
+
+        total_sq_error = 0.0
+        total_abs_error = 0.0
+        total_count = 0
+        total_raw_sq_error = 0.0
+        total_raw_abs_error = 0.0
+
+        for batch_input, batch_target in batch_iterable:
+            self._validate_batch(batch_input=batch_input, batch_target=batch_target)
+            target = slice_plume_target(batch_target)[:, 0, 0]
+            pred = self._predict_batch(batch_input)
+            error = pred - target
+            total_sq_error += float(np.sum(error**2))
+            total_abs_error += float(np.sum(np.abs(error)))
+            total_count += int(error.size)
+
+            if include_raw_space:
+                raw_pred = plume_to_physical_space(pred)
+                raw_target = plume_to_physical_space(target)
+                raw_error = raw_pred - raw_target
+                total_raw_sq_error += float(np.sum(raw_error**2))
+                total_raw_abs_error += float(np.sum(np.abs(raw_error)))
+
+        metrics = self._aggregate_metrics(
+            total_sq_error=total_sq_error,
+            total_abs_error=total_abs_error,
+            total_count=total_count,
+            metric_prefix=metric_prefix,
+            metric_space="transformed",
+        )
+        if include_raw_space:
+            metrics.update(
+                self._aggregate_metrics(
+                    total_sq_error=total_raw_sq_error,
+                    total_abs_error=total_raw_abs_error,
+                    total_count=total_count,
+                    metric_prefix=metric_prefix,
+                    metric_space="raw",
+                )
+            )
+        return metrics
+
+    def update_best_checkpoint(self, *, metrics: dict[str, float], epoch: int, step: int | None = None) -> bool:
+        metric_name = self.config.checkpoint_metric
+        if metric_name not in metrics:
+            raise ValueError(f"Checkpoint metric '{metric_name}' was not found in metrics: {sorted(metrics.keys())}")
+        metric_value = float(metrics[metric_name])
+
+        if self.best_checkpoint_metric_value is None:
+            improved = True
+        elif self.config.checkpoint_direction == "min":
+            improved = metric_value < self.best_checkpoint_metric_value
+        else:
+            improved = metric_value > self.best_checkpoint_metric_value
+
+        if improved:
+            self.best_checkpoint_metric_name = metric_name
+            self.best_checkpoint_metric_value = metric_value
+            self.best_checkpoint_epoch = int(epoch)
+            self.best_checkpoint_step = None if step is None else int(step)
+        return improved
+
+    def save_checkpoint(
+        self,
+        path: str | Path,
+        *,
+        metrics: dict[str, float] | None = None,
+        epoch: int | None = None,
+        step: int | None = None,
+        is_best: bool | None = None,
+    ) -> dict[str, object]:
+        checkpoint_path = Path(path)
+        checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
+
+        metric_name = self.config.checkpoint_metric
+        metric_value = None
+        if metrics is not None and metric_name in metrics:
+            metric_value = float(metrics[metric_name])
+
+        if is_best is None:
+            is_best = metric_value is not None and self.best_checkpoint_metric_value is not None and metric_value == self.best_checkpoint_metric_value
+
+        metadata = {
+            "contract_version": CONVLSTM_CONTRACT_VERSION,
+            "target_policy": self.config.target_policy,
+            "normalization_mode": self.config.normalization_mode,
+            "trainable_parameter_scope": self.config.trainable_parameter_scope,
+            "selected_metric_name": metric_name,
+            "selected_metric_value": metric_value,
+            "epoch": epoch,
+            "step": step,
+            "is_best": bool(is_best),
+            "checkpoint_direction": self.config.checkpoint_direction,
+        }
+
+        state = self.model.state_dict()
+        np.savez(
+            checkpoint_path,
+            **state,
+            checkpoint_metadata_json=np.array(json.dumps(metadata), dtype=np.str_),
+            contract_version=np.array(CONVLSTM_CONTRACT_VERSION, dtype=np.str_),
+        )
+        return {"path": str(checkpoint_path), "metadata": metadata}
+
+    def load_checkpoint(self, path: str | Path, *, strict: bool = True) -> dict[str, object]:
+        checkpoint_path = Path(path)
+        if not checkpoint_path.exists():
+            raise FileNotFoundError(f"ConvLSTM trainer checkpoint not found: {checkpoint_path}")
+        with np.load(checkpoint_path, allow_pickle=False) as checkpoint:
+            payload = {key: checkpoint[key] for key in checkpoint.files}
+
+        metadata_json = payload.pop("checkpoint_metadata_json", np.array("{}", dtype=np.str_))
+        payload.pop("contract_version", None)
+        metadata = json.loads(str(np.asarray(metadata_json).item()))
+        self.model.load_state_dict(payload, strict=strict)
+        return {"path": str(checkpoint_path), "metadata": metadata}
+
+    @staticmethod
+    def _aggregate_metrics(
+        *, total_sq_error: float, total_abs_error: float, total_count: int, metric_prefix: str, metric_space: str
+    ) -> dict[str, float]:
+        if total_count <= 0:
+            raise ValueError("Cannot aggregate metrics for empty tensors")
+        mse = total_sq_error / total_count
+        mae = total_abs_error / total_count
+        rmse = float(np.sqrt(mse))
+
+        suffix = "" if metric_space == "transformed" else f"_{metric_space}"
+        return {
+            f"{metric_prefix}{suffix}_mse": float(mse),
+            f"{metric_prefix}{suffix}_mae": float(mae),
+            f"{metric_prefix}{suffix}_rmse": rmse,
+        }
+
+    def _regression_metrics(
+        self, *, pred: np.ndarray, target: np.ndarray, metric_prefix: str, metric_space: str
+    ) -> dict[str, float]:
+        error = pred - target
+        return self._aggregate_metrics(
+            total_sq_error=float(np.sum(error**2)),
+            total_abs_error=float(np.sum(np.abs(error))),
+            total_count=int(error.size),
+            metric_prefix=metric_prefix,
+            metric_space=metric_space,
+        )
+
+    def _predict_batch(self, batch_input: np.ndarray) -> np.ndarray:
+        return np.stack([self.model.forward(batch_input[i]) for i in range(batch_input.shape[0])], axis=0)
 
     def _validate_batch(self, *, batch_input: np.ndarray, batch_target: np.ndarray) -> None:
         if batch_input.ndim != 5:
