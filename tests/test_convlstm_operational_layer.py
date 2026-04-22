@@ -12,14 +12,17 @@ from plume.services.convlstm_operations import (
     OperationalOrchestrator,
     OperationalState,
     PromotionPolicy,
+    RetrainingJobStore,
     RetrainingPolicy,
     activate_approved_model,
     approve_candidate,
+    execute_retraining_job,
     evaluate_promotion,
     evaluate_retraining_readiness,
     register_candidate_from_run,
     reject_candidate,
     resolve_active_model_artifact,
+    submit_retraining_job,
     rollback_to_previous_model,
     summarize_operational_status,
 )
@@ -264,6 +267,92 @@ def test_operational_event_logging_and_status_summary(tmp_path: Path):
     assert status["last_approval_comment"] == "awaiting"
 
 
+def test_retraining_job_submission_is_persisted(tmp_path: Path):
+    store = RetrainingJobStore(tmp_path / "retraining_jobs.json")
+    job = submit_retraining_job(
+        job_store=store,
+        dataset_snapshot_ref="snapshot://dataset-1",
+        run_config_ref='{"epochs": 2}',
+        output_dir=str(tmp_path / "runs"),
+    )
+    assert job["job_id"] == "retrain-job-000000"
+    assert job["status"] == "queued"
+    assert job["created_sequence"] == 0
+    persisted = store.load()
+    assert persisted["next_sequence"] == 1
+    assert persisted["jobs"][0]["dataset_snapshot_ref"] == "snapshot://dataset-1"
+
+
+def test_retraining_job_transitions_to_succeeded_and_tracks_run_dir(tmp_path: Path):
+    store = RetrainingJobStore(tmp_path / "retraining_jobs.json")
+    queued = submit_retraining_job(
+        job_store=store,
+        dataset_snapshot_ref="snapshot://dataset-2",
+        run_config_ref='{"epochs": 3}',
+        output_dir=str(tmp_path / "runs"),
+    )
+    run_dir = tmp_path / "run_success"
+    run_dir.mkdir(parents=True)
+    result = execute_retraining_job(
+        job_store=store,
+        job_id=str(queued["job_id"]),
+        train_fn=lambda: {"run_dir": str(run_dir), "run_id": "run-success-1"},
+    )
+    assert result["status"] == "succeeded"
+    assert result["started_at"] is not None
+    assert result["finished_at"] is not None
+    assert result["result_run_dir"] == str(run_dir)
+    assert result["result_run_id"] == "run-success-1"
+    assert result["error_message"] is None
+
+
+def test_retraining_job_transitions_to_failed_and_persists_error(tmp_path: Path):
+    store = RetrainingJobStore(tmp_path / "retraining_jobs.json")
+    queued = submit_retraining_job(
+        job_store=store,
+        dataset_snapshot_ref="snapshot://dataset-3",
+        run_config_ref='{"epochs": 4}',
+        output_dir=str(tmp_path / "runs"),
+    )
+
+    def _raise_failure() -> dict[str, object]:
+        raise RuntimeError("trainer failed deterministic")
+
+    result = execute_retraining_job(job_store=store, job_id=str(queued["job_id"]), train_fn=_raise_failure)
+    assert result["status"] == "failed"
+    assert result["finished_at"] is not None
+    assert result["error_message"] == "trainer failed deterministic"
+    assert store.latest_job()["status"] == "failed"
+
+
+def test_operational_status_includes_retraining_job_details(tmp_path: Path):
+    state = OperationalState(phase="monitoring", active_model_id="m1", active_model_path="/tmp/m1.npz")
+    jobs = [
+        {
+            "job_id": "retrain-job-000000",
+            "status": "failed",
+            "created_sequence": 0,
+            "error_message": "failed-0",
+        },
+        {
+            "job_id": "retrain-job-000001",
+            "status": "succeeded",
+            "created_sequence": 1,
+            "result_run_dir": str(tmp_path / "run-1"),
+        },
+    ]
+    status = summarize_operational_status(
+        state=state,
+        readiness={"should_trigger": False, "reasons": ["insufficient_new_samples"]},
+        latest_run_summary=None,
+        registry_payload={"models": [], "events": []},
+        retraining_jobs=jobs,
+    )
+    assert status["latest_retraining_job"]["job_id"] == "retrain-job-000001"
+    assert status["retraining_job_statuses"] == ["failed", "succeeded"]
+    assert status["last_retraining_job_failure_reason"] == "failed-0"
+
+
 def test_orchestrator_process_cycle_candidate_rejected(tmp_path: Path):
     registry = ModelRegistry(tmp_path / "registry.json")
     active_ckpt = tmp_path / "active.npz"
@@ -429,3 +518,30 @@ def test_resolve_active_model_artifact_requires_active_pointer(tmp_path: Path):
     registry.save({"active_model_id": None, "previous_active_model_id": None, "events": [], "models": []})
     with pytest.raises(ValueError, match="no active model"):
         resolve_active_model_artifact(tmp_path / "registry.json")
+
+
+def test_orchestrator_with_job_store_preserves_existing_training_flow(tmp_path: Path):
+    registry = ModelRegistry(tmp_path / "registry.json")
+    run_dir = tmp_path / "run_ok"
+    checkpoint = run_dir / "best.npz"
+    _write_run_artifacts(run_dir, checkpoint_path=checkpoint, best_metric=0.10)
+    orchestrator = OperationalOrchestrator(
+        registry=registry,
+        retraining_policy=RetrainingPolicy(retraining_enabled=True, retraining_min_new_samples=1),
+        promotion_policy=PromotionPolicy(promotion_enabled=True),
+        event_log=OperationalEventLog(path=tmp_path / "ops.jsonl"),
+        job_store=RetrainingJobStore(tmp_path / "jobs.json"),
+    )
+    state = OperationalState(phase="collecting", buffered_new_sample_count=2)
+    new_state = orchestrator.process_retraining_cycle(
+        state=state,
+        manual_trigger=False,
+        train_fn=lambda: {"run_dir": str(run_dir), "run_id": "run-ok"},
+    )
+    assert new_state.phase == "monitoring"
+    payload = registry.load()
+    assert payload["active_model_id"] == new_state.active_model_id
+    latest_job = orchestrator.job_store.latest_job()
+    assert latest_job is not None
+    assert latest_job["status"] == "succeeded"
+    assert latest_job["result_run_dir"] == str(run_dir)

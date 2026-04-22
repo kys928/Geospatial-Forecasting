@@ -27,6 +27,7 @@ OPERATIONAL_PHASES = {
 }
 MODEL_STATUSES = {"candidate", "approved", "active", "rejected", "archived"}
 APPROVAL_STATUSES = {"not_required", "pending_manual_approval", "approved_for_activation", "rejected_by_operator"}
+RETRAINING_JOB_STATUSES = {"queued", "running", "succeeded", "failed", "cancelled"}
 
 
 @dataclass(frozen=True)
@@ -85,6 +86,122 @@ class PromotionPolicy:
     promotion_max_regression_support_iou: float | None = None
     promotion_max_regression_centroid: float | None = None
     promotion_manual_approval_required: bool = False
+
+
+@dataclass(frozen=True)
+class RetrainingJobRecord:
+    job_id: str
+    status: str
+    created_sequence: int
+    created_at: str
+    started_at: str | None = None
+    finished_at: str | None = None
+    dataset_snapshot_ref: str | None = None
+    run_config_ref: str | None = None
+    output_dir: str | None = None
+    error_message: str | None = None
+    result_run_dir: str | None = None
+    result_run_id: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.status not in RETRAINING_JOB_STATUSES:
+            raise ValueError(f"Unsupported retraining job status: {self.status}")
+        if self.created_sequence < 0:
+            raise ValueError("created_sequence must be >= 0")
+
+    def to_dict(self) -> dict[str, object]:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, payload: dict[str, object]) -> "RetrainingJobRecord":
+        return cls(
+            job_id=str(payload.get("job_id")),
+            status=str(payload.get("status", "queued")),
+            created_sequence=int(payload.get("created_sequence", 0)),
+            created_at=str(payload.get("created_at", _utc_now_iso())),
+            started_at=_optional_str(payload.get("started_at")),
+            finished_at=_optional_str(payload.get("finished_at")),
+            dataset_snapshot_ref=_optional_str(payload.get("dataset_snapshot_ref")),
+            run_config_ref=_optional_str(payload.get("run_config_ref")),
+            output_dir=_optional_str(payload.get("output_dir")),
+            error_message=_optional_str(payload.get("error_message")),
+            result_run_dir=_optional_str(payload.get("result_run_dir")),
+            result_run_id=_optional_str(payload.get("result_run_id")),
+        )
+
+
+class RetrainingJobStore:
+    def __init__(self, path: str | Path):
+        self.path = Path(path)
+
+    def load(self) -> dict[str, object]:
+        if not self.path.exists():
+            return {"jobs": [], "next_sequence": 0}
+        payload = json.loads(self.path.read_text(encoding="utf-8"))
+        if not isinstance(payload, dict):
+            raise ValueError(f"Retraining job store must decode to JSON object: {self.path}")
+        jobs = payload.get("jobs")
+        if not isinstance(jobs, list):
+            raise ValueError("Retraining job store jobs must be a list")
+        next_sequence = int(payload.get("next_sequence", len(jobs)))
+        return {"jobs": jobs, "next_sequence": next_sequence}
+
+    def save(self, payload: dict[str, object]) -> None:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        serializable = {
+            "jobs": payload.get("jobs", []),
+            "next_sequence": int(payload.get("next_sequence", len(payload.get("jobs", [])))),
+        }
+        self.path.write_text(json.dumps(serializable, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+    def list_jobs(self) -> list[dict[str, object]]:
+        return [dict(item) for item in self.load()["jobs"] if isinstance(item, dict)]
+
+    def create_job(
+        self,
+        *,
+        dataset_snapshot_ref: str | None,
+        run_config_ref: str | None,
+        output_dir: str | None,
+        job_id: str | None = None,
+    ) -> dict[str, object]:
+        payload = self.load()
+        sequence = int(payload["next_sequence"])
+        generated_job_id = job_id or f"retrain-job-{sequence:06d}"
+        if any(isinstance(item, dict) and item.get("job_id") == generated_job_id for item in payload["jobs"]):
+            raise ValueError(f"Retraining job id already exists: {generated_job_id}")
+        record = RetrainingJobRecord(
+            job_id=generated_job_id,
+            status="queued",
+            created_sequence=sequence,
+            created_at=_utc_now_iso(),
+            dataset_snapshot_ref=dataset_snapshot_ref,
+            run_config_ref=run_config_ref,
+            output_dir=output_dir,
+        )
+        payload["jobs"].append(record.to_dict())
+        payload["next_sequence"] = sequence + 1
+        self.save(payload)
+        return record.to_dict()
+
+    def update_job(self, *, job_id: str, **changes: object) -> dict[str, object]:
+        payload = self.load()
+        jobs = payload["jobs"]
+        for idx, item in enumerate(jobs):
+            if isinstance(item, dict) and item.get("job_id") == job_id:
+                updated = dict(item)
+                updated.update(changes)
+                validated = RetrainingJobRecord.from_dict(updated).to_dict()
+                jobs[idx] = validated
+                self.save(payload)
+                return validated
+        raise ValueError(f"Unknown retraining job id: {job_id}")
+
+    def latest_job(self) -> dict[str, object] | None:
+        jobs = self.list_jobs()
+        if not jobs:
+            return None
+        return max(jobs, key=lambda item: int(item.get("created_sequence", -1)))
 
 
 class ModelRegistry:
@@ -459,12 +576,59 @@ class OperationalEventLog:
             handle.write(json.dumps(event, sort_keys=True) + "\n")
 
 
+def submit_retraining_job(
+    *,
+    job_store: RetrainingJobStore,
+    dataset_snapshot_ref: str | None,
+    run_config_ref: str | None,
+    output_dir: str | None,
+) -> dict[str, object]:
+    return job_store.create_job(
+        dataset_snapshot_ref=dataset_snapshot_ref,
+        run_config_ref=run_config_ref,
+        output_dir=output_dir,
+    )
+
+
+def execute_retraining_job(
+    *,
+    job_store: RetrainingJobStore,
+    job_id: str,
+    train_fn: Callable[[], dict[str, object]],
+) -> dict[str, object]:
+    running_job = job_store.update_job(job_id=job_id, status="running", started_at=_utc_now_iso(), error_message=None)
+    try:
+        run_payload = train_fn()
+        run_dir = run_payload.get("run_dir")
+        if not isinstance(run_dir, str):
+            raise ValueError("train_fn must return payload with string run_dir")
+        run_id = run_payload.get("run_id")
+        return job_store.update_job(
+            job_id=job_id,
+            status="succeeded",
+            finished_at=_utc_now_iso(),
+            result_run_dir=run_dir,
+            result_run_id=None if run_id is None else str(run_id),
+            error_message=None,
+        )
+    except Exception as exc:
+        return job_store.update_job(
+            job_id=job_id,
+            status="failed",
+            finished_at=_utc_now_iso(),
+            error_message=str(exc),
+            result_run_dir=_optional_str(running_job.get("result_run_dir")),
+            result_run_id=_optional_str(running_job.get("result_run_id")),
+        )
+
+
 @dataclass
 class OperationalOrchestrator:
     registry: ModelRegistry
     retraining_policy: RetrainingPolicy
     promotion_policy: PromotionPolicy
     event_log: OperationalEventLog
+    job_store: RetrainingJobStore | None = None
 
     def process_retraining_cycle(
         self,
@@ -481,7 +645,34 @@ class OperationalOrchestrator:
         self.event_log.append(event_type="retraining_ready", payload=readiness)
         self.event_log.append(event_type="retraining_started", payload={"phase": "training"})
 
-        run_payload = train_fn()
+        if self.job_store is None:
+            run_payload = train_fn()
+        else:
+            queued_job = submit_retraining_job(
+                job_store=self.job_store,
+                dataset_snapshot_ref=f"buffered_samples:{state.buffered_new_sample_count}",
+                run_config_ref=json.dumps(asdict(self.retraining_policy), sort_keys=True),
+                output_dir=_derive_retraining_output_dir(state),
+            )
+            self.event_log.append(event_type="retraining_job_queued", payload={"job_id": queued_job["job_id"]})
+            executed_job = execute_retraining_job(job_store=self.job_store, job_id=str(queued_job["job_id"]), train_fn=train_fn)
+            if executed_job["status"] != "succeeded":
+                self.event_log.append(
+                    event_type="retraining_job_failed",
+                    payload={"job_id": executed_job["job_id"], "error_message": executed_job.get("error_message")},
+                )
+                return OperationalState(
+                    **{
+                        **state.to_dict(),
+                        "phase": "collecting",
+                        "latest_warning_or_error": _optional_str(executed_job.get("error_message")),
+                    }
+                )
+            run_payload = {
+                "run_dir": executed_job.get("result_run_dir"),
+                "run_id": executed_job.get("result_run_id"),
+            }
+
         run_dir = run_payload.get("run_dir")
         if not isinstance(run_dir, str):
             raise ValueError("train_fn must return payload with string run_dir")
@@ -588,15 +779,25 @@ class OperationalOrchestrator:
         )
 
 
+def _derive_retraining_output_dir(state: OperationalState) -> str | None:
+    if state.active_model_path:
+        return str(Path(state.active_model_path).parent)
+    return None
+
+
 def summarize_operational_status(
     *,
     state: OperationalState,
     readiness: dict[str, object],
     latest_run_summary: dict[str, object] | None = None,
     registry_payload: dict[str, object] | None = None,
+    retraining_jobs: list[dict[str, object]] | None = None,
 ) -> dict[str, object]:
     pending_candidate = _pending_approval_candidate(registry_payload)
     last_approval_event = _last_approval_event(registry_payload)
+    jobs = [dict(item) for item in retraining_jobs or [] if isinstance(item, dict)]
+    latest_job = max(jobs, key=lambda item: int(item.get("created_sequence", -1))) if jobs else None
+    last_failed_job = next((job for job in reversed(jobs) if job.get("status") == "failed"), None)
     return {
         "phase": state.phase,
         "active_model": {"model_id": state.active_model_id, "path": state.active_model_path},
@@ -609,6 +810,10 @@ def summarize_operational_status(
         "candidate_approval_status": None if pending_candidate is None else pending_candidate.get("approval_status"),
         "last_approval_event": last_approval_event,
         "last_approval_comment": None if last_approval_event is None else last_approval_event.get("comment"),
+        "current_retraining_jobs": jobs,
+        "latest_retraining_job": latest_job,
+        "retraining_job_statuses": [job.get("status") for job in jobs],
+        "last_retraining_job_failure_reason": None if last_failed_job is None else last_failed_job.get("error_message"),
     }
 
 
