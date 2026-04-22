@@ -14,9 +14,11 @@ from plume.services.convlstm_operations import (
     PromotionPolicy,
     RetrainingPolicy,
     activate_approved_model,
+    approve_candidate,
     evaluate_promotion,
     evaluate_retraining_readiness,
     register_candidate_from_run,
+    reject_candidate,
     resolve_active_model_artifact,
     rollback_to_previous_model,
     summarize_operational_status,
@@ -132,6 +134,28 @@ def test_promotion_gate_approve_and_reject_paths_are_explicit():
     reject = evaluate_promotion(candidate_record=candidate_bad, active_record=active, policy=PromotionPolicy(promotion_min_improvement=0.0))
     assert reject["approved"] is False
     assert "insufficient_improvement" in reject["reasons"]
+    assert reject["technical_gate_passed"] is False
+
+
+def test_promotion_gate_marks_pending_state_when_manual_approval_required():
+    candidate = {
+        "model_id": "cand-2",
+        "status": "candidate",
+        "contract_version": CONVLSTM_CONTRACT_VERSION,
+        "target_policy": "plume_only",
+        "normalization_mode": "none",
+        "checkpoint_metric": {"name": "val_mse", "value": 0.18},
+        "plume_metrics": {},
+    }
+    decision = evaluate_promotion(
+        candidate_record=candidate,
+        active_record=None,
+        policy=PromotionPolicy(promotion_enabled=True, promotion_manual_approval_required=True),
+    )
+    assert decision["approved"] is False
+    assert decision["technical_gate_passed"] is True
+    assert decision["approval_status"] == "pending_manual_approval"
+    assert "manual_approval_required" in decision["reasons"]
 
 
 def test_activate_and_rollback_are_safe_and_explicit(tmp_path: Path):
@@ -180,13 +204,21 @@ def test_operational_event_logging_and_status_summary(tmp_path: Path):
     assert len(lines) == 1
 
     state = OperationalState(phase="monitoring", active_model_id="m1", active_model_path="/tmp/m1.npz")
+    registry_payload = {
+        "models": [{"model_id": "m2", "status": "candidate", "approval_status": "pending_manual_approval"}],
+        "events": [{"event_type": "candidate_pending_manual_approval", "model_id": "m2", "comment": "awaiting"}],
+    }
     status = summarize_operational_status(
         state=state,
         readiness={"should_trigger": False, "reasons": ["insufficient_new_samples"]},
         latest_run_summary={"final_epoch": 3, "final_validation_metrics": {"val_mse": 0.3}, "best_checkpoint": {}},
+        registry_payload=registry_payload,
     )
     assert status["phase"] == "monitoring"
     assert status["active_model"]["model_id"] == "m1"
+    assert status["has_pending_manual_approval"] is True
+    assert status["candidate_approval_status"] == "pending_manual_approval"
+    assert status["last_approval_comment"] == "awaiting"
 
 
 def test_orchestrator_process_cycle_candidate_rejected(tmp_path: Path):
@@ -232,6 +264,121 @@ def test_orchestrator_process_cycle_candidate_rejected(tmp_path: Path):
     assert new_state.phase == "candidate_rejected"
     assert new_state.last_promotion_result is not None
     assert new_state.last_promotion_result["approved"] is False
+    assert registry.load()["models"][-1]["status"] == "rejected"
+
+
+def test_orchestrator_creates_pending_manual_approval_without_activation(tmp_path: Path):
+    registry = ModelRegistry(tmp_path / "registry.json")
+    active_ckpt = tmp_path / "active.npz"
+    active_ckpt.write_bytes(b"active")
+    registry.save(
+        {
+            "active_model_id": "active-1",
+            "previous_active_model_id": None,
+            "events": [],
+            "models": [
+                {
+                    "model_id": "active-1",
+                    "path": str(active_ckpt),
+                    "status": "active",
+                    "contract_version": CONVLSTM_CONTRACT_VERSION,
+                    "target_policy": "plume_only",
+                    "normalization_mode": "none",
+                    "checkpoint_metric": {"name": "val_mse", "value": 0.2},
+                    "plume_metrics": {},
+                }
+            ],
+        }
+    )
+    run_dir = tmp_path / "run_pending"
+    _write_run_artifacts(run_dir, checkpoint_path=run_dir / "best.npz", best_metric=0.15)
+    orchestrator = OperationalOrchestrator(
+        registry=registry,
+        retraining_policy=RetrainingPolicy(retraining_enabled=True, retraining_min_new_samples=1),
+        promotion_policy=PromotionPolicy(promotion_enabled=True, promotion_manual_approval_required=True),
+        event_log=OperationalEventLog(path=tmp_path / "ops.jsonl"),
+    )
+    state = OperationalState(phase="collecting", buffered_new_sample_count=3, active_model_id="active-1", active_model_path=str(active_ckpt))
+    new_state = orchestrator.process_retraining_cycle(
+        state=state,
+        manual_trigger=False,
+        train_fn=lambda: {"run_dir": str(run_dir), "run_id": "run-pending"},
+    )
+
+    payload = registry.load()
+    candidate = next(m for m in payload["models"] if m["model_id"] == new_state.candidate_model_id)
+    assert new_state.phase == "promotion_decision"
+    assert candidate["approval_status"] == "pending_manual_approval"
+    assert payload["active_model_id"] == "active-1"
+    assert any(e["event_type"] == "candidate_pending_manual_approval" for e in payload["events"])
+    assert payload["approval_audit"][-1]["approval_status"] == "pending_manual_approval"
+
+
+def test_operator_approve_and_reject_persist_audit_and_events(tmp_path: Path):
+    candidate_ckpt = tmp_path / "candidate.npz"
+    candidate_ckpt.write_bytes(b"candidate")
+    registry = ModelRegistry(tmp_path / "registry.json")
+    registry.save(
+        {
+            "active_model_id": "active-1",
+            "previous_active_model_id": None,
+            "events": [],
+            "approval_audit": [],
+            "models": [
+                {
+                    "model_id": "cand-approve",
+                    "path": str(candidate_ckpt),
+                    "status": "candidate",
+                    "approval_status": "pending_manual_approval",
+                    "contract_version": CONVLSTM_CONTRACT_VERSION,
+                    "checkpoint_metric": {"name": "val_mse", "value": 0.12},
+                    "last_promotion_result": {"approved": False, "technical_gate_passed": True},
+                }
+            ],
+        }
+    )
+    approved = approve_candidate(registry=registry, candidate_model_id="cand-approve", actor="operator-1", comment="Looks good")
+    payload = registry.load()
+    assert approved["approval_status"] == "approved_for_activation"
+    assert payload["models"][0]["status"] == "approved"
+    assert payload["events"][-1]["event_type"] == "candidate_approved_by_operator"
+    assert payload["approval_audit"][-1]["actor"] == "operator-1"
+
+    payload["models"][0]["model_id"] = "cand-reject"
+    payload["models"][0]["status"] = "candidate"
+    payload["models"][0]["approval_status"] = "pending_manual_approval"
+    registry.save(payload)
+    rejected = reject_candidate(registry=registry, candidate_model_id="cand-reject", actor="operator-2", comment="bad drift")
+    payload = registry.load()
+    assert rejected["approval_status"] == "rejected_by_operator"
+    assert payload["models"][0]["status"] == "rejected"
+    assert payload["events"][-1]["event_type"] == "candidate_rejected_by_operator"
+
+
+def test_operator_actions_reject_invalid_transitions(tmp_path: Path):
+    checkpoint = tmp_path / "candidate.npz"
+    checkpoint.write_bytes(b"x")
+    registry = ModelRegistry(tmp_path / "registry.json")
+    registry.save(
+        {
+            "active_model_id": None,
+            "previous_active_model_id": None,
+            "events": [],
+            "approval_audit": [],
+            "models": [
+                {
+                    "model_id": "cand-1",
+                    "path": str(checkpoint),
+                    "status": "candidate",
+                    "approval_status": "not_required",
+                    "contract_version": CONVLSTM_CONTRACT_VERSION,
+                    "checkpoint_metric": {"name": "val_mse", "value": 0.2},
+                }
+            ],
+        }
+    )
+    with pytest.raises(ValueError, match="not pending manual approval"):
+        approve_candidate(registry=registry, candidate_model_id="cand-1", actor="operator")
 
 
 def test_resolve_active_model_artifact_requires_active_pointer(tmp_path: Path):
