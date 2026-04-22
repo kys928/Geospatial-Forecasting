@@ -2,12 +2,14 @@ import type { ApiMode } from "../../features/forecast/types/forecast.types";
 
 interface TopNavProps {
   apiMode: ApiMode;
-  apiHealthy: boolean;
+  apiHealthy?: boolean;
   modelLabel: string;
   scenarioName: string;
 }
 
 export function TopNav({ apiMode, apiHealthy, modelLabel, scenarioName }: TopNavProps) {
+  const healthLabel = apiHealthy === undefined ? "API UNKNOWN" : apiHealthy ? "API OK" : "API DOWN";
+
   return (
     <header className="topbar">
       <div>
@@ -18,8 +20,8 @@ export function TopNav({ apiMode, apiHealthy, modelLabel, scenarioName }: TopNav
       <div className="topbar-meta">
         <span className="badge">{scenarioName}</span>
         <span className="badge">{modelLabel}</span>
-        <span className={`badge ${apiHealthy ? "badge-ok" : "badge-error"}`}>
-          {apiMode.toUpperCase()} · {apiHealthy ? "API OK" : "API DOWN"}
+        <span className={`badge ${apiHealthy === false ? "badge-error" : apiHealthy === true ? "badge-ok" : ""}`}>
+          {apiMode.toUpperCase()} · {healthLabel}
         </span>
       </div>
     </header>
