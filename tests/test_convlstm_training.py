@@ -8,9 +8,15 @@ from plume.models.convlstm import MinimalConvLSTMModel
 from plume.models.convlstm_contract import CONVLSTM_CONTRACT_VERSION, CONVLSTM_NORMALIZATION_MODE
 from plume.models.convlstm_training import (
     CanonicalConvLSTMSampleDataset,
+    ConvLSTMDatasetRunConfig,
     ConvLSTMPlumeTrainer,
     ConvLSTMRunConfig,
     ConvLSTMTrainingConfig,
+    build_canonical_batches,
+    create_train_val_batches_from_dataset_paths,
+    load_canonical_sample_dataset,
+    resolve_canonical_sample_paths,
+    run_training_from_dataset,
     slice_plume_target,
 )
 
@@ -27,6 +33,13 @@ def _tiny_batches(*, value: float = 0.25) -> list[tuple[np.ndarray, np.ndarray]]
     batch_target = np.zeros((1, 1, 10, 64, 64), dtype=float)
     batch_target[:, :, 0, :, :] = value
     return [(batch_input, batch_target)]
+
+
+def _write_sample(path, *, plume_value: float = 1.25) -> None:
+    input_tensor = np.zeros((3, 10, 64, 64), dtype=float)
+    target_tensor = np.zeros((1, 10, 64, 64), dtype=float)
+    target_tensor[:, 0, :, :] = plume_value
+    np.savez(path, input=input_tensor, target=target_tensor)
 
 
 def test_canonical_dataset_validation_accepts_exact_shapes_and_finite_values():
@@ -131,6 +144,73 @@ def test_dataset_loader_reads_npz_and_rejects_missing_keys(tmp_path):
     bad_ds = CanonicalConvLSTMSampleDataset([bad])
     with pytest.raises(ValueError, match="expected keys 'input' and 'target'"):
         _ = bad_ds[0]
+
+
+def test_dataset_loader_rejects_non_finite_values_from_disk(tmp_path):
+    input_tensor, target_tensor = _valid_sample_tensors()
+    input_tensor[0, 0, 0, 0] = np.nan
+    sample_path = tmp_path / "sample_non_finite.npz"
+    np.savez(sample_path, input=input_tensor, target=target_tensor)
+
+    ds = CanonicalConvLSTMSampleDataset([sample_path])
+    with pytest.raises(ValueError, match="input contains non-finite"):
+        _ = ds[0]
+
+
+def test_resolve_canonical_sample_paths_supports_file_and_sorted_directory(tmp_path):
+    sample_b = tmp_path / "b.npz"
+    sample_a = tmp_path / "a.npz"
+    _write_sample(sample_b, plume_value=2.0)
+    _write_sample(sample_a, plume_value=1.0)
+
+    assert resolve_canonical_sample_paths(sample_a) == [sample_a]
+    resolved_dir = resolve_canonical_sample_paths(tmp_path)
+    assert resolved_dir == [sample_a, sample_b]
+
+
+def test_load_dataset_and_build_batches_are_explicit_and_deterministic(tmp_path):
+    sample_paths = [tmp_path / f"s{i}.npz" for i in range(3)]
+    for i, path in enumerate(sample_paths):
+        _write_sample(path, plume_value=float(i))
+
+    dataset = load_canonical_sample_dataset(tmp_path)
+    batches = build_canonical_batches(dataset, batch_size=2, shuffle=False, drop_last=False)
+    assert len(batches) == 2
+    first_input, first_target = batches[0]
+    second_input, second_target = batches[1]
+    assert first_input.shape == (2, 3, 10, 64, 64)
+    assert first_target.shape == (2, 1, 10, 64, 64)
+    assert second_input.shape == (1, 3, 10, 64, 64)
+    assert second_target.shape == (1, 1, 10, 64, 64)
+    np.testing.assert_allclose(first_target[:, 0, 0, 0, 0], np.array([0.0, 1.0]))
+    np.testing.assert_allclose(second_target[:, 0, 0, 0, 0], np.array([2.0]))
+
+    shuffled_once = build_canonical_batches(dataset, batch_size=3, shuffle=True, shuffle_seed=7)
+    shuffled_twice = build_canonical_batches(dataset, batch_size=3, shuffle=True, shuffle_seed=7)
+    np.testing.assert_allclose(shuffled_once[0][1], shuffled_twice[0][1])
+
+
+def test_create_train_val_batches_from_dataset_paths_validates_and_builds(tmp_path):
+    train_dir = tmp_path / "train"
+    val_dir = tmp_path / "val"
+    train_dir.mkdir()
+    val_dir.mkdir()
+    _write_sample(train_dir / "s0.npz", plume_value=0.0)
+    _write_sample(train_dir / "s1.npz", plume_value=1.0)
+    _write_sample(val_dir / "v0.npz", plume_value=5.0)
+
+    train_batches, val_batches = create_train_val_batches_from_dataset_paths(
+        train_data_path=train_dir,
+        val_data_path=val_dir,
+        batch_size=1,
+        shuffle_train=False,
+        shuffle_seed=123,
+    )
+    assert len(train_batches) == 2
+    assert len(val_batches) == 1
+    np.testing.assert_allclose(train_batches[0][1][0, 0, 0, 0, 0], 0.0)
+    np.testing.assert_allclose(train_batches[1][1][0, 0, 0, 0, 0], 1.0)
+    np.testing.assert_allclose(val_batches[0][1][0, 0, 0, 0, 0], 5.0)
 
 
 def test_plume_trainer_rejects_non_full_model_scope():
@@ -617,6 +697,44 @@ def test_phase_l_run_orchestration_persists_run_start_end_reports_and_summary(tm
     assert len(reports) == 2
     assert reports[0]["epoch"] == 0
     assert reports[1]["epoch"] == 1
+
+
+def test_phase_m_run_training_from_dataset_wires_into_phase_l_run_orchestration(tmp_path):
+    train_dir = tmp_path / "train"
+    val_dir = tmp_path / "val"
+    train_dir.mkdir()
+    val_dir.mkdir()
+    _write_sample(train_dir / "train0.npz", plume_value=0.1)
+    _write_sample(train_dir / "train1.npz", plume_value=0.2)
+    _write_sample(val_dir / "val0.npz", plume_value=0.1)
+
+    model = MinimalConvLSTMModel(input_channels=10, hidden_channels=2, seed=462)
+    trainer = ConvLSTMPlumeTrainer(model=model)
+    result = run_training_from_dataset(
+        trainer=trainer,
+        run_config=ConvLSTMRunConfig(
+            num_epochs=1,
+            output_dir=tmp_path / "phase_m_run",
+            save_checkpoints=True,
+            save_last_checkpoint=False,
+        ),
+        dataset_config=ConvLSTMDatasetRunConfig(
+            train_data_path=train_dir,
+            val_data_path=val_dir,
+            batch_size=2,
+            shuffle_train=False,
+            shuffle_seed=0,
+            drop_last=False,
+        ),
+    )
+
+    assert result["run_summary"] is not None
+    artifacts = trainer.run_artifacts
+    assert artifacts is not None
+    assert artifacts.run_config_path.exists()
+    assert (artifacts.output_dir / "checkpoints" / "best.npz").exists()
+    payload = json.loads(artifacts.run_summary_path.read_text(encoding="utf-8"))
+    assert payload["policy"]["normalization_mode"] == "none"
 
 
 def test_phase_l_run_orchestration_logs_stage_advance_and_respects_checkpoint_metric_policy(tmp_path):

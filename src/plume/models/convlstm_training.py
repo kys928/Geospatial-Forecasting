@@ -91,6 +91,18 @@ class ConvLSTMRunConfig:
     run_name: str | None = None
 
 
+@dataclass(frozen=True)
+class ConvLSTMDatasetRunConfig:
+    """Minimal dataset-to-run wiring config for canonical stored samples."""
+
+    train_data_path: Path
+    val_data_path: Path
+    batch_size: int = 1
+    shuffle_train: bool = False
+    shuffle_seed: int = 0
+    drop_last: bool = False
+
+
 class CanonicalConvLSTMSampleDataset:
     """Loader/validator for stored canonical ConvLSTM samples.
 
@@ -145,6 +157,110 @@ class CanonicalConvLSTMSampleDataset:
         if not np.isfinite(plume_channel).all():
             raise ValueError(f"Malformed sample {source}: plume channel contains non-finite values")
 
+
+
+def resolve_canonical_sample_paths(data_path: str | Path) -> list[Path]:
+    """Resolve canonical stored sample paths from a .npz file or directory of .npz files."""
+    path = Path(data_path)
+    if path.is_file():
+        if path.suffix.lower() != ".npz":
+            raise ValueError(f"Canonical sample file must be .npz, got {path}")
+        return [path]
+    if not path.exists():
+        raise ValueError(f"Canonical sample path does not exist: {path}")
+    if not path.is_dir():
+        raise ValueError(f"Canonical sample path must be a .npz file or directory, got {path}")
+    sample_paths = sorted(p for p in path.iterdir() if p.is_file() and p.suffix.lower() == ".npz")
+    if not sample_paths:
+        raise ValueError(f"No .npz canonical samples found under {path}")
+    return sample_paths
+
+
+def load_canonical_sample_dataset(data_path: str | Path) -> CanonicalConvLSTMSampleDataset:
+    """Create canonical sample dataset from stored .npz sample path(s)."""
+    return CanonicalConvLSTMSampleDataset(resolve_canonical_sample_paths(data_path))
+
+
+def build_canonical_batches(
+    dataset: CanonicalConvLSTMSampleDataset,
+    *,
+    batch_size: int,
+    shuffle: bool = False,
+    shuffle_seed: int = 0,
+    drop_last: bool = False,
+) -> list[tuple[np.ndarray, np.ndarray]]:
+    """Create explicit batched tensors from canonical per-sample dataset."""
+    if batch_size <= 0:
+        raise ValueError(f"batch_size must be > 0, got {batch_size}")
+    if len(dataset) == 0:
+        raise ValueError("Cannot build batches from empty canonical dataset")
+
+    indices = np.arange(len(dataset), dtype=int)
+    if shuffle:
+        indices = np.random.default_rng(shuffle_seed).permutation(indices)
+
+    batches: list[tuple[np.ndarray, np.ndarray]] = []
+    for start in range(0, len(indices), batch_size):
+        batch_indices = indices[start : start + batch_size]
+        if drop_last and len(batch_indices) < batch_size:
+            continue
+        batch_input: list[np.ndarray] = []
+        batch_target: list[np.ndarray] = []
+        for idx in batch_indices:
+            sample_input, sample_target = dataset[int(idx)]
+            batch_input.append(sample_input)
+            batch_target.append(sample_target)
+        batches.append((np.stack(batch_input, axis=0), np.stack(batch_target, axis=0)))
+    if not batches:
+        raise ValueError("No batches were created; check batch_size/drop_last settings")
+    return batches
+
+
+def create_train_val_batches_from_dataset_paths(
+    *,
+    train_data_path: str | Path,
+    val_data_path: str | Path,
+    batch_size: int,
+    shuffle_train: bool = False,
+    shuffle_seed: int = 0,
+    drop_last: bool = False,
+) -> tuple[list[tuple[np.ndarray, np.ndarray]], list[tuple[np.ndarray, np.ndarray]]]:
+    """Create canonical train/val batched iterables from on-disk stored samples."""
+    train_dataset = load_canonical_sample_dataset(train_data_path)
+    val_dataset = load_canonical_sample_dataset(val_data_path)
+    train_batches = build_canonical_batches(
+        train_dataset,
+        batch_size=batch_size,
+        shuffle=shuffle_train,
+        shuffle_seed=shuffle_seed,
+        drop_last=drop_last,
+    )
+    val_batches = build_canonical_batches(
+        val_dataset,
+        batch_size=batch_size,
+        shuffle=False,
+        shuffle_seed=shuffle_seed,
+        drop_last=drop_last,
+    )
+    return train_batches, val_batches
+
+
+def run_training_from_dataset(
+    *,
+    trainer: "ConvLSTMPlumeTrainer",
+    run_config: ConvLSTMRunConfig,
+    dataset_config: ConvLSTMDatasetRunConfig,
+) -> dict[str, object]:
+    """Minimal run-entry helper that wires canonical on-disk samples into run_training."""
+    train_batches, val_batches = create_train_val_batches_from_dataset_paths(
+        train_data_path=dataset_config.train_data_path,
+        val_data_path=dataset_config.val_data_path,
+        batch_size=dataset_config.batch_size,
+        shuffle_train=dataset_config.shuffle_train,
+        shuffle_seed=dataset_config.shuffle_seed,
+        drop_last=dataset_config.drop_last,
+    )
+    return trainer.run_training(train_batches=train_batches, val_batches=val_batches, run_config=run_config)
 
 
 def slice_plume_target(stored_target: np.ndarray) -> np.ndarray:
