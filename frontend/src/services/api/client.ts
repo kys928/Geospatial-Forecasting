@@ -26,7 +26,14 @@ import explanationDefaultMock from "../../mocks/explanation-default.json";
 import explanationUrbanMock from "../../mocks/explanation-urban.json";
 import explanationIndustrialMock from "../../mocks/explanation-industrial.json";
 
-const API_BASE_URL = "http://localhost:8000";
+const DEFAULT_API_BASE_URL = "http://localhost:8000";
+
+export function resolveApiBaseUrl(envValue: string | undefined): string {
+  const configuredBaseUrl = envValue?.trim();
+  return configuredBaseUrl ? configuredBaseUrl : DEFAULT_API_BASE_URL;
+}
+
+const API_BASE_URL = resolveApiBaseUrl(import.meta.env.VITE_API_BASE_URL);
 const FIXED_EXPLANATION_THRESHOLD = 1e-5;
 
 const DEFAULT_SCENARIO: DemoScenario = {

@@ -6,11 +6,16 @@ import os
 from pathlib import Path
 import subprocess
 import signal
+import socket
 import sys
 from typing import Iterable
 
 
 DEFAULT_PYTHON_MODULES = ("fastapi", "uvicorn", "yaml", "numpy")
+BACKEND_HOST = "0.0.0.0"
+BACKEND_PORT = 8000
+FRONTEND_HOST = "0.0.0.0"
+FRONTEND_PORT = 5173
 
 
 def _start_process(cmd: list[str], cwd: Path, env: dict[str, str] | None = None) -> subprocess.Popen:
@@ -105,13 +110,47 @@ def _ensure_hf_preload(*, repo_root: Path, install_enabled: bool) -> dict[str, o
     }
 
 
+
+
+def _is_port_in_use(port: int) -> bool:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.settimeout(0.2)
+        return sock.connect_ex(("127.0.0.1", port)) == 0
+
+
+def _check_required_ports(*, include_frontend: bool) -> None:
+    if _is_port_in_use(BACKEND_PORT):
+        raise RuntimeError(
+            "Backend port 8000 is already in use. Stop the existing uvicorn process or choose a different port."
+        )
+    if include_frontend and _is_port_in_use(FRONTEND_PORT):
+        raise RuntimeError(
+            "Frontend port 5173 is already in use. Stop the existing Vite process before rerunning start_dev.py."
+        )
+
 def _build_process_commands(*, repo_root: Path, frontend_dir: Path, include_frontend: bool, include_worker: bool) -> list[tuple[list[str], Path]]:
     npm_executable = "npm.cmd" if os.name == "nt" else "npm"
     commands: list[tuple[list[str], Path]] = [
-        ([sys.executable, "-m", "uvicorn", "plume.api.main:app", "--reload"], repo_root)
+        (
+            [
+                sys.executable,
+                "-m",
+                "uvicorn",
+                "plume.api.main:app",
+                "--reload",
+                "--host",
+                BACKEND_HOST,
+                "--port",
+                str(BACKEND_PORT),
+            ],
+            repo_root,
+        )
     ]
     if include_frontend:
-        commands.append(([npm_executable, "run", "dev"], frontend_dir))
+        commands.append((
+            [npm_executable, "run", "dev", "--", "--host", FRONTEND_HOST, "--port", str(FRONTEND_PORT)],
+            frontend_dir,
+        ))
     if include_worker:
         commands.append(([sys.executable, "scripts/run_retraining_worker.py"], repo_root))
     return commands
@@ -153,6 +192,16 @@ def main(argv: list[str] | None = None) -> int:
     except Exception as exc:  # noqa: BLE001
         print(f"Bootstrap failed: {exc}", file=sys.stderr)
         return 1
+
+    try:
+        _check_required_ports(include_frontend=include_frontend)
+    except Exception as exc:  # noqa: BLE001
+        print(f"Startup blocked: {exc}", file=sys.stderr)
+        return 1
+
+    print(f"Starting backend at http://{BACKEND_HOST}:{BACKEND_PORT}")
+    if include_frontend:
+        print(f"Starting frontend at http://{FRONTEND_HOST}:{FRONTEND_PORT}")
 
     commands = _build_process_commands(
         repo_root=repo_root,
