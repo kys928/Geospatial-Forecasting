@@ -76,3 +76,42 @@ def test_api_404_missing_forecast_id():
     response = client.get("/forecast/does-not-exist")
 
     assert response.status_code == 404
+
+
+def test_api_cors_allows_extra_origin_from_env(monkeypatch):
+    monkeypatch.setenv(
+        "PLUME_CORS_ALLOW_ORIGINS",
+        "https://abc-5173.proxy.runpod.net, https://xyz-5173.proxy.runpod.net,",
+    )
+    monkeypatch.delenv("PLUME_CORS_ALLOW_ORIGIN_REGEX", raising=False)
+    app = create_app()
+    client = TestClient(app)
+
+    response = client.options(
+        "/forecast",
+        headers={
+            "Origin": "https://abc-5173.proxy.runpod.net",
+            "Access-Control-Request-Method": "POST",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.headers["access-control-allow-origin"] == "https://abc-5173.proxy.runpod.net"
+
+
+def test_api_cors_allows_origin_regex_from_env(monkeypatch):
+    monkeypatch.setenv("PLUME_CORS_ALLOW_ORIGIN_REGEX", r"^https://.*\.proxy\.runpod\.net$")
+    monkeypatch.delenv("PLUME_CORS_ALLOW_ORIGINS", raising=False)
+    app = create_app()
+    client = TestClient(app)
+
+    response = client.options(
+        "/forecast",
+        headers={
+            "Origin": "https://dynamic-5173.proxy.runpod.net",
+            "Access-Control-Request-Method": "POST",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.headers["access-control-allow-origin"] == "https://dynamic-5173.proxy.runpod.net"
