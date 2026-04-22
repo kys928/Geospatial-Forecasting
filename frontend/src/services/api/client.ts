@@ -8,7 +8,7 @@ import type {
   ForecastSummary,
   GeoJsonFeatureCollection,
   RasterMetadata
-} from "../../features/forecast/forecast.types";
+} from "../../features/forecast/types/forecast.types";
 
 import capabilitiesMock from "../../mocks/capabilities.json";
 import forecastMock from "../../mocks/forecast.json";
