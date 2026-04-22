@@ -1,4 +1,4 @@
-# Phase-D narrow ConvLSTM trainer defaults aligned with canonical contract.
+# Phase-E narrow ConvLSTM trainer defaults aligned with canonical contract.
 convlstm_training:
   sequence_length: 3
   input_channels: 10
@@ -14,3 +14,4 @@ convlstm_training:
   # raw = (exp(pred) - 1) / 1e12
   raw_interpretation_formula: "raw = (exp(pred) - 1) / 1e12"
   learning_rate: 0.001
+  trainable_parameter_scope: full_model
