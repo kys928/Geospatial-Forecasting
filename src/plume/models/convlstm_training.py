@@ -103,6 +103,10 @@ class ConvLSTMDatasetRunConfig:
     drop_last: bool = False
 
 
+class ConvLSTMRunLoadError(ValueError):
+    """Raised when a persisted ConvLSTM run directory is incomplete or malformed."""
+
+
 class CanonicalConvLSTMSampleDataset:
     """Loader/validator for stored canonical ConvLSTM samples.
 
@@ -261,6 +265,189 @@ def run_training_from_dataset(
         drop_last=dataset_config.drop_last,
     )
     return trainer.run_training(train_batches=train_batches, val_batches=val_batches, run_config=run_config)
+
+
+def _load_json_artifact(run_dir: str | Path, filename: str) -> dict[str, object]:
+    artifact_path = Path(run_dir) / filename
+    if not artifact_path.exists():
+        raise ConvLSTMRunLoadError(f"Missing required run artifact: {artifact_path}")
+    try:
+        payload = json.loads(artifact_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise ConvLSTMRunLoadError(f"Malformed JSON in run artifact {artifact_path}: {exc}") from exc
+    if not isinstance(payload, dict):
+        raise ConvLSTMRunLoadError(f"Run artifact must decode to an object: {artifact_path}")
+    return dict(payload)
+
+
+def load_run_summary(run_dir: str | Path) -> dict[str, object]:
+    """Load persisted run_summary.json from a completed ConvLSTM run directory."""
+    return _load_json_artifact(run_dir, "run_summary.json")
+
+
+def load_run_config(run_dir: str | Path) -> dict[str, object]:
+    """Load persisted run_config.json from a completed ConvLSTM run directory."""
+    return _load_json_artifact(run_dir, "run_config.json")
+
+
+def load_best_checkpoint_summary(run_dir: str | Path) -> dict[str, object]:
+    """Load persisted best_checkpoint_summary.json from a completed ConvLSTM run directory."""
+    return _load_json_artifact(run_dir, "best_checkpoint_summary.json")
+
+
+def load_epoch_reports(run_dir: str | Path) -> list[dict[str, object]]:
+    """Load optional epoch_reports.jsonl records from a completed ConvLSTM run directory."""
+    artifact_path = Path(run_dir) / "epoch_reports.jsonl"
+    if not artifact_path.exists():
+        raise ConvLSTMRunLoadError(f"Missing optional run artifact requested explicitly: {artifact_path}")
+    reports: list[dict[str, object]] = []
+    for line_no, line in enumerate(artifact_path.read_text(encoding="utf-8").splitlines(), start=1):
+        if not line.strip():
+            continue
+        try:
+            payload = json.loads(line)
+        except json.JSONDecodeError as exc:
+            raise ConvLSTMRunLoadError(
+                f"Malformed JSONL in run artifact {artifact_path} at line {line_no}: {exc}"
+            ) from exc
+        if not isinstance(payload, dict):
+            raise ConvLSTMRunLoadError(
+                f"Run epoch report line must decode to an object: {artifact_path}:{line_no}"
+            )
+        reports.append(dict(payload))
+    return reports
+
+
+def extract_run_comparison_record(run_dir: str | Path, *, include_epoch_reports: bool = False) -> dict[str, object]:
+    """Extract a compact, stable comparison record from persisted run artifacts."""
+    run_path = Path(run_dir)
+    run_summary = load_run_summary(run_path)
+    run_config = load_run_config(run_path)
+    best_checkpoint = load_best_checkpoint_summary(run_path)
+
+    config_payload = run_config.get("config")
+    if not isinstance(config_payload, dict):
+        raise ConvLSTMRunLoadError(f"run_config.json missing object field 'config': {run_path / 'run_config.json'}")
+
+    summary_policy = run_summary.get("policy")
+    if not isinstance(summary_policy, dict):
+        raise ConvLSTMRunLoadError(f"run_summary.json missing object field 'policy': {run_path / 'run_summary.json'}")
+    final_validation_metrics = run_summary.get("final_validation_metrics")
+    if not isinstance(final_validation_metrics, dict):
+        raise ConvLSTMRunLoadError(
+            f"run_summary.json missing object field 'final_validation_metrics': {run_path / 'run_summary.json'}"
+        )
+
+    best_metric_name = best_checkpoint.get("best_metric_name")
+    best_metric_value = best_checkpoint.get("best_metric_value")
+    comparison_metrics: dict[str, object] = {}
+    for key in (
+        "val_mse",
+        "val_mae",
+        "val_rmse",
+        "val_raw_mse",
+        "val_raw_mae",
+        "val_raw_rmse",
+        "val_mass_abs_error_transformed",
+        "val_mass_abs_error_raw",
+        "val_support_iou_transformed",
+        "val_support_iou_raw",
+        "val_centroid_distance_raster_transformed",
+        "val_centroid_distance_raster_raw",
+    ):
+        if key in final_validation_metrics:
+            comparison_metrics[key] = final_validation_metrics[key]
+
+    record: dict[str, object] = {
+        "run_dir": str(run_path),
+        "run_name": run_path.name,
+        "contract_version": summary_policy.get("contract_version"),
+        "target_policy": summary_policy.get("target_policy"),
+        "normalization_mode": summary_policy.get("normalization_mode"),
+        "trainable_parameter_scope": summary_policy.get("trainable_parameter_scope"),
+        "checkpoint_metric": summary_policy.get("checkpoint_metric"),
+        "best_metric_name": best_metric_name,
+        "best_metric_value": best_metric_value,
+        "final_active_stage": run_summary.get("final_active_stage"),
+        "physics_schedule_enabled": config_payload.get("physics_schedule_enabled"),
+        "metric_stage_progression_enabled": config_payload.get("metric_stage_progression_enabled"),
+        "lambda_smooth": config_payload.get("lambda_smooth"),
+        "lambda_mass": config_payload.get("lambda_mass"),
+        "metrics": comparison_metrics,
+    }
+    if include_epoch_reports:
+        record["epoch_reports"] = load_epoch_reports(run_path)
+    return record
+
+
+def compare_run_dirs(
+    run_dirs: list[str | Path],
+    *,
+    sort_by: str = "best_metric_value",
+    ascending: bool = True,
+    skip_incomplete: bool = True,
+) -> dict[str, object]:
+    """Compare multiple completed run directories with deterministic ordering and explicit skips."""
+    records: list[dict[str, object]] = []
+    skipped: list[dict[str, str]] = []
+    for run_dir in sorted((Path(p) for p in run_dirs), key=lambda path: str(path)):
+        try:
+            record = extract_run_comparison_record(run_dir)
+            records.append(record)
+        except ConvLSTMRunLoadError as exc:
+            if not skip_incomplete:
+                raise
+            skipped.append({"run_dir": str(run_dir), "reason": str(exc)})
+
+    def _sort_value(record: dict[str, object]) -> tuple[bool, str, object]:
+        value = record.get(sort_by)
+        return (value is None, str(record.get("run_name", "")), value)
+
+    records = sorted(records, key=_sort_value, reverse=not ascending)
+    return {"records": records, "skipped": skipped, "sort_by": sort_by, "ascending": ascending}
+
+
+def summarize_ablation_groups(
+    records: list[dict[str, object]],
+    *,
+    group_by: tuple[str, ...] = (
+        "physics_schedule_enabled",
+        "metric_stage_progression_enabled",
+        "lambda_smooth",
+        "lambda_mass",
+    ),
+    metric_key: str = "best_metric_value",
+) -> list[dict[str, object]]:
+    """Group narrow run comparison records and compute compact metric summaries."""
+    grouped: dict[tuple[object, ...], list[dict[str, object]]] = {}
+    for record in records:
+        group_values = tuple(record.get(key) for key in group_by)
+        grouped.setdefault(group_values, []).append(record)
+
+    summary: list[dict[str, object]] = []
+    for group_values in sorted(grouped.keys(), key=lambda item: tuple(str(v) for v in item)):
+        group_records = grouped[group_values]
+        metrics = [float(r[metric_key]) for r in group_records if isinstance(r.get(metric_key), (float, int))]
+        best_metric = min(metrics) if metrics else None
+        mean_metric = float(np.mean(metrics)) if metrics else None
+        summary.append(
+            {
+                "group": {key: value for key, value in zip(group_by, group_values)},
+                "count": len(group_records),
+                "best_metric_value": best_metric,
+                "mean_metric_value": mean_metric,
+                "metric_key": metric_key,
+            }
+        )
+    return summary
+
+
+def write_run_comparison_json(path: str | Path, payload: dict[str, object]) -> Path:
+    """Persist run comparison payload as deterministic JSON."""
+    output_path = Path(path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    return output_path
 
 
 def slice_plume_target(stored_target: np.ndarray) -> np.ndarray:
