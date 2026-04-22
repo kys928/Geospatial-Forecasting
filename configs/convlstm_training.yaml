@@ -1,0 +1,16 @@
+# Phase-D narrow ConvLSTM trainer defaults aligned with canonical contract.
+convlstm_training:
+  sequence_length: 3
+  input_channels: 10
+  input_shape: [3, 10, 64, 64]
+  stored_target_shape: [1, 10, 64, 64]
+  supervised_target_shape: [1, 1, 64, 64]
+  target_policy: plume_only
+  plume_target_channel: 0
+  normalization_mode: none
+  loss_space: transformed_plume
+  # Training loss remains in transformed plume space.
+  # Raw-space interpretation requires inverse transform:
+  # raw = (exp(pred) - 1) / 1e12
+  raw_interpretation_formula: "raw = (exp(pred) - 1) / 1e12"
+  learning_rate: 0.001
