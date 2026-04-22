@@ -27,6 +27,7 @@ from plume.schemas.observation_batch import ObservationBatch
 from plume.schemas.prediction_request import PredictionRequest
 from plume.schemas.scenario import Scenario
 from plume.schemas.update_result import UpdateResult
+from plume.services.convlstm_operations import resolve_active_model_artifact
 from plume.utils.config import Config
 
 
@@ -60,6 +61,8 @@ class ConvLSTMBackend(BaseBackend):
         self.init_mode = str(self.backend_config.get("convlstm_init_mode", "random_init"))
         self.checkpoint_path = self.backend_config.get("convlstm_checkpoint_path")
         self.checkpoint_strict = bool(self.backend_config.get("convlstm_checkpoint_strict", True))
+        self.use_model_registry = bool(self.backend_config.get("use_model_registry", False))
+        self.model_registry_path = self.backend_config.get("model_registry_path")
         self.model_version: str | None = None
         self.model_source = "random_init"
         self.load_metadata: dict[str, object] = {
@@ -67,6 +70,8 @@ class ConvLSTMBackend(BaseBackend):
             "init_mode": self.init_mode,
             "checkpoint_path": self.checkpoint_path,
             "checkpoint_strict": self.checkpoint_strict,
+            "use_model_registry": self.use_model_registry,
+            "model_registry_path": self.model_registry_path,
             "load_status": "not_attempted",
         }
         self._initialize_model_weights()
@@ -81,15 +86,31 @@ class ConvLSTMBackend(BaseBackend):
 
     def _initialize_model_weights(self) -> None:
         checkpoint = self.checkpoint_path
+        if self.use_model_registry:
+            if self.model_registry_path is None or not str(self.model_registry_path).strip():
+                raise ValueError("use_model_registry=true requires model_registry_path")
+            active = resolve_active_model_artifact(str(Path(self.model_registry_path)))
+            checkpoint = active["checkpoint_path"]
+            self.model_source = "registry_active"
+            self.model_version = str(active["model_id"])
+            self.load_metadata = {
+                **self.load_metadata,
+                "resolved_active_model": {
+                    "model_id": active["model_id"],
+                    "checkpoint_path": active["checkpoint_path"],
+                },
+            }
         if checkpoint is not None and str(checkpoint).strip():
             metadata = self.model.load_checkpoint(str(Path(checkpoint)), strict=self.checkpoint_strict)
-            self.model_source = "checkpoint"
-            self.model_version = str(metadata.get("model_version") or "unknown")
+            if self.model_source != "registry_active":
+                self.model_source = "checkpoint"
+                self.model_version = str(metadata.get("model_version") or "unknown")
             self.load_metadata = {
                 **self.load_metadata,
                 "load_status": "loaded",
                 "model_source": self.model_source,
                 "model_version": self.model_version,
+                "checkpoint_path": str(Path(checkpoint)),
                 "checkpoint_metadata": metadata,
             }
             return

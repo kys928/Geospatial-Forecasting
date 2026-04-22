@@ -76,3 +76,17 @@ convlstm_training:
   plume_centroid_metric_enabled: true
   # Raster-space center-of-mass distance (index space, not geographic distance).
   plume_centroid_metric_space: transformed
+
+  # Phase-N operational control-plane defaults.
+  retraining_enabled: true
+  retraining_min_new_samples: 100
+  retraining_manual_only: false
+  retraining_min_interval_seconds: null
+  promotion_enabled: true
+  promotion_metric_name: val_mse
+  promotion_metric_direction: min
+  promotion_min_improvement: 0.0
+  promotion_manual_approval_required: false
+  promotion_max_regression_support_iou: null
+  promotion_max_regression_centroid: null
+

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -219,4 +220,95 @@ def test_convlstm_backend_raises_for_invalid_checkpoint(tmp_path: Path):
     )
 
     with pytest.raises(ValueError, match="shape mismatch"):
+        ConvLSTMBackend(config=Config(config_dir=tmp_path))
+
+
+def _write_model_registry(path: Path, *, active_model_id: str, model_path: Path, status: str = "active") -> None:
+    payload = {
+        "active_model_id": active_model_id,
+        "previous_active_model_id": None,
+        "events": [],
+        "models": [
+            {
+                "model_id": active_model_id,
+                "path": str(model_path),
+                "status": status,
+                "contract_version": "convlstm-v1",
+                "target_policy": "plume_only",
+                "normalization_mode": "none",
+                "checkpoint_metric": {"name": "val_mse", "value": 0.2},
+            }
+        ],
+    }
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+
+def test_convlstm_backend_loads_active_checkpoint_from_registry_when_enabled(tmp_path: Path):
+    checkpoint = tmp_path / "active_weights.npz"
+    _save_checkpoint(checkpoint, input_channels=10, hidden_channels=8, model_version="registry-model-v1")
+    registry_path = tmp_path / "model_registry.json"
+    _write_model_registry(registry_path, active_model_id="model-reg-1", model_path=checkpoint)
+
+    _write_backend_yaml(
+        tmp_path,
+        {
+            "default_backend": "convlstm_online",
+            "fallback_backend": "gaussian_fallback",
+            "state_store": "in_memory",
+            "use_model_registry": True,
+            "model_registry_path": str(registry_path),
+            "convlstm_sequence_length": 3,
+            "convlstm_input_channels": 10,
+        },
+    )
+
+    backend = ConvLSTMBackend(config=Config(config_dir=tmp_path))
+    session = backend.create_session()
+    assert session.runtime_metadata["model_source"] == "registry_active"
+    assert session.runtime_metadata["model_version"] == "model-reg-1"
+    assert session.runtime_metadata["model_load"]["resolved_active_model"]["checkpoint_path"] == str(checkpoint)
+
+
+def test_convlstm_backend_registry_disabled_preserves_static_checkpoint_behavior(tmp_path: Path):
+    checkpoint = tmp_path / "weights.npz"
+    _save_checkpoint(checkpoint, input_channels=10, hidden_channels=8, model_version="legacy-static")
+    _write_backend_yaml(
+        tmp_path,
+        {
+            "default_backend": "convlstm_online",
+            "fallback_backend": "gaussian_fallback",
+            "state_store": "in_memory",
+            "use_model_registry": False,
+            "convlstm_checkpoint_path": str(checkpoint),
+            "convlstm_sequence_length": 3,
+            "convlstm_input_channels": 10,
+        },
+    )
+
+    backend = ConvLSTMBackend(config=Config(config_dir=tmp_path))
+    session = backend.create_session()
+    assert session.runtime_metadata["model_source"] == "checkpoint"
+    assert session.runtime_metadata["model_version"] == "legacy-static"
+
+
+def test_convlstm_backend_registry_mode_requires_active_status_record(tmp_path: Path):
+    checkpoint = tmp_path / "active_weights.npz"
+    _save_checkpoint(checkpoint, input_channels=10, hidden_channels=8)
+    registry_path = tmp_path / "model_registry.json"
+    _write_model_registry(registry_path, active_model_id="model-reg-2", model_path=checkpoint, status="candidate")
+
+    _write_backend_yaml(
+        tmp_path,
+        {
+            "default_backend": "convlstm_online",
+            "fallback_backend": "gaussian_fallback",
+            "state_store": "in_memory",
+            "use_model_registry": True,
+            "model_registry_path": str(registry_path),
+            "convlstm_sequence_length": 3,
+            "convlstm_input_channels": 10,
+        },
+    )
+
+    with pytest.raises(ValueError, match="status='active'"):
         ConvLSTMBackend(config=Config(config_dir=tmp_path))
