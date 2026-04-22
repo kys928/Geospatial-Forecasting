@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 import json
 from pathlib import Path
 
@@ -66,6 +66,18 @@ class ConvLSTMTrainingConfig:
     plume_support_threshold_value: float = 0.1
     plume_centroid_metric_enabled: bool = True
     plume_centroid_metric_space: str = "transformed"
+
+
+@dataclass(frozen=True)
+class ConvLSTMRunArtifacts:
+    """Stable file layout for narrow trainer-local run artifacts."""
+
+    output_dir: Path
+    run_config_path: Path
+    epoch_reports_path: Path
+    run_events_path: Path
+    best_checkpoint_summary_path: Path
+    run_summary_path: Path
 
 
 class CanonicalConvLSTMSampleDataset:
@@ -234,6 +246,10 @@ class ConvLSTMPlumeTrainer:
         self._metric_stage_last_value: float | None = None
         self._metric_stage_last_advanced: bool = False
         self._metric_stage_last_update_epoch: int | None = None
+        self._run_artifacts: ConvLSTMRunArtifacts | None = None
+        self._run_event_index: int = 0
+        self._last_epoch_report: dict[str, object] | None = None
+        self._last_run_summary: dict[str, object] | None = None
 
     @property
     def metadata(self) -> dict[str, object]:
@@ -297,6 +313,148 @@ class ConvLSTMPlumeTrainer:
             "best_checkpoint_epoch": self.best_checkpoint_epoch,
             "best_checkpoint_step": self.best_checkpoint_step,
         }
+
+    @property
+    def run_artifacts(self) -> ConvLSTMRunArtifacts | None:
+        return self._run_artifacts
+
+    def initialize_run_artifacts(self, output_dir: str | Path) -> ConvLSTMRunArtifacts:
+        artifacts_dir = Path(output_dir)
+        artifacts_dir.mkdir(parents=True, exist_ok=True)
+        self._run_artifacts = ConvLSTMRunArtifacts(
+            output_dir=artifacts_dir,
+            run_config_path=artifacts_dir / "run_config.json",
+            epoch_reports_path=artifacts_dir / "epoch_reports.jsonl",
+            run_events_path=artifacts_dir / "run_events.jsonl",
+            best_checkpoint_summary_path=artifacts_dir / "best_checkpoint_summary.json",
+            run_summary_path=artifacts_dir / "run_summary.json",
+        )
+        self._run_event_index = 0
+        self._write_json(self._run_artifacts.run_config_path, self._build_run_config_snapshot())
+        self._run_artifacts.epoch_reports_path.write_text("", encoding="utf-8")
+        self._run_artifacts.run_events_path.write_text("", encoding="utf-8")
+        self.append_run_event(
+            event_type="run_start",
+            payload={"artifact_dir": str(self._run_artifacts.output_dir)},
+        )
+        return self._run_artifacts
+
+    def append_epoch_report(self, report: dict[str, object]) -> None:
+        if self._run_artifacts is None:
+            return
+        self._append_jsonl(self._run_artifacts.epoch_reports_path, report)
+        self._last_epoch_report = dict(report)
+
+    def append_run_event(
+        self,
+        *,
+        event_type: str,
+        payload: dict[str, object] | None = None,
+        epoch: int | None = None,
+        step: int | None = None,
+    ) -> None:
+        if self._run_artifacts is None:
+            return
+        event = {
+            "event_index": self._run_event_index,
+            "event_type": event_type,
+            "epoch": None if epoch is None else int(epoch),
+            "step": None if step is None else int(step),
+            "payload": payload or {},
+        }
+        self._append_jsonl(self._run_artifacts.run_events_path, event)
+        self._run_event_index += 1
+
+    def save_best_checkpoint_summary(self, *, checkpoint_path: str | Path | None = None) -> dict[str, object] | None:
+        if self._run_artifacts is None:
+            return None
+        summary = {
+            "best_metric_name": self.best_checkpoint_metric_name,
+            "best_metric_value": self.best_checkpoint_metric_value,
+            "epoch": self.best_checkpoint_epoch,
+            "step": self.best_checkpoint_step,
+            "checkpoint_path": None if checkpoint_path is None else str(checkpoint_path),
+            "contract_version": CONVLSTM_CONTRACT_VERSION,
+            "target_policy": self.config.target_policy,
+            "normalization_mode": self.config.normalization_mode,
+            "trainable_parameter_scope": self.config.trainable_parameter_scope,
+            "active_stage": self._last_active_stage,
+            "effective_lambdas": {
+                "lambda_smooth": self._last_effective_lambda_smooth,
+                "lambda_mass": self._last_effective_lambda_mass,
+            },
+        }
+        self._write_json(self._run_artifacts.best_checkpoint_summary_path, summary)
+        return summary
+
+    def finalize_run_summary(
+        self,
+        *,
+        final_epoch: int,
+        final_train_metrics: dict[str, float] | None = None,
+        final_validation_metrics: dict[str, float] | None = None,
+    ) -> dict[str, object] | None:
+        if self._run_artifacts is None:
+            return None
+        best_summary = self._load_json_if_exists(self._run_artifacts.best_checkpoint_summary_path)
+        summary = {
+            "final_epoch": int(final_epoch),
+            "final_train_metrics": dict(final_train_metrics or {}),
+            "final_validation_metrics": dict(final_validation_metrics or {}),
+            "best_checkpoint": best_summary,
+            "final_active_stage": self._last_active_stage,
+            "final_effective_lambdas": {
+                "lambda_smooth": self._last_effective_lambda_smooth,
+                "lambda_mass": self._last_effective_lambda_mass,
+            },
+            "metric_stage_progression_enabled": self.config.metric_stage_progression_enabled,
+            "policy": {
+                "contract_version": CONVLSTM_CONTRACT_VERSION,
+                "target_policy": self.config.target_policy,
+                "normalization_mode": self.config.normalization_mode,
+                "trainable_parameter_scope": self.config.trainable_parameter_scope,
+                "loss_space": self.config.loss_space,
+                "eval_metric": self.config.eval_metric,
+                "checkpoint_metric": self.config.checkpoint_metric,
+            },
+            "artifacts": {
+                "run_config": str(self._run_artifacts.run_config_path),
+                "epoch_reports": str(self._run_artifacts.epoch_reports_path),
+                "run_events": str(self._run_artifacts.run_events_path),
+                "best_checkpoint_summary": str(self._run_artifacts.best_checkpoint_summary_path),
+                "run_summary": str(self._run_artifacts.run_summary_path),
+            },
+        }
+        self._write_json(self._run_artifacts.run_summary_path, summary)
+        self._last_run_summary = dict(summary)
+        self.append_run_event(event_type="run_end", epoch=final_epoch, payload={"run_summary": str(self._run_artifacts.run_summary_path)})
+        return summary
+
+    def _build_run_config_snapshot(self) -> dict[str, object]:
+        snapshot = {
+            "contract_version": CONVLSTM_CONTRACT_VERSION,
+            "canonical_input_shape": CONVLSTM_STORED_INPUT_SHAPE,
+            "canonical_stored_target_shape": CONVLSTM_STORED_TARGET_SHAPE,
+            "canonical_supervised_target_shape": (1, 1, CONVLSTM_GRID_HEIGHT, CONVLSTM_GRID_WIDTH),
+            "plume_target_channel": CONVLSTM_PLUME_TARGET_CHANNEL,
+            "config": asdict(self.config),
+        }
+        return snapshot
+
+    @staticmethod
+    def _write_json(path: Path, payload: dict[str, object]) -> None:
+        path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+    @staticmethod
+    def _append_jsonl(path: Path, payload: dict[str, object]) -> None:
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(payload, sort_keys=True) + "\n")
+
+    @staticmethod
+    def _load_json_if_exists(path: Path) -> dict[str, object] | None:
+        if not path.exists():
+            return None
+        return dict(json.loads(path.read_text(encoding="utf-8")))
 
     def train_step(
         self,
@@ -421,6 +579,11 @@ class ConvLSTMPlumeTrainer:
         self._metric_stage_satisfaction_streak = 0
         self._metric_stage_last_advanced = True
         self._last_active_stage = self._metric_active_stage
+        self.append_run_event(
+            event_type="stage_advanced",
+            epoch=epoch,
+            payload={"active_stage": self._metric_active_stage, "metric": metric_name, "metric_value": metric_value},
+        )
         return True
 
     def train_epoch(self, batch_iterable: list[tuple[np.ndarray, np.ndarray]], *, epoch: int = 0) -> float:
@@ -573,7 +736,7 @@ class ConvLSTMPlumeTrainer:
         active_stage = int(train_metrics.get("train_active_stage", self._last_active_stage))
         effective_lambda_smooth = float(train_metrics.get("train_effective_lambda_smooth", self._last_effective_lambda_smooth))
         effective_lambda_mass = float(train_metrics.get("train_effective_lambda_mass", self._last_effective_lambda_mass))
-        return {
+        report = {
             "epoch": int(epoch),
             "active_stage": active_stage,
             "effective_lambdas": {
@@ -590,6 +753,8 @@ class ConvLSTMPlumeTrainer:
                 "is_best": is_best_checkpoint,
             },
         }
+        self.append_epoch_report(report)
+        return report
 
     def update_best_checkpoint(self, *, metrics: dict[str, float], epoch: int, step: int | None = None) -> bool:
         metric_name = self.config.checkpoint_metric
@@ -609,6 +774,13 @@ class ConvLSTMPlumeTrainer:
             self.best_checkpoint_metric_value = metric_value
             self.best_checkpoint_epoch = int(epoch)
             self.best_checkpoint_step = None if step is None else int(step)
+            self.save_best_checkpoint_summary()
+            self.append_run_event(
+                event_type="best_checkpoint_improved",
+                epoch=epoch,
+                step=step,
+                payload={"metric_name": metric_name, "metric_value": metric_value},
+            )
         return improved
 
     def save_checkpoint(
@@ -651,6 +823,14 @@ class ConvLSTMPlumeTrainer:
             checkpoint_metadata_json=np.array(json.dumps(metadata), dtype=np.str_),
             contract_version=np.array(CONVLSTM_CONTRACT_VERSION, dtype=np.str_),
         )
+        self.append_run_event(
+            event_type="checkpoint_saved",
+            epoch=epoch,
+            step=step,
+            payload={"path": str(checkpoint_path), "is_best": bool(is_best)},
+        )
+        if bool(is_best):
+            self.save_best_checkpoint_summary(checkpoint_path=checkpoint_path)
         return {"path": str(checkpoint_path), "metadata": metadata}
 
     def load_checkpoint(self, path: str | Path, *, strict: bool = True) -> dict[str, object]:
