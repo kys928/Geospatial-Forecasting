@@ -66,6 +66,12 @@ def test_training_config_defaults_preserve_no_extra_normalization_and_plume_poli
     assert cfg.lambda_smooth == 0.0
     assert cfg.lambda_mass == 0.0
     assert cfg.mass_loss_space == "transformed"
+    assert cfg.plume_mass_metric_enabled is True
+    assert cfg.plume_mass_metric_include_raw is False
+    assert cfg.plume_support_metric_enabled is True
+    assert cfg.plume_support_threshold_space == "transformed"
+    assert cfg.plume_centroid_metric_enabled is True
+    assert cfg.plume_centroid_metric_space == "transformed"
 
 
 def test_plume_trainer_metadata_and_smoke_train_step():
@@ -163,7 +169,14 @@ def test_evaluate_batch_returns_stable_transformed_metric_keys_by_default():
 
     metrics = trainer.evaluate_batch(batch_input=batch_input, batch_target=batch_target)
 
-    assert set(metrics.keys()) == {"val_mse", "val_mae", "val_rmse"}
+    assert set(metrics.keys()) == {
+        "val_mse",
+        "val_mae",
+        "val_rmse",
+        "val_mass_abs_error_transformed",
+        "val_support_iou_transformed",
+        "val_centroid_distance_raster_transformed",
+    }
     assert all(np.isfinite(v) for v in metrics.values())
 
 
@@ -192,6 +205,10 @@ def test_evaluate_epoch_matches_batch_metrics_for_single_batch_and_supports_raw_
         "val_raw_mse",
         "val_raw_mae",
         "val_raw_rmse",
+        "val_mass_abs_error_transformed",
+        "val_mass_abs_error_raw",
+        "val_support_iou_transformed",
+        "val_centroid_distance_raster_transformed",
     }
     for key in batch_metrics:
         assert epoch_metrics[key] == pytest.approx(batch_metrics[key])
@@ -353,6 +370,97 @@ def test_no_hidden_normalization_drift_with_physics_scaffolding_enabled():
     )
     trainer = ConvLSTMPlumeTrainer(model=model, config=cfg)
     assert trainer.metadata["normalization_mode"] == "none"
+
+
+def test_phase_j_mass_metric_is_zero_for_matching_and_positive_for_mismatch():
+    model = MinimalConvLSTMModel(input_channels=10, hidden_channels=2, seed=36)
+    trainer = ConvLSTMPlumeTrainer(model=model)
+    pred = np.ones((2, 64, 64), dtype=float) * 0.5
+    target_match = np.ones((2, 64, 64), dtype=float) * 0.5
+    target_mismatch = np.ones((2, 64, 64), dtype=float) * 0.8
+
+    match = trainer._mass_abs_error(pred=pred, target=target_match)
+    mismatch = trainer._mass_abs_error(pred=pred, target=target_mismatch)
+    assert match == pytest.approx(0.0)
+    assert mismatch > 0.0
+
+
+def test_phase_j_support_iou_is_one_for_identical_and_zero_for_disjoint_masks():
+    model = MinimalConvLSTMModel(input_channels=10, hidden_channels=2, seed=37)
+    trainer = ConvLSTMPlumeTrainer(model=model)
+
+    pred_identical = np.zeros((1, 64, 64), dtype=float)
+    target_identical = np.zeros((1, 64, 64), dtype=float)
+    pred_identical[:, 10:20, 10:20] = 1.0
+    target_identical[:, 10:20, 10:20] = 1.0
+
+    pred_disjoint = np.zeros((1, 64, 64), dtype=float)
+    target_disjoint = np.zeros((1, 64, 64), dtype=float)
+    pred_disjoint[:, 0:5, 0:5] = 1.0
+    target_disjoint[:, 50:55, 50:55] = 1.0
+
+    iou_identical = trainer._support_iou(pred=pred_identical, target=target_identical, threshold=0.1)
+    iou_disjoint = trainer._support_iou(pred=pred_disjoint, target=target_disjoint, threshold=0.1)
+    assert iou_identical == pytest.approx(1.0)
+    assert iou_disjoint == pytest.approx(0.0)
+
+
+def test_phase_j_centroid_distance_raster_increases_for_shifted_plume_center():
+    model = MinimalConvLSTMModel(input_channels=10, hidden_channels=2, seed=38)
+    trainer = ConvLSTMPlumeTrainer(model=model)
+
+    pred = np.zeros((1, 64, 64), dtype=float)
+    target = np.zeros((1, 64, 64), dtype=float)
+    pred[:, 8:12, 8:12] = 1.0
+    target[:, 20:24, 20:24] = 1.0
+
+    distance = trainer._centroid_distance_raster(pred=pred, target=target)
+    assert distance > 0.0
+    assert distance == pytest.approx(np.sqrt((21.5 - 9.5) ** 2 + (21.5 - 9.5) ** 2))
+
+
+def test_phase_j_metric_enable_disable_and_naming_are_explicit():
+    model = MinimalConvLSTMModel(input_channels=10, hidden_channels=2, seed=39)
+    cfg = ConvLSTMTrainingConfig(
+        plume_mass_metric_enabled=True,
+        plume_mass_metric_include_raw=False,
+        plume_support_metric_enabled=False,
+        plume_centroid_metric_enabled=False,
+    )
+    trainer = ConvLSTMPlumeTrainer(model=model, config=cfg)
+
+    batch_input = np.zeros((1, 3, 10, 64, 64), dtype=float)
+    batch_target = np.zeros((1, 1, 10, 64, 64), dtype=float)
+    metrics = trainer.evaluate_batch(batch_input=batch_input, batch_target=batch_target, include_raw_space=False)
+    assert "val_mass_abs_error_transformed" in metrics
+    assert "val_mass_abs_error_raw" not in metrics
+    assert "val_support_iou_transformed" not in metrics
+    assert "val_centroid_distance_raster_transformed" not in metrics
+
+    cfg_raw = ConvLSTMTrainingConfig(
+        plume_support_threshold_space="raw",
+        plume_centroid_metric_space="raw",
+    )
+    trainer_raw = ConvLSTMPlumeTrainer(model=model, config=cfg_raw)
+    metrics_raw = trainer_raw.evaluate_batch(batch_input=batch_input, batch_target=batch_target, include_raw_space=False)
+    assert "val_support_iou_raw" in metrics_raw
+    assert "val_centroid_distance_raster_raw" in metrics_raw
+
+
+def test_phase_j_epoch_report_contains_stable_compact_keys():
+    model = MinimalConvLSTMModel(input_channels=10, hidden_channels=2, seed=45)
+    trainer = ConvLSTMPlumeTrainer(model=model)
+
+    report = trainer.build_epoch_report(
+        epoch=3,
+        train_metrics={"train_total_loss": 0.4, "train_active_stage": 1.0, "train_effective_lambda_smooth": 0.2},
+        val_metrics={"val_mse": 0.3, "val_mass_abs_error_transformed": 0.1},
+        is_best_checkpoint=True,
+    )
+    assert set(report.keys()) == {"epoch", "active_stage", "effective_lambdas", "train", "validation", "checkpoint"}
+    assert set(report["effective_lambdas"].keys()) == {"lambda_smooth", "lambda_mass"}
+    assert report["checkpoint"]["is_best"] is True
+    assert "val_mse" in report["validation"]
 
 
 def test_phase_h_stage_zero_supervised_only_weights_are_zero_and_exposed():
