@@ -346,3 +346,27 @@ input {
     grid-column: 1 / -1;
   }
 }
+.workspace-grid {
+  display: grid;
+  grid-template-columns: 280px 1fr 420px;
+  gap: 12px;
+}
+
+textarea {
+  font: inherit;
+  border: 1px solid #d7deea;
+  border-radius: 8px;
+  padding: 8px 10px;
+  width: 100%;
+}
+
+.role-switcher {
+  display: grid;
+  gap: 6px;
+}
+
+@media (max-width: 1280px) {
+  .workspace-grid {
+    grid-template-columns: 1fr;
+  }
+}
