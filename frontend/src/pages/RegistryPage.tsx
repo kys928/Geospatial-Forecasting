@@ -35,7 +35,7 @@ export function RegistryPage() {
       metaItems={[{ label: registry?.active_model_id ? `Active: ${registry.active_model_id}` : "Model registry" }]}
     >
       <div className="workspace-grid">
-        <div style={{ display: "grid", gap: 12 }}>
+        <div className="workspace-column">
           <BackendCapabilitiesPanel registry={registry} />
           <button className="primary-button" onClick={() => void refresh()}>{loading ? "Refreshing..." : "Refresh registry"}</button>
           <ActivationPanel
@@ -53,12 +53,12 @@ export function RegistryPage() {
           />
         </div>
 
-        <div style={{ display: "grid", gap: 12 }}>
+        <div className="workspace-column">
           <RegistryModelsTable models={registry?.models ?? []} selectedModelId={selectedModelId} onSelectModel={setSelectedModelId} />
           <RegistryEventStream events={registry?.events ?? []} approvalAudit={registry?.approval_audit ?? []} />
         </div>
 
-        <div style={{ display: "grid", gap: 12 }}>
+        <div className="workspace-column">
           <ModelVersionInspector model={selectedModel} />
           <section className="panel">
             <h3>Action output</h3>

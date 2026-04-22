@@ -17,10 +17,9 @@ export function EventsPage() {
       title="Events workspace"
       subtitle="Review the operational event timeline and audit context."
       statusText={eventsState.error ?? (eventsState.loading ? "Loading events..." : "Ready")}
-      metaItems={[{ label: "Ops event stream" }]}
     >
       <div className="workspace-grid">
-        <div style={{ display: "grid", gap: 12 }}>
+        <div className="workspace-column">
           <EventFilters
             searchText={eventsState.searchText}
             onSearchTextChange={eventsState.setSearchText}
@@ -32,11 +31,11 @@ export function EventsPage() {
           <AuditSummaryPanel events={eventsState.filteredEvents} />
         </div>
 
-        <div style={{ display: "grid", gap: 12 }}>
+        <div className="workspace-column">
           <IncidentTimeline events={eventsState.filteredEvents} selectedIndex={selectedIndex} onSelect={setSelectedIndex} />
         </div>
 
-        <div style={{ display: "grid", gap: 12 }}>
+        <div className="workspace-column">
           <EventDetailDrawer event={selectedEvent} />
         </div>
       </div>

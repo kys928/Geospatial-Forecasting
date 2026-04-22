@@ -72,10 +72,17 @@ export function RetrainingTriggerForm({ disabled, onSubmit }: RetrainingTriggerF
   return (
     <section className="panel retraining-panel">
       <h3>Trigger retraining</h3>
-      <p className="muted">Guided mode is for local pod testing. These paths are local filesystem locations, not remote registry references.</p>
-      <p className="muted">Worker must be running for queued jobs to progress. Auth may be required based on backend settings and configured ops token.</p>
+      <p className="muted">
+        Guided mode is for local pod testing. These paths are local filesystem locations, not remote registry references.
+      </p>
+      <p className="muted retraining-help">
+        Sequence: load preset → inspect/edit payload → submit retraining job → refresh status, jobs, and events.
+      </p>
+      <p className="muted retraining-help">
+        Worker must be running for queued jobs to progress. Auth may be required based on backend settings and configured ops token.
+      </p>
 
-      <div className="button-row">
+      <div className="button-row mode-toggle-row">
         <button className={useGuidedMode ? "primary-button" : "secondary-button"} onClick={() => setUseGuidedMode(true)} type="button">Guided local subset</button>
         <button className={!useGuidedMode ? "primary-button" : "secondary-button"} onClick={() => setUseGuidedMode(false)} type="button">Raw payload mode</button>
       </div>
@@ -83,7 +90,7 @@ export function RetrainingTriggerForm({ disabled, onSubmit }: RetrainingTriggerF
       {notice ? <p className="muted retraining-notice">{notice}</p> : null}
 
       {useGuidedMode ? (
-        <div className="button-row">
+        <div className="button-row retraining-guided-actions">
           <button className="secondary-button" type="button" onClick={applyLocalPreset}>Use local subset preset</button>
           <button className="secondary-button" type="button" onClick={handleCopyPayload}>Copy JSON payload</button>
           <button className="secondary-button" type="button" onClick={resetForRawMode}>Reset to raw mode</button>

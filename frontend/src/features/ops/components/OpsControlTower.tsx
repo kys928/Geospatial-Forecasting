@@ -12,7 +12,9 @@ export function OpsControlTower({ status, loading, onRefreshStatus, onRefreshJob
   return (
     <section className="panel">
       <h3>Ops control tower</h3>
-      <p className="muted">Use refresh controls after submitting retraining jobs to confirm worker progress across status, jobs, and events.</p>
+      <p className="muted">
+        After submitting retraining, use these refresh controls to verify progress across status, jobs, and events.
+      </p>
       <div className="button-row">
         <button className="primary-button" onClick={onRefreshStatus}>{loading ? "Refreshing..." : "Refresh status"}</button>
         <button className="secondary-button" onClick={onRefreshJobs}>Refresh jobs</button>
