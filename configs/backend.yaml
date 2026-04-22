@@ -6,3 +6,6 @@ auto_update_on_ingest: true
 convlstm_sequence_length: 3
 convlstm_input_channels: 10
 convlstm_input_mode: degraded
+
+use_model_registry: false
+model_registry_path: null
