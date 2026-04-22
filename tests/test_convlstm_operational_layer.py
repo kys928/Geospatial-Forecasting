@@ -86,6 +86,49 @@ def test_model_registry_candidate_registration_and_resolution(tmp_path: Path):
     assert candidate["status"] == "candidate"
     payload = registry.load()
     assert payload["models"][0]["model_id"] == "cand-001"
+    assert payload["revision"] >= 1
+    assert payload["events"][0]["event_index"] == 0
+    assert payload["next_event_index"] == 1
+
+
+def test_model_registry_lock_acquire_release_and_conflict(tmp_path: Path):
+    registry = ModelRegistry(tmp_path / "registry.json")
+    with registry.acquire_lock():
+        assert registry.lock_path.exists()
+        with pytest.raises(RuntimeError, match="Could not acquire model registry lock"):
+            with registry.acquire_lock():
+                pass
+    assert not registry.lock_path.exists()
+
+
+def test_model_registry_atomic_save_preserves_previous_registry_on_replace_failure(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    registry_path = tmp_path / "registry.json"
+    registry = ModelRegistry(registry_path)
+    registry.save({"active_model_id": "active-1", "previous_active_model_id": None, "models": [], "events": [], "approval_audit": []})
+    original = registry_path.read_text(encoding="utf-8")
+
+    original_replace = Path.replace
+
+    def _failing_replace(self: Path, target: Path) -> Path:  # pragma: no cover - deterministic branch in this test
+        if self.name.endswith(".tmp"):
+            raise OSError("forced replace failure")
+        return original_replace(self, target)
+
+    monkeypatch.setattr(Path, "replace", _failing_replace)
+    with pytest.raises(OSError, match="forced replace failure"):
+        registry.save({"active_model_id": "active-2", "previous_active_model_id": "active-1", "models": [], "events": [], "approval_audit": []})
+
+    assert registry_path.read_text(encoding="utf-8") == original
+    assert not any(p.name.endswith(".tmp") for p in tmp_path.iterdir())
+
+
+def test_model_registry_revision_increments_on_successful_mutations(tmp_path: Path):
+    registry = ModelRegistry(tmp_path / "registry.json")
+    registry.save({"active_model_id": None, "previous_active_model_id": None, "models": [], "events": [], "approval_audit": []})
+    first = registry.load()
+    registry.save(first)
+    second = registry.load()
+    assert second["revision"] == first["revision"] + 1
 
 
 def test_register_candidate_rejects_missing_checkpoint(tmp_path: Path):
