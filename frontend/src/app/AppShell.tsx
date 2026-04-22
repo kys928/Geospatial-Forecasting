@@ -1,7 +1,6 @@
 import type { ReactNode } from "react";
 import { TopNav } from "../components/navigation/TopNav";
 import { WorkspaceTabs } from "../components/navigation/WorkspaceTabs";
-import { RoleSwitcher } from "../components/navigation/RoleSwitcher";
 import { GlobalStatusStrip } from "../components/navigation/GlobalStatusStrip";
 import type { ApiMode } from "../features/forecast/types/forecast.types";
 
@@ -21,7 +20,6 @@ export function AppShell({ children, title, subtitle, statusText, apiMode, apiHe
       <TopNav title={title} subtitle={subtitle} apiMode={apiMode} apiHealthy={apiHealthy} metaItems={metaItems} />
       <div className="workspace-nav-row panel">
         <WorkspaceTabs />
-        <RoleSwitcher />
       </div>
       <main>{children}</main>
       {statusText ? <GlobalStatusStrip statusText={statusText} /> : null}

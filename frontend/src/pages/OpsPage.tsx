@@ -58,10 +58,10 @@ export function OpsPage() {
       title="Ops workspace"
       subtitle="Operate retraining, approvals, and promotion workflow with backend-backed actions."
       statusText={statusText}
-      metaItems={[{ label: "Local pod testing" }, { label: "Manual approvals" }]}
+      metaItems={[{ label: "Manual approvals" }]}
     >
       <div className="workspace-grid">
-        <div style={{ display: "grid", gap: 12 }}>
+        <div className="workspace-column">
           <RetrainingTriggerForm
             disabled={actions.runningAction !== null}
             onSubmit={async (payload) => {
@@ -94,7 +94,7 @@ export function OpsPage() {
           />
         </div>
 
-        <div style={{ display: "grid", gap: 12 }}>
+        <div className="workspace-column">
           <OpsControlTower
             status={status.status}
             loading={status.loading}
@@ -109,7 +109,7 @@ export function OpsPage() {
           <RetrainingPipelinePanel jobs={jobs.jobs?.jobs ?? status.status?.current_retraining_jobs ?? []} />
         </div>
 
-        <div style={{ display: "grid", gap: 12 }}>
+        <div className="workspace-column">
           <ActiveModelPanel activeModel={status.status?.active_model ?? null} />
           <CandidateModelPanel candidateModel={status.status?.candidate_model ?? null} />
           <OpsEventsPreview events={events} />

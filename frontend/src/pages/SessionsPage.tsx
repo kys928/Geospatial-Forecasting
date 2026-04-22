@@ -27,10 +27,10 @@ export function SessionsPage() {
     <AppShell
       title="Sessions workspace"
       subtitle="Create and operate forecasting sessions with ingest, update, and prediction actions."
-      metaItems={[{ label: sessionState.detail?.model_name ?? "Session management" }]}
+      metaItems={sessionState.detail?.model_name ? [{ label: sessionState.detail.model_name }] : undefined}
     >
       <div className="workspace-grid">
-        <div style={{ display: "grid", gap: 12 }}>
+        <div className="workspace-column">
           <SessionListPanel
             sessions={sessions}
             selectedSessionId={effectiveSessionId}
@@ -47,7 +47,7 @@ export function SessionsPage() {
           {error ? <section className="panel muted">{error}</section> : null}
         </div>
 
-        <div style={{ display: "grid", gap: 12 }}>
+        <div className="workspace-column">
           <SessionStateRibbon detail={sessionState.detail} state={sessionState.state} />
           <SessionBackendPanel detail={sessionState.detail} />
           <SessionActionBar
@@ -61,7 +61,7 @@ export function SessionsPage() {
           <SessionStateInspector detail={sessionState.detail} state={sessionState.state} />
         </div>
 
-        <div style={{ display: "grid", gap: 12 }}>
+        <div className="workspace-column">
           <ObservationIngestPanel
             disabled={!effectiveSessionId || actions.runningAction !== null}
             onIngest={async (observations) => {
