@@ -353,3 +353,108 @@ def test_no_hidden_normalization_drift_with_physics_scaffolding_enabled():
     )
     trainer = ConvLSTMPlumeTrainer(model=model, config=cfg)
     assert trainer.metadata["normalization_mode"] == "none"
+
+
+def test_phase_h_stage_zero_supervised_only_weights_are_zero_and_exposed():
+    model = MinimalConvLSTMModel(input_channels=10, hidden_channels=2, seed=40)
+    cfg = ConvLSTMTrainingConfig(
+        physics_loss_enabled=True,
+        physics_schedule_enabled=True,
+        physics_schedule_stage_boundaries=(0, 3),
+        physics_schedule_lambda_smooth=(0.0, 0.2),
+        physics_schedule_lambda_mass=(0.0, 0.1),
+    )
+    trainer = ConvLSTMPlumeTrainer(model=model, config=cfg)
+    batch_input = np.zeros((1, 3, 10, 64, 64), dtype=float)
+    batch_target = np.zeros((1, 1, 10, 64, 64), dtype=float)
+    metrics = trainer.train_step_with_metrics(batch_input=batch_input, batch_target=batch_target, epoch=0)
+    assert metrics["train_effective_lambda_smooth"] == pytest.approx(0.0)
+    assert metrics["train_effective_lambda_mass"] == pytest.approx(0.0)
+    assert metrics["train_active_stage"] == pytest.approx(0.0)
+    assert metrics["train_total_loss"] == pytest.approx(metrics["train_supervised_loss"])
+
+
+def test_phase_h_later_stage_activates_weights_and_total_loss_uses_effective_lambdas():
+    model = MinimalConvLSTMModel(input_channels=10, hidden_channels=2, seed=41)
+    cfg = ConvLSTMTrainingConfig(
+        physics_loss_enabled=True,
+        physics_schedule_enabled=True,
+        physics_schedule_stage_boundaries=(0, 2),
+        physics_schedule_lambda_smooth=(0.0, 0.3),
+        physics_schedule_lambda_mass=(0.0, 0.4),
+    )
+    trainer = ConvLSTMPlumeTrainer(model=model, config=cfg)
+    pred = np.ones((64, 64), dtype=float)
+    target = np.zeros((64, 64), dtype=float)
+    components = trainer._loss_components(
+        pred=pred,
+        target=target,
+        effective_lambda_smooth=0.3,
+        effective_lambda_mass=0.4,
+    )
+    expected_total = components["supervised_loss"] + 0.3 * components["smoothness_loss"] + 0.4 * components["mass_loss"]
+    assert components["total_loss"] == pytest.approx(expected_total)
+
+    weights = trainer._effective_physics_weights(epoch=2, step=0)
+    assert weights["lambda_smooth"] == pytest.approx(0.3)
+    assert weights["lambda_mass"] == pytest.approx(0.4)
+    assert weights["active_stage"] == pytest.approx(1.0)
+
+
+def test_phase_h_linear_ramp_computes_expected_intermediate_weight():
+    model = MinimalConvLSTMModel(input_channels=10, hidden_channels=2, seed=42)
+    cfg = ConvLSTMTrainingConfig(
+        physics_loss_enabled=True,
+        physics_schedule_enabled=True,
+        physics_schedule_stage_boundaries=(0, 5),
+        physics_schedule_lambda_smooth=(0.0, 0.6),
+        physics_schedule_lambda_mass=(0.0, 0.0),
+        smoothness_ramp_type="linear",
+        smoothness_ramp_start=5,
+        smoothness_ramp_end=9,
+    )
+    trainer = ConvLSTMPlumeTrainer(model=model, config=cfg)
+    weights_epoch_5 = trainer._effective_physics_weights(epoch=5, step=0)
+    weights_epoch_7 = trainer._effective_physics_weights(epoch=7, step=0)
+    weights_epoch_9 = trainer._effective_physics_weights(epoch=9, step=0)
+    assert weights_epoch_5["lambda_smooth"] == pytest.approx(0.0)
+    assert weights_epoch_7["lambda_smooth"] == pytest.approx(0.3)
+    assert weights_epoch_9["lambda_smooth"] == pytest.approx(0.6)
+
+
+def test_phase_h_scheduling_disabled_matches_static_phase_g_behavior():
+    model = MinimalConvLSTMModel(input_channels=10, hidden_channels=2, seed=43)
+    cfg = ConvLSTMTrainingConfig(
+        physics_loss_enabled=True,
+        physics_schedule_enabled=False,
+        lambda_smooth=0.2,
+        lambda_mass=0.1,
+    )
+    trainer = ConvLSTMPlumeTrainer(model=model, config=cfg)
+    weights_early = trainer._effective_physics_weights(epoch=0, step=0)
+    weights_late = trainer._effective_physics_weights(epoch=10, step=10)
+    assert weights_early["lambda_smooth"] == pytest.approx(0.2)
+    assert weights_early["lambda_mass"] == pytest.approx(0.1)
+    assert weights_late["lambda_smooth"] == pytest.approx(0.2)
+    assert weights_late["lambda_mass"] == pytest.approx(0.1)
+
+
+def test_phase_h_checkpoint_selection_default_remains_val_mse_and_metadata_exposes_effective_weights():
+    model = MinimalConvLSTMModel(input_channels=10, hidden_channels=2, seed=44)
+    cfg = ConvLSTMTrainingConfig(
+        checkpoint_metric="val_mse",
+        checkpoint_direction="min",
+        physics_loss_enabled=True,
+        physics_schedule_enabled=True,
+        physics_schedule_stage_boundaries=(0, 1),
+        physics_schedule_lambda_smooth=(0.0, 0.2),
+        physics_schedule_lambda_mass=(0.0, 0.1),
+    )
+    trainer = ConvLSTMPlumeTrainer(model=model, config=cfg)
+    batch_input = np.zeros((1, 3, 10, 64, 64), dtype=float)
+    batch_target = np.zeros((1, 1, 10, 64, 64), dtype=float)
+    trainer.train_step_with_metrics(batch_input=batch_input, batch_target=batch_target, epoch=1)
+    assert trainer.config.checkpoint_metric == "val_mse"
+    assert trainer.metadata["effective_lambda_smooth"] == pytest.approx(0.2)
+    assert trainer.metadata["effective_lambda_mass"] == pytest.approx(0.1)
+    assert trainer.metadata["active_stage"] == 1
