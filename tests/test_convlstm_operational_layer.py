@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import numpy as np
 import pytest
 
 from plume.models.convlstm_contract import CONVLSTM_CONTRACT_VERSION
@@ -11,12 +12,14 @@ from plume.services.convlstm_operations import (
     OperationalEventLog,
     OperationalOrchestrator,
     OperationalState,
+    OperationalStateStore,
     PromotionPolicy,
     RetrainingJobStore,
     RetrainingPolicy,
     activate_approved_model,
     approve_candidate,
     execute_retraining_job,
+    process_next_queued_retraining_job,
     evaluate_promotion,
     evaluate_retraining_readiness,
     register_candidate_from_run,
@@ -37,7 +40,7 @@ def _write_run_artifacts(
     centroid: float = 1.0,
 ) -> None:
     run_dir.mkdir(parents=True, exist_ok=True)
-    checkpoint_path.write_bytes(b"fake")
+    np.savez(checkpoint_path, w=np.array([1.0]))
     run_summary = {
         "policy": {
             "contract_version": CONVLSTM_CONTRACT_VERSION,
@@ -207,8 +210,8 @@ def test_promotion_gate_marks_pending_state_when_manual_approval_required():
 def test_activate_and_rollback_are_safe_and_explicit(tmp_path: Path):
     active_ckpt = tmp_path / "active.npz"
     approved_ckpt = tmp_path / "approved.npz"
-    active_ckpt.write_bytes(b"a")
-    approved_ckpt.write_bytes(b"b")
+    np.savez(active_ckpt, w=np.array([1.0]))
+    np.savez(approved_ckpt, w=np.array([2.0]))
     registry = ModelRegistry(tmp_path / "registry.json")
     registry.save(
         {
@@ -220,14 +223,20 @@ def test_activate_and_rollback_are_safe_and_explicit(tmp_path: Path):
                     "model_id": "active-1",
                     "path": str(active_ckpt),
                     "status": "active",
+                    "approval_status": "not_required",
                     "contract_version": CONVLSTM_CONTRACT_VERSION,
+                    "target_policy": "plume_only",
+                    "normalization_mode": "none",
                     "checkpoint_metric": {"name": "val_mse", "value": 0.2},
                 },
                 {
                     "model_id": "cand-1",
                     "path": str(approved_ckpt),
                     "status": "approved",
+                    "approval_status": "approved_for_activation",
                     "contract_version": CONVLSTM_CONTRACT_VERSION,
+                    "target_policy": "plume_only",
+                    "normalization_mode": "none",
                     "checkpoint_metric": {"name": "val_mse", "value": 0.15},
                 },
             ],
@@ -241,6 +250,46 @@ def test_activate_and_rollback_are_safe_and_explicit(tmp_path: Path):
     rollback = rollback_to_previous_model(registry=registry)
     assert rollback["rolled_back"] is True
     assert registry.load()["active_model_id"] == "active-1"
+
+
+def test_activate_rejects_incompatible_candidate_contract_fields(tmp_path: Path):
+    active_ckpt = tmp_path / "active.npz"
+    approved_ckpt = tmp_path / "approved.npz"
+    np.savez(active_ckpt, w=np.array([1.0]))
+    np.savez(approved_ckpt, w=np.array([2.0]))
+    registry = ModelRegistry(tmp_path / "registry.json")
+    registry.save(
+        {
+            "active_model_id": "active-1",
+            "previous_active_model_id": None,
+            "events": [],
+            "approval_audit": [],
+            "models": [
+                {
+                    "model_id": "active-1",
+                    "path": str(active_ckpt),
+                    "status": "active",
+                    "approval_status": "not_required",
+                    "contract_version": CONVLSTM_CONTRACT_VERSION,
+                    "target_policy": "plume_only",
+                    "normalization_mode": "none",
+                    "checkpoint_metric": {"name": "val_mse", "value": 0.2},
+                },
+                {
+                    "model_id": "cand-1",
+                    "path": str(approved_ckpt),
+                    "status": "approved",
+                    "approval_status": "approved_for_activation",
+                    "contract_version": CONVLSTM_CONTRACT_VERSION,
+                    "target_policy": "multi_channel",
+                    "normalization_mode": "none",
+                    "checkpoint_metric": {"name": "val_mse", "value": 0.15},
+                },
+            ],
+        }
+    )
+    with pytest.raises(ValueError, match="target_policy must be plume_only"):
+        activate_approved_model(registry=registry, model_id="cand-1")
 
 
 def test_operational_event_logging_and_status_summary(tmp_path: Path):
@@ -267,6 +316,88 @@ def test_operational_event_logging_and_status_summary(tmp_path: Path):
     assert status["last_approval_comment"] == "awaiting"
 
 
+def test_sqlite_operational_state_registry_and_events_persist(tmp_path: Path):
+    db_path = tmp_path / "ops.sqlite3"
+    state_store = OperationalStateStore(db_path)
+    state_store.save(OperationalState(phase="collecting", buffered_new_sample_count=12))
+    loaded_state = state_store.load()
+    assert loaded_state.phase == "collecting"
+    assert loaded_state.buffered_new_sample_count == 12
+
+    registry = ModelRegistry(db_path)
+    ckpt = tmp_path / "active.npz"
+    ckpt.write_bytes(b"ok")
+    registry.save(
+        {
+            "active_model_id": "active-a",
+            "previous_active_model_id": None,
+            "models": [
+                {
+                    "model_id": "active-a",
+                    "path": str(ckpt),
+                    "status": "active",
+                    "approval_status": "not_required",
+                    "contract_version": CONVLSTM_CONTRACT_VERSION,
+                    "checkpoint_metric": {"name": "val_mse", "value": 0.1},
+                }
+            ],
+            "events": [],
+            "approval_audit": [],
+        }
+    )
+    loaded_registry = registry.load()
+    assert loaded_registry["active_model_id"] == "active-a"
+    assert loaded_registry["revision"] >= 1
+
+    log = OperationalEventLog(path=db_path)
+    log.append(event_type="first", payload={"v": 1})
+    log.append(event_type="second", payload={"v": 2})
+    recent = log.recent(limit=10)
+    assert [item["event_type"] for item in recent] == ["first", "second"]
+
+
+def test_sqlite_activation_and_rollback_are_persisted_transactionally(tmp_path: Path):
+    db_path = tmp_path / "ops.db"
+    registry = ModelRegistry(db_path)
+    active_ckpt = tmp_path / "active.npz"
+    candidate_ckpt = tmp_path / "candidate.npz"
+    np.savez(active_ckpt, w=np.array([1.0]))
+    np.savez(candidate_ckpt, w=np.array([2.0]))
+    registry.save(
+        {
+            "active_model_id": "active-1",
+            "previous_active_model_id": None,
+            "events": [],
+            "approval_audit": [],
+            "models": [
+                {
+                    "model_id": "active-1",
+                    "path": str(active_ckpt),
+                    "status": "active",
+                    "approval_status": "not_required",
+                    "contract_version": CONVLSTM_CONTRACT_VERSION,
+                    "checkpoint_metric": {"name": "val_mse", "value": 0.2},
+                },
+                {
+                    "model_id": "cand-1",
+                    "path": str(candidate_ckpt),
+                    "status": "approved",
+                    "approval_status": "approved_for_activation",
+                    "contract_version": CONVLSTM_CONTRACT_VERSION,
+                    "checkpoint_metric": {"name": "val_mse", "value": 0.1},
+                },
+            ],
+        }
+    )
+    activate_approved_model(registry=registry, model_id="cand-1")
+    post_activate = registry.load()
+    assert post_activate["active_model_id"] == "cand-1"
+    assert post_activate["previous_active_model_id"] == "active-1"
+    rollback_to_previous_model(registry=registry)
+    post_rollback = registry.load()
+    assert post_rollback["active_model_id"] == "active-1"
+
+
 def test_retraining_job_submission_is_persisted(tmp_path: Path):
     store = RetrainingJobStore(tmp_path / "retraining_jobs.json")
     job = submit_retraining_job(
@@ -281,6 +412,24 @@ def test_retraining_job_submission_is_persisted(tmp_path: Path):
     persisted = store.load()
     assert persisted["next_sequence"] == 1
     assert persisted["jobs"][0]["dataset_snapshot_ref"] == "snapshot://dataset-1"
+
+
+def test_sqlite_retraining_job_store_persists_jobs(tmp_path: Path):
+    store = RetrainingJobStore(tmp_path / "jobs.sqlite")
+    job = submit_retraining_job(
+        job_store=store,
+        dataset_snapshot_ref='{"train_data_path":"train","val_data_path":"val"}',
+        run_config_ref='{"num_epochs": 1}',
+        output_dir=str(tmp_path / "runs"),
+    )
+    assert job["status"] == "queued"
+    claimed = store.claim_next_queued_job(worker_pid=4242)
+    assert claimed is not None
+    assert claimed["worker_pid"] == 4242
+    done = store.update_job(job_id=str(job["job_id"]), status="succeeded", finished_at="2026-01-01T00:00:00+00:00")
+    assert done["status"] == "succeeded"
+    loaded = store.load()
+    assert loaded["jobs"][0]["status"] == "succeeded"
 
 
 def test_retraining_job_transitions_to_succeeded_and_tracks_run_dir(tmp_path: Path):
@@ -304,6 +453,7 @@ def test_retraining_job_transitions_to_succeeded_and_tracks_run_dir(tmp_path: Pa
     assert result["result_run_dir"] == str(run_dir)
     assert result["result_run_id"] == "run-success-1"
     assert result["error_message"] is None
+    assert result["worker_pid"] is not None
 
 
 def test_retraining_job_transitions_to_failed_and_persists_error(tmp_path: Path):
@@ -323,6 +473,72 @@ def test_retraining_job_transitions_to_failed_and_persists_error(tmp_path: Path)
     assert result["finished_at"] is not None
     assert result["error_message"] == "trainer failed deterministic"
     assert store.latest_job()["status"] == "failed"
+
+
+def test_retraining_job_claim_is_worker_safe(tmp_path: Path):
+    store = RetrainingJobStore(tmp_path / "retraining_jobs.json")
+    submit_retraining_job(
+        job_store=store,
+        dataset_snapshot_ref="snapshot://dataset-claim",
+        run_config_ref='{"epochs": 1}',
+        output_dir=str(tmp_path / "runs"),
+    )
+    first = store.claim_next_queued_job(worker_pid=1111)
+    second = store.claim_next_queued_job(worker_pid=2222)
+    assert first is not None
+    assert first["status"] == "running"
+    assert first["worker_pid"] == 1111
+    assert second is None
+
+
+def test_process_next_queued_job_executes_once_and_updates_state(tmp_path: Path):
+    store = RetrainingJobStore(tmp_path / "retraining_jobs.json")
+    queued = submit_retraining_job(
+        job_store=store,
+        dataset_snapshot_ref="snapshot://dataset-next",
+        run_config_ref='{"epochs": 1}',
+        output_dir=str(tmp_path / "runs"),
+    )
+    run_dir = tmp_path / "run_from_worker"
+    run_dir.mkdir(parents=True)
+
+    completed = process_next_queued_retraining_job(
+        job_store=store,
+        worker_pid=5555,
+        train_fn=lambda job: {"run_dir": str(run_dir), "run_id": f"run-{job['job_id']}"},
+    )
+    assert completed is not None
+    assert completed["job_id"] == queued["job_id"]
+    assert completed["status"] == "succeeded"
+    assert completed["worker_pid"] == 5555
+    assert completed["result_run_dir"] == str(run_dir)
+
+    none_left = process_next_queued_retraining_job(
+        job_store=store,
+        worker_pid=5555,
+        train_fn=lambda _job: {"run_dir": str(run_dir), "run_id": "unused"},
+    )
+    assert none_left is None
+
+
+def test_process_next_queued_job_persists_failure(tmp_path: Path):
+    store = RetrainingJobStore(tmp_path / "retraining_jobs.json")
+    submit_retraining_job(
+        job_store=store,
+        dataset_snapshot_ref="snapshot://dataset-fail",
+        run_config_ref='{"epochs": 1}',
+        output_dir=str(tmp_path / "runs"),
+    )
+
+    failed = process_next_queued_retraining_job(
+        job_store=store,
+        worker_pid=7777,
+        train_fn=lambda _job: (_ for _ in ()).throw(RuntimeError("worker deterministic failure")),
+    )
+    assert failed is not None
+    assert failed["status"] == "failed"
+    assert failed["error_message"] == "worker deterministic failure"
+    assert failed["worker_pid"] == 7777
 
 
 def test_operational_status_includes_retraining_job_details(tmp_path: Path):
@@ -518,6 +734,44 @@ def test_resolve_active_model_artifact_requires_active_pointer(tmp_path: Path):
     registry.save({"active_model_id": None, "previous_active_model_id": None, "events": [], "models": []})
     with pytest.raises(ValueError, match="no active model"):
         resolve_active_model_artifact(tmp_path / "registry.json")
+
+
+def test_resolve_active_model_artifact_exposes_activation_metadata(tmp_path: Path):
+    ckpt = tmp_path / "active.npz"
+    np.savez(ckpt, w=np.array([1.0]))
+    registry = ModelRegistry(tmp_path / "registry.json")
+    registry.save(
+        {
+            "active_model_id": "active-1",
+            "previous_active_model_id": "old-1",
+            "events": [
+                {
+                    "event_type": "model_activated",
+                    "model_id": "active-1",
+                    "previous_active_model_id": "old-1",
+                    "timestamp": "2026-01-01T00:00:00+00:00",
+                    "event_index": 3,
+                }
+            ],
+            "approval_audit": [],
+            "models": [
+                {
+                    "model_id": "active-1",
+                    "path": str(ckpt),
+                    "status": "active",
+                    "approval_status": "not_required",
+                    "contract_version": CONVLSTM_CONTRACT_VERSION,
+                    "target_policy": "plume_only",
+                    "normalization_mode": "none",
+                    "checkpoint_metric": {"name": "val_mse", "value": 0.1},
+                }
+            ],
+        }
+    )
+    resolved = resolve_active_model_artifact(tmp_path / "registry.json")
+    assert resolved["model_id"] == "active-1"
+    assert resolved["previous_active_model_id"] == "old-1"
+    assert resolved["activation_event"]["event_index"] == 3
 
 
 def test_orchestrator_with_job_store_preserves_existing_training_flow(tmp_path: Path):

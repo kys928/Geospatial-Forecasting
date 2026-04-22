@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import dataclass
 from dataclasses import replace
 import json
 import os
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 import yaml
 
@@ -32,7 +33,9 @@ from plume.api.ops_schemas import (
 )
 from plume.services.convlstm_operations import (
     ModelRegistry,
+    OperationalEventLog,
     OperationalState,
+    OperationalStateStore,
     RetrainingJobStore,
     RetrainingPolicy,
     activate_approved_model,
@@ -40,6 +43,7 @@ from plume.services.convlstm_operations import (
     evaluate_retraining_readiness,
     reject_candidate,
     rollback_to_previous_model,
+    dispatch_retraining_worker,
     submit_retraining_job,
     summarize_operational_status,
 )
@@ -108,6 +112,10 @@ def _load_retraining_policy(forecast_service) -> RetrainingPolicy:
 
 
 def _ops_paths() -> dict[str, Path]:
+    db_path = os.getenv("PLUME_OPS_DB_PATH")
+    if db_path:
+        shared = Path(db_path)
+        return {"state": shared, "registry": shared, "jobs": shared, "events": shared}
     root = Path(os.getenv("PLUME_OPS_DIR", "artifacts/convlstm_ops"))
     return {
         "state": Path(os.getenv("PLUME_OPS_STATE_PATH", str(root / "operational_state.json"))),
@@ -117,27 +125,88 @@ def _ops_paths() -> dict[str, Path]:
     }
 
 
+def _should_auto_dispatch_worker() -> bool:
+    return _env_flag("PLUME_OPS_AUTO_DISPATCH_WORKER", default=True)
+
+
+def _env_flag(name: str, *, default: bool) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+@dataclass(frozen=True)
+class OpsAuthSettings:
+    enabled: bool
+    operator_token: str | None
+    readonly_token: str | None
+    require_auth_for_read: bool
+
+
+def _ops_auth_settings() -> OpsAuthSettings:
+    return OpsAuthSettings(
+        enabled=_env_flag("PLUME_OPS_AUTH_ENABLED", default=True),
+        operator_token=os.getenv("PLUME_OPS_API_TOKEN"),
+        readonly_token=os.getenv("PLUME_OPS_READONLY_TOKEN"),
+        require_auth_for_read=_env_flag("PLUME_OPS_REQUIRE_AUTH_FOR_READ", default=True),
+    )
+
+
+def _extract_bearer_token(authorization: str | None) -> str | None:
+    if not authorization:
+        return None
+    scheme, _, value = authorization.partition(" ")
+    if scheme.lower() != "bearer" or not value:
+        return None
+    return value.strip()
+
+
+def _ops_role_from_header(authorization: str | None, settings: OpsAuthSettings) -> str | None:
+    token = _extract_bearer_token(authorization)
+    if token is None:
+        return None
+    if settings.operator_token and token == settings.operator_token:
+        return "operator"
+    if settings.readonly_token and token == settings.readonly_token:
+        return "readonly"
+    return None
+
+
+def _require_ops_read_access(authorization: str | None = Header(default=None)) -> str:
+    settings = _ops_auth_settings()
+    if not settings.enabled:
+        return "operator"
+    if not settings.operator_token:
+        raise HTTPException(status_code=503, detail="Ops auth is enabled but PLUME_OPS_API_TOKEN is not configured")
+    role = _ops_role_from_header(authorization, settings)
+    if role is not None:
+        return role
+    if not settings.require_auth_for_read:
+        return "anonymous"
+    raise HTTPException(status_code=401, detail="Missing or invalid credentials")
+
+
+def _require_ops_operator_access(authorization: str | None = Header(default=None)) -> str:
+    settings = _ops_auth_settings()
+    if not settings.enabled:
+        return "operator"
+    if not settings.operator_token:
+        raise HTTPException(status_code=503, detail="Ops auth is enabled but PLUME_OPS_API_TOKEN is not configured")
+    role = _ops_role_from_header(authorization, settings)
+    if role is None:
+        raise HTTPException(status_code=401, detail="Missing or invalid credentials")
+    if role != "operator":
+        raise HTTPException(status_code=403, detail="Insufficient permissions")
+    return role
+
+
 def _load_operational_state(path: Path) -> OperationalState:
-    if not path.exists():
-        return OperationalState()
-    payload = json.loads(path.read_text(encoding="utf-8"))
-    if not isinstance(payload, dict):
-        raise ValueError("Operational state payload must be a JSON object")
-    return OperationalState.from_dict(payload)
+    return OperationalStateStore(path).load()
 
 
 def _load_recent_events(path: Path, *, limit: int = 50) -> list[dict[str, object]]:
-    if not path.exists():
-        return []
-    rows: list[dict[str, object]] = []
-    for line in path.read_text(encoding="utf-8").splitlines():
-        stripped = line.strip()
-        if not stripped:
-            continue
-        decoded = json.loads(stripped)
-        if isinstance(decoded, dict):
-            rows.append(decoded)
-    return rows[-limit:]
+    return OperationalEventLog(path=path).recent(limit=limit)
 
 
 def _pending_candidate_from_registry(registry_payload: dict[str, object]) -> dict[str, object] | None:
@@ -398,7 +467,7 @@ def create_app() -> FastAPI:
         return forecast_service.summarize_forecast(result)
 
     @app.get("/ops/status", response_model=OpsStatusResponse)
-    def get_ops_status():
+    def get_ops_status(_role: str = Depends(_require_ops_read_access)):
         paths = _ops_paths()
         try:
             state = _load_operational_state(paths["state"])
@@ -418,14 +487,14 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=400, detail=f"Unable to load operational status: {exc}") from exc
 
     @app.get("/ops/registry", response_model=OpsRegistryResponse)
-    def get_ops_registry():
+    def get_ops_registry(_role: str = Depends(_require_ops_read_access)):
         try:
             return ModelRegistry(_ops_paths()["registry"]).load()
         except Exception as exc:
             raise HTTPException(status_code=400, detail=f"Unable to load model registry: {exc}") from exc
 
     @app.get("/ops/jobs", response_model=OpsJobsResponse)
-    def get_ops_jobs():
+    def get_ops_jobs(_role: str = Depends(_require_ops_read_access)):
         try:
             store = RetrainingJobStore(_ops_paths()["jobs"])
             jobs = store.list_jobs()
@@ -434,7 +503,7 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=400, detail=f"Unable to load retraining jobs: {exc}") from exc
 
     @app.get("/ops/events", response_model=OpsEventsResponse)
-    def get_ops_events(limit: int = 50):
+    def get_ops_events(limit: int = 50, _role: str = Depends(_require_ops_read_access)):
         paths = _ops_paths()
         try:
             registry_events = ModelRegistry(paths["registry"]).load().get("events", [])
@@ -447,7 +516,7 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=400, detail=f"Unable to load operational events: {exc}") from exc
 
     @app.post("/ops/retraining/trigger", response_model=RetrainingTriggerResponse)
-    def trigger_retraining(payload: RetrainingTriggerRequest):
+    def trigger_retraining(payload: RetrainingTriggerRequest, _role: str = Depends(_require_ops_operator_access)):
         paths = _ops_paths()
         try:
             state = _load_operational_state(paths["state"])
@@ -464,6 +533,11 @@ def create_app() -> FastAPI:
                 run_config_ref=payload.run_config_ref,
                 output_dir=payload.output_dir,
             )
+            if _should_auto_dispatch_worker():
+                dispatch_retraining_worker(
+                    jobs_path=paths["jobs"],
+                    config_dir=Path(forecast_service.config.config_dir),
+                )
             return {"submitted": True, "policy_check": policy_check, "job": job}
         except HTTPException:
             raise
@@ -471,7 +545,11 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=400, detail=f"Unable to trigger retraining: {exc}") from exc
 
     @app.post("/ops/candidates/{candidate_id}/approve", response_model=ApprovalActionResponse)
-    def approve_ops_candidate(candidate_id: str, payload: CandidateDecisionRequest):
+    def approve_ops_candidate(
+        candidate_id: str,
+        payload: CandidateDecisionRequest,
+        _role: str = Depends(_require_ops_operator_access),
+    ):
         try:
             result = approve_candidate(
                 registry=ModelRegistry(_ops_paths()["registry"]),
@@ -484,7 +562,11 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=409, detail=f"Unable to approve candidate: {exc}") from exc
 
     @app.post("/ops/candidates/{candidate_id}/reject", response_model=ApprovalActionResponse)
-    def reject_ops_candidate(candidate_id: str, payload: CandidateDecisionRequest):
+    def reject_ops_candidate(
+        candidate_id: str,
+        payload: CandidateDecisionRequest,
+        _role: str = Depends(_require_ops_operator_access),
+    ):
         try:
             result = reject_candidate(
                 registry=ModelRegistry(_ops_paths()["registry"]),
@@ -497,14 +579,14 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=409, detail=f"Unable to reject candidate: {exc}") from exc
 
     @app.post("/ops/models/activate", response_model=ActivationResponse)
-    def activate_ops_model(payload: ActivateModelRequest):
+    def activate_ops_model(payload: ActivateModelRequest, _role: str = Depends(_require_ops_operator_access)):
         try:
             return activate_approved_model(registry=ModelRegistry(_ops_paths()["registry"]), model_id=payload.model_id)
         except Exception as exc:
             raise HTTPException(status_code=409, detail=f"Unable to activate model: {exc}") from exc
 
     @app.post("/ops/models/rollback", response_model=RollbackResponse)
-    def rollback_ops_model():
+    def rollback_ops_model(_role: str = Depends(_require_ops_operator_access)):
         try:
             return rollback_to_previous_model(registry=ModelRegistry(_ops_paths()["registry"]))
         except Exception as exc:

@@ -11,6 +11,8 @@ import yaml
 from plume.backends.convlstm_backend import ConvLSTMBackend
 from plume.models.convlstm import MinimalConvLSTMModel
 from plume.models.convlstm_contract import CONVLSTM_CHANNEL_MANIFEST
+from plume.models.convlstm_contract import CONVLSTM_CONTRACT_VERSION
+from plume.services.convlstm_operations import ModelRegistry, activate_approved_model, rollback_to_previous_model
 from plume.schemas.grid import GridSpec
 from plume.schemas.observation import Observation
 from plume.schemas.observation_batch import ObservationBatch
@@ -233,7 +235,7 @@ def _write_model_registry(path: Path, *, active_model_id: str, model_path: Path,
                 "model_id": active_model_id,
                 "path": str(model_path),
                 "status": status,
-                "contract_version": "convlstm-v1",
+                "contract_version": CONVLSTM_CONTRACT_VERSION,
                 "target_policy": "plume_only",
                 "normalization_mode": "none",
                 "checkpoint_metric": {"name": "val_mse", "value": 0.2},
@@ -312,3 +314,79 @@ def test_convlstm_backend_registry_mode_requires_active_status_record(tmp_path: 
 
     with pytest.raises(ValueError, match="status='active'"):
         ConvLSTMBackend(config=Config(config_dir=tmp_path))
+
+
+def test_convlstm_backend_follows_approved_activation_and_rollback_lifecycle(tmp_path: Path):
+    active_checkpoint = tmp_path / "active_weights.npz"
+    candidate_checkpoint = tmp_path / "candidate_weights.npz"
+    _save_checkpoint(active_checkpoint, input_channels=10, hidden_channels=8, model_version="active-v1")
+    _save_checkpoint(candidate_checkpoint, input_channels=10, hidden_channels=8, model_version="candidate-v2")
+    registry_path = tmp_path / "model_registry.json"
+    registry = ModelRegistry(registry_path)
+    registry.save(
+        {
+            "active_model_id": "active-1",
+            "previous_active_model_id": None,
+            "events": [],
+            "approval_audit": [],
+            "models": [
+                {
+                    "model_id": "active-1",
+                    "path": str(active_checkpoint),
+                    "status": "active",
+                    "approval_status": "not_required",
+                    "contract_version": CONVLSTM_CONTRACT_VERSION,
+                    "target_policy": "plume_only",
+                    "normalization_mode": "none",
+                    "checkpoint_metric": {"name": "val_mse", "value": 0.2},
+                },
+                {
+                    "model_id": "cand-approved-1",
+                    "path": str(candidate_checkpoint),
+                    "status": "approved",
+                    "approval_status": "approved_for_activation",
+                    "contract_version": CONVLSTM_CONTRACT_VERSION,
+                    "target_policy": "plume_only",
+                    "normalization_mode": "none",
+                    "checkpoint_metric": {"name": "val_mse", "value": 0.1},
+                },
+            ],
+        }
+    )
+
+    _write_backend_yaml(
+        tmp_path,
+        {
+            "default_backend": "convlstm_online",
+            "fallback_backend": "gaussian_fallback",
+            "state_store": "in_memory",
+            "use_model_registry": True,
+            "model_registry_path": str(registry_path),
+            "convlstm_sequence_length": 3,
+            "convlstm_input_channels": 10,
+        },
+    )
+
+    backend_before = ConvLSTMBackend(config=Config(config_dir=tmp_path))
+    session_before = backend_before.create_session()
+    assert session_before.runtime_metadata["model_version"] == "active-1"
+    assert session_before.runtime_metadata["model_load"]["resolved_active_model"]["checkpoint_path"] == str(active_checkpoint)
+
+    activation = activate_approved_model(registry=registry, model_id="cand-approved-1")
+    assert activation["activated"] is True
+
+    backend_after_activate = ConvLSTMBackend(config=Config(config_dir=tmp_path))
+    session_after_activate = backend_after_activate.create_session()
+    resolved_after_activate = session_after_activate.runtime_metadata["model_load"]["resolved_active_model"]
+    assert session_after_activate.runtime_metadata["model_version"] == "cand-approved-1"
+    assert resolved_after_activate["checkpoint_path"] == str(candidate_checkpoint)
+    assert resolved_after_activate["previous_active_model_id"] == "active-1"
+    assert resolved_after_activate["activation_event"]["event_type"] == "model_activated"
+
+    rollback = rollback_to_previous_model(registry=registry)
+    assert rollback["rolled_back"] is True
+
+    backend_after_rollback = ConvLSTMBackend(config=Config(config_dir=tmp_path))
+    session_after_rollback = backend_after_rollback.create_session()
+    assert session_after_rollback.runtime_metadata["model_version"] == "active-1"
+    assert session_after_rollback.runtime_metadata["model_load"]["resolved_active_model"]["checkpoint_path"] == str(active_checkpoint)
