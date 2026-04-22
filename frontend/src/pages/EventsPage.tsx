@@ -13,7 +13,12 @@ export function EventsPage() {
   const selectedEvent = useMemo(() => eventsState.filteredEvents[selectedIndex] ?? null, [eventsState.filteredEvents, selectedIndex]);
 
   return (
-    <AppShell scenarioName="Events" modelLabel="Ops event stream" statusText={eventsState.error ?? (eventsState.loading ? "Loading events..." : "Ready")}>
+    <AppShell
+      title="Events workspace"
+      subtitle="Review the operational event timeline and audit context."
+      statusText={eventsState.error ?? (eventsState.loading ? "Loading events..." : "Ready")}
+      metaItems={[{ label: "Ops event stream" }]}
+    >
       <div className="workspace-grid">
         <div style={{ display: "grid", gap: 12 }}>
           <EventFilters

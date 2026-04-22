@@ -7,25 +7,19 @@ import type { ApiMode } from "../features/forecast/types/forecast.types";
 
 interface AppShellProps {
   children: ReactNode;
+  title: string;
+  subtitle?: string;
   statusText?: string;
-  scenarioName?: string;
-  modelLabel?: string;
+  apiMode?: ApiMode;
   apiHealthy?: boolean;
+  metaItems?: Array<{ label: string; tone?: "default" | "ok" | "error" }>;
 }
 
-export function AppShell({
-  children,
-  statusText,
-  scenarioName = "Workspace",
-  modelLabel = "Context managed by workspace",
-  apiHealthy
-}: AppShellProps) {
-  const apiMode: ApiMode = "live";
-
+export function AppShell({ children, title, subtitle, statusText, apiMode, apiHealthy, metaItems }: AppShellProps) {
   return (
     <div className="app-shell">
-      <TopNav apiMode={apiMode} apiHealthy={apiHealthy} modelLabel={modelLabel} scenarioName={scenarioName} />
-      <div className="panel" style={{ display: "flex", justifyContent: "space-between", gap: 12 }}>
+      <TopNav title={title} subtitle={subtitle} apiMode={apiMode} apiHealthy={apiHealthy} metaItems={metaItems} />
+      <div className="workspace-nav-row panel">
         <WorkspaceTabs />
         <RoleSwitcher />
       </div>

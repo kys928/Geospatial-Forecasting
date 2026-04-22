@@ -19,6 +19,7 @@ export function OpsPage() {
   const jobs = useOpsJobs();
   const [events, setEvents] = useState<OpsEventRecord[]>([]);
   const [eventsError, setEventsError] = useState<string | null>(null);
+  const [submitMessage, setSubmitMessage] = useState<string | null>(null);
 
   async function refreshAll() {
     await Promise.all([status.refresh(), jobs.refresh(), refreshEvents()]);
@@ -48,30 +49,37 @@ export function OpsPage() {
     null;
 
   const statusText = useMemo(
-    () => eventsError ?? actions.error ?? status.error ?? jobs.error ?? "Ready",
-    [eventsError, actions.error, status.error, jobs.error]
+    () => eventsError ?? actions.error ?? status.error ?? jobs.error ?? submitMessage ?? "Ready",
+    [eventsError, actions.error, status.error, jobs.error, submitMessage]
   );
 
   return (
-    <AppShell scenarioName="Ops" modelLabel="Operations control" statusText={statusText}>
+    <AppShell
+      title="Ops workspace"
+      subtitle="Operate retraining, approvals, and promotion workflow with backend-backed actions."
+      statusText={statusText}
+      metaItems={[{ label: "Local pod testing" }, { label: "Manual approvals" }]}
+    >
       <div className="workspace-grid">
-        <div style={{ display: "grid", gap: 12 }}>
-          <OpsControlTower status={status.status} loading={status.loading} onRefresh={() => void refreshAll()} />
-          <OpsWarningsPanel
-            latestWarningOrError={status.status?.latest_warning_or_error ?? null}
-            latestFailureReason={status.status?.last_retraining_job_failure_reason ?? null}
-          />
-          <ActiveModelPanel activeModel={status.status?.active_model ?? null} />
-          <CandidateModelPanel candidateModel={status.status?.candidate_model ?? null} />
-        </div>
-
         <div style={{ display: "grid", gap: 12 }}>
           <RetrainingTriggerForm
             disabled={actions.runningAction !== null}
             onSubmit={async (payload) => {
-              await actions.triggerRetraining(payload);
+              setSubmitMessage(null);
+              try {
+                await actions.triggerRetraining(payload);
+                setSubmitMessage("Retraining job submitted. Refresh jobs/events to track execution.");
+              } catch (error) {
+                setSubmitMessage(null);
+                throw error;
+              }
             }}
           />
+          {actions.error ? <section className="panel failure-text">Retraining submission failed: {actions.error}</section> : null}
+          {submitMessage ? <section className="panel success-text">{submitMessage}</section> : null}
+          <section className="panel muted">
+            Retraining sequence: submit job → worker executes → jobs/events update → candidate/registry state may change.
+          </section>
           <ApprovalGatePanel
             candidateId={pendingCandidateId}
             disabled={actions.runningAction !== null}
@@ -84,12 +92,28 @@ export function OpsPage() {
               await actions.rejectCandidate(pendingCandidateId, actor, comment);
             }}
           />
+        </div>
+
+        <div style={{ display: "grid", gap: 12 }}>
+          <OpsControlTower
+            status={status.status}
+            loading={status.loading}
+            onRefreshStatus={() => void status.refresh()}
+            onRefreshJobs={() => void jobs.refresh()}
+            onRefreshEvents={() => void refreshEvents()}
+          />
+          <OpsWarningsPanel
+            latestWarningOrError={status.status?.latest_warning_or_error ?? null}
+            latestFailureReason={status.status?.last_retraining_job_failure_reason ?? null}
+          />
           <RetrainingPipelinePanel jobs={jobs.jobs?.jobs ?? status.status?.current_retraining_jobs ?? []} />
         </div>
 
         <div style={{ display: "grid", gap: 12 }}>
+          <ActiveModelPanel activeModel={status.status?.active_model ?? null} />
+          <CandidateModelPanel candidateModel={status.status?.candidate_model ?? null} />
           <OpsEventsPreview events={events} />
-          {eventsError ? <section className="panel muted">Events refresh failed: {eventsError}</section> : null}
+          {eventsError ? <section className="panel failure-text">Events refresh failed: {eventsError}</section> : null}
           <section className="panel">
             <h3>Latest action result</h3>
             <pre style={{ margin: 0, maxHeight: 360, overflow: "auto" }}>{JSON.stringify(actions.lastResult, null, 2)}</pre>

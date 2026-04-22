@@ -10,9 +10,13 @@ const tabs = [
 
 export function WorkspaceTabs() {
   return (
-    <nav className="workspace-tabs panel" aria-label="Workspaces">
+    <nav className="workspace-tabs" aria-label="Workspaces">
       {tabs.map((tab) => (
-        <NavLink key={tab.to} to={tab.to} className="badge">
+        <NavLink
+          key={tab.to}
+          to={tab.to}
+          className={({ isActive }) => `workspace-tab ${isActive ? "workspace-tab-active" : ""}`}
+        >
           {tab.label}
         </NavLink>
       ))}
