@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import numpy as np
 import pytest
 
@@ -462,6 +463,119 @@ def test_phase_j_epoch_report_contains_stable_compact_keys():
     assert report["checkpoint"]["is_best"] is True
     assert "val_mse" in report["validation"]
 
+
+def test_phase_k_run_artifact_initialization_persists_effective_config_snapshot(tmp_path):
+    model = MinimalConvLSTMModel(input_channels=10, hidden_channels=2, seed=450)
+    cfg = ConvLSTMTrainingConfig(
+        physics_loss_enabled=True,
+        physics_schedule_enabled=True,
+        physics_schedule_stage_boundaries=(0, 2),
+        physics_schedule_lambda_smooth=(0.0, 0.2),
+        physics_schedule_lambda_mass=(0.0, 0.1),
+        metric_stage_progression_enabled=True,
+        metric_stage_thresholds=(0.5,),
+        metric_stage_min_epoch_per_stage=1,
+        metric_stage_patience=1,
+    )
+    trainer = ConvLSTMPlumeTrainer(model=model, config=cfg)
+    artifacts = trainer.initialize_run_artifacts(tmp_path / "run_artifacts")
+
+    assert artifacts.run_config_path.exists()
+    payload = json.loads(artifacts.run_config_path.read_text(encoding="utf-8"))
+    assert payload["contract_version"] == CONVLSTM_CONTRACT_VERSION
+    assert payload["config"]["target_policy"] == "plume_only"
+    assert payload["config"]["normalization_mode"] == "none"
+    assert payload["config"]["trainable_parameter_scope"] == "full_model"
+    assert payload["config"]["physics_loss_enabled"] is True
+    assert payload["config"]["physics_schedule_enabled"] is True
+    assert payload["config"]["metric_stage_progression_enabled"] is True
+
+
+def test_phase_k_epoch_reports_and_events_append_as_jsonl(tmp_path):
+    model = MinimalConvLSTMModel(input_channels=10, hidden_channels=2, seed=451)
+    trainer = ConvLSTMPlumeTrainer(model=model)
+    artifacts = trainer.initialize_run_artifacts(tmp_path / "artifacts")
+
+    report = trainer.build_epoch_report(
+        epoch=1,
+        train_metrics={"train_total_loss": 0.3, "train_active_stage": 0.0},
+        val_metrics={"val_mse": 0.2},
+        is_best_checkpoint=False,
+    )
+    trainer.append_run_event(event_type="checkpoint_saved", epoch=1, payload={"path": "x.npz", "is_best": False})
+
+    report_lines = artifacts.epoch_reports_path.read_text(encoding="utf-8").strip().splitlines()
+    event_lines = artifacts.run_events_path.read_text(encoding="utf-8").strip().splitlines()
+    report_payload = json.loads(report_lines[-1])
+    event_payload = json.loads(event_lines[-1])
+    assert report_payload["epoch"] == 1
+    assert report_payload["validation"]["val_mse"] == pytest.approx(0.2)
+    assert report_payload == report
+    assert event_payload["event_type"] == "checkpoint_saved"
+    assert event_payload["payload"]["is_best"] is False
+
+
+def test_phase_k_best_checkpoint_summary_and_final_summary_persist_policy_fields(tmp_path):
+    model = MinimalConvLSTMModel(input_channels=10, hidden_channels=2, seed=452)
+    cfg = ConvLSTMTrainingConfig(
+        checkpoint_metric="val_mse",
+        checkpoint_direction="min",
+        metric_stage_progression_enabled=False,
+    )
+    trainer = ConvLSTMPlumeTrainer(model=model, config=cfg)
+    artifacts = trainer.initialize_run_artifacts(tmp_path / "artifacts")
+
+    improved = trainer.update_best_checkpoint(metrics={"val_mse": 0.25}, epoch=2, step=8)
+    assert improved is True
+    ckpt_path = tmp_path / "artifacts" / "best.npz"
+    trainer.save_checkpoint(ckpt_path, metrics={"val_mse": 0.25}, epoch=2, step=8, is_best=True)
+    best_payload = json.loads(artifacts.best_checkpoint_summary_path.read_text(encoding="utf-8"))
+    assert best_payload["best_metric_name"] == "val_mse"
+    assert best_payload["best_metric_value"] == pytest.approx(0.25)
+    assert best_payload["contract_version"] == CONVLSTM_CONTRACT_VERSION
+    assert best_payload["target_policy"] == "plume_only"
+    assert best_payload["normalization_mode"] == "none"
+    assert best_payload["trainable_parameter_scope"] == "full_model"
+
+    summary = trainer.finalize_run_summary(
+        final_epoch=4,
+        final_train_metrics={"train_total_loss": 0.4},
+        final_validation_metrics={"val_mse": 0.25},
+    )
+    assert summary is not None
+    summary_payload = json.loads(artifacts.run_summary_path.read_text(encoding="utf-8"))
+    assert summary_payload["final_epoch"] == 4
+    assert summary_payload["policy"]["contract_version"] == CONVLSTM_CONTRACT_VERSION
+    assert summary_payload["policy"]["target_policy"] == "plume_only"
+    assert summary_payload["policy"]["normalization_mode"] == "none"
+    assert summary_payload["policy"]["trainable_parameter_scope"] == "full_model"
+    assert summary_payload["metric_stage_progression_enabled"] is False
+
+
+def test_phase_k_stage_advancement_event_logged_when_metric_gate_advances(tmp_path):
+    model = MinimalConvLSTMModel(input_channels=10, hidden_channels=2, seed=453)
+    cfg = ConvLSTMTrainingConfig(
+        physics_loss_enabled=True,
+        physics_schedule_enabled=True,
+        physics_schedule_stage_boundaries=(0, 1),
+        physics_schedule_lambda_smooth=(0.0, 0.2),
+        physics_schedule_lambda_mass=(0.0, 0.1),
+        metric_stage_progression_enabled=True,
+        metric_stage_monitor="val_mse",
+        metric_stage_direction="min",
+        metric_stage_thresholds=(0.5,),
+        metric_stage_min_epoch_per_stage=0,
+        metric_stage_patience=0,
+    )
+    trainer = ConvLSTMPlumeTrainer(model=model, config=cfg)
+    artifacts = trainer.initialize_run_artifacts(tmp_path / "artifacts")
+    advanced = trainer.update_stage_from_validation({"val_mse": 0.4}, epoch=0)
+
+    assert advanced is True
+    events = [json.loads(line) for line in artifacts.run_events_path.read_text(encoding="utf-8").splitlines() if line]
+    stage_events = [event for event in events if event["event_type"] == "stage_advanced"]
+    assert len(stage_events) == 1
+    assert stage_events[0]["payload"]["active_stage"] == 1
 
 def test_phase_h_stage_zero_supervised_only_weights_are_zero_and_exposed():
     model = MinimalConvLSTMModel(input_channels=10, hidden_channels=2, seed=40)
