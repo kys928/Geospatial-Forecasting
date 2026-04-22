@@ -3,3 +3,6 @@ fallback_backend: gaussian_fallback
 state_store: in_memory
 max_recent_observations: 500
 auto_update_on_ingest: true
+convlstm_sequence_length: 3
+convlstm_input_channels: 10
+convlstm_input_mode: degraded

@@ -4,8 +4,8 @@ grid_center:
   - 52.0907
   - 5.1214
 grid_spacing: 0.0004
-number_of_rows: 50
-number_of_columns: 50
+number_of_rows: 64
+number_of_columns: 64
 projection: EPSG:4326
 boundary_limits:
   - 52.0807

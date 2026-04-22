@@ -9,6 +9,8 @@ import yaml
 
 from plume.backends.convlstm_backend import ConvLSTMBackend
 from plume.models.convlstm import MinimalConvLSTMModel
+from plume.models.convlstm_contract import CONVLSTM_CHANNEL_MANIFEST
+from plume.schemas.grid import GridSpec
 from plume.schemas.observation import Observation
 from plume.schemas.observation_batch import ObservationBatch
 from plume.schemas.prediction_request import PredictionRequest
@@ -25,7 +27,20 @@ def _save_checkpoint(path: Path, *, input_channels: int, hidden_channels: int, m
     np.savez(path, **state, model_version=model_version)
 
 
-def test_convlstm_backend_creates_session():
+def _contract_grid_spec() -> GridSpec:
+    return GridSpec(
+        grid_height=0.02,
+        grid_width=0.02,
+        grid_center=(52.0907, 5.1214),
+        grid_spacing=0.0004,
+        number_of_rows=64,
+        number_of_columns=64,
+        projection="EPSG:4326",
+        boundary_limits=(52.0807, 52.1007, 5.1114, 5.1314),
+    )
+
+
+def test_convlstm_backend_creates_session_with_contract_defaults():
     backend = ConvLSTMBackend(config=Config())
     session = backend.create_session()
     assert session.backend_name == "convlstm_online"
@@ -33,19 +48,34 @@ def test_convlstm_backend_creates_session():
     assert session.model_name == "convlstm_random_init"
     assert session.capabilities["supports_online_updates"] is False
     assert session.runtime_metadata["model_load"]["load_status"] == "random_init"
+    assert session.runtime_metadata["input_mode"] == "degraded"
 
-
-def test_convlstm_backend_update_is_honest_about_no_online_training():
-    backend = ConvLSTMBackend(config=Config())
-    session = backend.create_session()
     state = backend.initialize_state(session)
-    update = backend.update_state(state)
-    assert update.changed is False
-    assert "not implemented" in update.message
-    assert update.metadata["update_mode"] == "state_refresh_only"
+    contract = state.internal_state["inference_contract"]
+    assert state.internal_state["sequence_length"] == 3
+    assert state.internal_state["inference_input_mode"] == "degraded"
+    assert contract["default_input_channels"] == 10
+    assert contract["channel_manifest"] == list(CONVLSTM_CHANNEL_MANIFEST)
+    assert contract["temporal_spacing"] == "hourly"
 
 
-def test_convlstm_backend_predict_returns_forecast_with_grid_shape():
+def test_convlstm_backend_rejects_conflicting_contract_overrides(tmp_path: Path):
+    _write_backend_yaml(
+        tmp_path,
+        {
+            "default_backend": "convlstm_online",
+            "fallback_backend": "gaussian_fallback",
+            "state_store": "in_memory",
+            "convlstm_sequence_length": 4,
+            "convlstm_input_channels": 10,
+        },
+    )
+
+    with pytest.raises(ValueError, match="convlstm_sequence_length=3"):
+        ConvLSTMBackend(config=Config(config_dir=tmp_path))
+
+
+def test_convlstm_backend_predict_returns_forecast_with_contract_grid_shape():
     backend = ConvLSTMBackend(config=Config())
     session = backend.create_session()
     state = backend.initialize_state(session)
@@ -60,22 +90,65 @@ def test_convlstm_backend_predict_returns_forecast_with_grid_shape():
                     longitude=5.1,
                     value=12.5,
                     source_type="sensor",
+                    metadata={"meteorology": {}},
                 )
             ],
         ),
     )
-    forecast = backend.predict(ingested, PredictionRequest(session_id=session.session_id))
-    assert forecast.concentration_grid.shape == (
-        forecast.grid_spec.number_of_rows,
-        forecast.grid_spec.number_of_columns,
+    request = PredictionRequest(
+        session_id=session.session_id,
+        grid_spec=_contract_grid_spec(),
+        scenario=Config().load_scenario(),
     )
+    forecast = backend.predict(ingested, request)
+    assert forecast.concentration_grid.shape == (64, 64)
     summary = backend.summarize_state(ingested)
     assert "No gradient-based online learning" in summary["limitations"]
 
 
+def test_convlstm_backend_strict_mode_rejects_incomplete_meteorology(tmp_path: Path):
+    _write_backend_yaml(
+        tmp_path,
+        {
+            "default_backend": "convlstm_online",
+            "fallback_backend": "gaussian_fallback",
+            "state_store": "in_memory",
+            "convlstm_sequence_length": 3,
+            "convlstm_input_channels": 10,
+            "convlstm_input_mode": "strict",
+        },
+    )
+    backend = ConvLSTMBackend(config=Config(config_dir=tmp_path))
+    session = backend.create_session()
+    state = backend.initialize_state(session)
+    ingested = backend.ingest_observations(
+        state,
+        ObservationBatch(
+            session_id=session.session_id,
+            observations=[
+                Observation(
+                    timestamp=datetime.now(timezone.utc),
+                    latitude=52.1,
+                    longitude=5.1,
+                    value=12.5,
+                    source_type="sensor",
+                    metadata={"meteorology": {"u10m_ms": 1.0}},
+                )
+            ],
+        ),
+    )
+    request = PredictionRequest(
+        session_id=session.session_id,
+        grid_spec=_contract_grid_spec(),
+        scenario=Config().load_scenario(),
+    )
+    with pytest.raises(ValueError, match="strict input mode requires complete meteorology"):
+        backend.predict(ingested, request)
+
+
 def test_convlstm_backend_loads_checkpoint_and_exposes_metadata(tmp_path: Path):
     checkpoint = tmp_path / "convlstm_weights.npz"
-    _save_checkpoint(checkpoint, input_channels=1, hidden_channels=8, model_version="2026.04-test")
+    _save_checkpoint(checkpoint, input_channels=10, hidden_channels=8, model_version="2026.04-test")
     _write_backend_yaml(
         tmp_path,
         {
@@ -87,6 +160,9 @@ def test_convlstm_backend_loads_checkpoint_and_exposes_metadata(tmp_path: Path):
             "convlstm_checkpoint_path": str(checkpoint),
             "convlstm_checkpoint_strict": True,
             "convlstm_device": "cpu",
+            "convlstm_sequence_length": 3,
+            "convlstm_input_channels": 10,
+            "convlstm_input_mode": "degraded",
         },
     )
 
@@ -109,6 +185,8 @@ def test_convlstm_backend_raises_for_missing_checkpoint(tmp_path: Path):
             "auto_update_on_ingest": True,
             "convlstm_checkpoint_path": str(tmp_path / "missing.npz"),
             "convlstm_init_mode": "checkpoint_required",
+            "convlstm_sequence_length": 3,
+            "convlstm_input_channels": 10,
         },
     )
 
@@ -118,7 +196,6 @@ def test_convlstm_backend_raises_for_missing_checkpoint(tmp_path: Path):
 
 def test_convlstm_backend_raises_for_invalid_checkpoint(tmp_path: Path):
     invalid_checkpoint = tmp_path / "invalid_weights.npz"
-    # wrong shape for w_x (expected first axis = 4 * hidden_channels = 32 by default)
     np.savez(
         invalid_checkpoint,
         w_x=np.zeros((1, 1)),
@@ -136,6 +213,8 @@ def test_convlstm_backend_raises_for_invalid_checkpoint(tmp_path: Path):
             "max_recent_observations": 500,
             "auto_update_on_ingest": True,
             "convlstm_checkpoint_path": str(invalid_checkpoint),
+            "convlstm_sequence_length": 3,
+            "convlstm_input_channels": 10,
         },
     )
 
