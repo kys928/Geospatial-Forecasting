@@ -61,6 +61,7 @@ def test_training_config_defaults_preserve_no_extra_normalization_and_plume_poli
     assert cfg.normalization_mode == CONVLSTM_NORMALIZATION_MODE
     assert cfg.loss_space == "transformed_plume"
     assert cfg.raw_interpretation_formula == "raw = (exp(pred) - 1) / 1e12"
+    assert cfg.trainable_parameter_scope == "full_model"
 
 
 def test_plume_trainer_metadata_and_smoke_train_step():
@@ -77,6 +78,8 @@ def test_plume_trainer_metadata_and_smoke_train_step():
     assert trainer.metadata["target_policy"] == "plume_only"
     assert trainer.metadata["normalization_mode"] == "none"
     assert trainer.metadata["supervised_target_contract"] == (1, 1, 64, 64)
+    assert trainer.metadata["trainable_parameter_scope"] == "full_model"
+    assert trainer.metadata["trainable_parameters"] == ("w_x", "w_h", "b", "w_out", "b_out")
 
 
 def test_plume_trainer_rejects_non_canonical_batch_shapes():
@@ -104,3 +107,38 @@ def test_dataset_loader_reads_npz_and_rejects_missing_keys(tmp_path):
     bad_ds = CanonicalConvLSTMSampleDataset([bad])
     with pytest.raises(ValueError, match="expected keys 'input' and 'target'"):
         _ = bad_ds[0]
+
+
+def test_plume_trainer_rejects_non_full_model_scope():
+    model = MinimalConvLSTMModel(input_channels=10, hidden_channels=2, seed=4)
+    with pytest.raises(ValueError, match="trainable_parameter_scope='full_model'"):
+        ConvLSTMPlumeTrainer(model=model, config=ConvLSTMTrainingConfig(trainable_parameter_scope="readout_only"))
+
+
+def test_training_step_updates_recurrent_parameters_not_only_readout():
+    model = MinimalConvLSTMModel(input_channels=10, hidden_channels=2, seed=9)
+    model.b_out = 0.5
+    trainer = ConvLSTMPlumeTrainer(model=model, config=ConvLSTMTrainingConfig(learning_rate=5e-3))
+
+    batch_input = np.zeros((1, 3, 10, 64, 64), dtype=float)
+    batch_input[0, 0, 0, 0, 0] = 0.4
+    batch_input[0, 1, 1, 0, 0] = 0.3
+    batch_input[0, 2, 2, 0, 0] = 0.2
+    batch_target = np.zeros((1, 1, 10, 64, 64), dtype=float)
+    batch_target[:, :, 0, :, :] = 0.0
+
+    before_wx = model.w_x.copy()
+    before_wh = model.w_h.copy()
+    before_b = model.b.copy()
+    before_wout = model.w_out.copy()
+    before_bout = float(model.b_out)
+
+    loss = trainer.train_step(batch_input=batch_input, batch_target=batch_target)
+
+    assert np.isfinite(loss)
+    assert not np.allclose(model.w_x, before_wx)
+    recurrent_delta = np.max(np.abs(model.w_h - before_wh))
+    bias_delta = np.max(np.abs(model.b - before_b))
+    assert recurrent_delta > 0.0 or bias_delta > 0.0
+    assert np.max(np.abs(model.w_out - before_wout)) > 0.0
+    assert abs(model.b_out - before_bout) > 0.0
