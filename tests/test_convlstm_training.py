@@ -4,7 +4,7 @@ import numpy as np
 import pytest
 
 from plume.models.convlstm import MinimalConvLSTMModel
-from plume.models.convlstm_contract import CONVLSTM_NORMALIZATION_MODE
+from plume.models.convlstm_contract import CONVLSTM_CONTRACT_VERSION, CONVLSTM_NORMALIZATION_MODE
 from plume.models.convlstm_training import (
     CanonicalConvLSTMSampleDataset,
     ConvLSTMPlumeTrainer,
@@ -142,3 +142,94 @@ def test_training_step_updates_recurrent_parameters_not_only_readout():
     assert recurrent_delta > 0.0 or bias_delta > 0.0
     assert np.max(np.abs(model.w_out - before_wout)) > 0.0
     assert abs(model.b_out - before_bout) > 0.0
+
+
+def test_evaluate_batch_returns_stable_transformed_metric_keys_by_default():
+    model = MinimalConvLSTMModel(input_channels=10, hidden_channels=2, seed=11)
+    trainer = ConvLSTMPlumeTrainer(model=model)
+
+    batch_input = np.zeros((2, 3, 10, 64, 64), dtype=float)
+    batch_target = np.zeros((2, 1, 10, 64, 64), dtype=float)
+    batch_target[:, :, 0, :, :] = 0.25
+
+    metrics = trainer.evaluate_batch(batch_input=batch_input, batch_target=batch_target)
+
+    assert set(metrics.keys()) == {"val_mse", "val_mae", "val_rmse"}
+    assert all(np.isfinite(v) for v in metrics.values())
+
+
+def test_evaluate_epoch_matches_batch_metrics_for_single_batch_and_supports_raw_space():
+    model = MinimalConvLSTMModel(input_channels=10, hidden_channels=2, seed=12)
+    trainer = ConvLSTMPlumeTrainer(model=model)
+
+    batch_input = np.zeros((1, 3, 10, 64, 64), dtype=float)
+    batch_target = np.zeros((1, 1, 10, 64, 64), dtype=float)
+    batch_target[:, :, 0, :, :] = 0.1
+
+    batch_metrics = trainer.evaluate_batch(
+        batch_input=batch_input,
+        batch_target=batch_target,
+        metric_prefix="val",
+        include_raw_space=True,
+    )
+    epoch_metrics = trainer.evaluate_epoch(
+        [(batch_input, batch_target)], metric_prefix="val", include_raw_space=True
+    )
+
+    assert set(batch_metrics.keys()) == {
+        "val_mse",
+        "val_mae",
+        "val_rmse",
+        "val_raw_mse",
+        "val_raw_mae",
+        "val_raw_rmse",
+    }
+    for key in batch_metrics:
+        assert epoch_metrics[key] == pytest.approx(batch_metrics[key])
+
+
+def test_evaluation_reuses_strict_validation_and_rejects_malformed_samples():
+    model = MinimalConvLSTMModel(input_channels=10, hidden_channels=2, seed=13)
+    trainer = ConvLSTMPlumeTrainer(model=model)
+
+    bad_input = np.zeros((1, 4, 10, 64, 64), dtype=float)
+    good_target = np.zeros((1, 1, 10, 64, 64), dtype=float)
+
+    with pytest.raises(ValueError, match="canonical shape"):
+        trainer.evaluate_batch(batch_input=bad_input, batch_target=good_target)
+
+
+def test_best_checkpoint_selection_and_metadata_are_deterministic(tmp_path):
+    model = MinimalConvLSTMModel(input_channels=10, hidden_channels=2, seed=21)
+    cfg = ConvLSTMTrainingConfig(checkpoint_metric="val_mse", checkpoint_direction="min")
+    trainer = ConvLSTMPlumeTrainer(model=model, config=cfg)
+
+    assert trainer.update_best_checkpoint(metrics={"val_mse": 1.5, "val_mae": 1.0}, epoch=1, step=10) is True
+    assert trainer.update_best_checkpoint(metrics={"val_mse": 1.7, "val_mae": 1.1}, epoch=2, step=20) is False
+    assert trainer.update_best_checkpoint(metrics={"val_mse": 1.2, "val_mae": 0.9}, epoch=3, step=30) is True
+
+    ckpt_path = tmp_path / "best_model.npz"
+    saved = trainer.save_checkpoint(
+        ckpt_path,
+        metrics={"val_mse": 1.2, "val_mae": 0.9},
+        epoch=trainer.best_checkpoint_epoch,
+        step=trainer.best_checkpoint_step,
+        is_best=True,
+    )
+
+    metadata = saved["metadata"]
+    assert metadata["contract_version"] == CONVLSTM_CONTRACT_VERSION
+    assert metadata["target_policy"] == "plume_only"
+    assert metadata["normalization_mode"] == "none"
+    assert metadata["trainable_parameter_scope"] == "full_model"
+    assert metadata["selected_metric_name"] == "val_mse"
+    assert metadata["selected_metric_value"] == pytest.approx(1.2)
+    assert metadata["epoch"] == 3
+    assert metadata["step"] == 30
+
+    before_state = model.state_dict()
+    model.w_x = np.zeros_like(model.w_x)
+    loaded = trainer.load_checkpoint(ckpt_path)
+    assert loaded["metadata"]["selected_metric_name"] == "val_mse"
+    assert loaded["metadata"]["contract_version"] == CONVLSTM_CONTRACT_VERSION
+    np.testing.assert_allclose(model.w_x, before_state["w_x"])
