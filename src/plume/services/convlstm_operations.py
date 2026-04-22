@@ -23,6 +23,7 @@ OPERATIONAL_PHASES = {
     "monitoring",
 }
 MODEL_STATUSES = {"candidate", "approved", "active", "rejected", "archived"}
+APPROVAL_STATUSES = {"not_required", "pending_manual_approval", "approved_for_activation", "rejected_by_operator"}
 
 
 @dataclass(frozen=True)
@@ -89,12 +90,19 @@ class ModelRegistry:
 
     def load(self) -> dict[str, object]:
         if not self.path.exists():
-            return {"active_model_id": None, "previous_active_model_id": None, "models": [], "events": []}
+            return {
+                "active_model_id": None,
+                "previous_active_model_id": None,
+                "models": [],
+                "events": [],
+                "approval_audit": [],
+            }
         payload = json.loads(self.path.read_text(encoding="utf-8"))
         if not isinstance(payload, dict):
             raise ValueError(f"Model registry must decode to JSON object: {self.path}")
         payload.setdefault("models", [])
         payload.setdefault("events", [])
+        payload.setdefault("approval_audit", [])
         payload.setdefault("active_model_id", None)
         payload.setdefault("previous_active_model_id", None)
         return payload
@@ -184,6 +192,7 @@ def register_candidate_from_run(
         "created_from_run_dir": str(run_path),
         "run_id": run_id or run_path.name,
         "status": "candidate",
+        "approval_status": "not_required",
         "contract_version": policy.get("contract_version"),
         "target_policy": policy.get("target_policy"),
         "normalization_mode": policy.get("normalization_mode"),
@@ -214,9 +223,14 @@ def evaluate_promotion(
     comparisons: dict[str, object] = {}
 
     if not policy.promotion_enabled:
-        return {"approved": False, "reasons": ["promotion_disabled"], "comparisons": comparisons}
-    if policy.promotion_manual_approval_required:
-        return {"approved": False, "reasons": ["manual_approval_required"], "comparisons": comparisons}
+        return {
+            "approved": False,
+            "technical_gate_passed": False,
+            "manual_approval_required": policy.promotion_manual_approval_required,
+            "approval_status": "not_required",
+            "reasons": ["promotion_disabled"],
+            "comparisons": comparisons,
+        }
 
     if candidate_record.get("status") not in {"candidate", "approved"}:
         reasons.append("candidate_status_invalid")
@@ -258,14 +272,48 @@ def evaluate_promotion(
             max_centroid=policy.promotion_max_regression_centroid,
         )
 
-    approved = not reasons
+    technical_gate_passed = not reasons
+    approval_status = "not_required"
+    approved = technical_gate_passed
+    decision_reasons = reasons or ["approved"]
+    if policy.promotion_manual_approval_required and technical_gate_passed:
+        approved = False
+        approval_status = "pending_manual_approval"
+        decision_reasons = ["manual_approval_required", "technical_gate_passed"]
     return {
         "approved": approved,
-        "reasons": reasons or ["approved"],
+        "technical_gate_passed": technical_gate_passed,
+        "manual_approval_required": policy.promotion_manual_approval_required,
+        "approval_status": approval_status,
+        "reasons": decision_reasons,
         "comparisons": comparisons,
         "candidate_model_id": candidate_record.get("model_id"),
         "active_model_id": None if active_record is None else active_record.get("model_id"),
     }
+
+
+def approve_candidate(*, registry: ModelRegistry, candidate_model_id: str, actor: str, comment: str | None = None) -> dict[str, object]:
+    return _record_operator_approval_decision(
+        registry=registry,
+        candidate_model_id=candidate_model_id,
+        actor=actor,
+        comment=comment,
+        decision_status="approved_for_activation",
+        resulting_model_status="approved",
+        event_type="candidate_approved_by_operator",
+    )
+
+
+def reject_candidate(*, registry: ModelRegistry, candidate_model_id: str, actor: str, comment: str | None = None) -> dict[str, object]:
+    return _record_operator_approval_decision(
+        registry=registry,
+        candidate_model_id=candidate_model_id,
+        actor=actor,
+        comment=comment,
+        decision_status="rejected_by_operator",
+        resulting_model_status="rejected",
+        event_type="candidate_rejected_by_operator",
+    )
 
 
 def activate_approved_model(*, registry: ModelRegistry, model_id: str) -> dict[str, object]:
@@ -397,6 +445,8 @@ class OperationalOrchestrator:
             for item in registry_payload["models"]:
                 if item.get("model_id") == candidate["model_id"]:
                     item["status"] = "approved"
+                    item["approval_status"] = "not_required"
+                    item["last_promotion_result"] = decision
             self.registry.save(registry_payload)
             self.event_log.append(event_type="deploying_model", payload={"model_id": candidate["model_id"]})
             activation = activate_approved_model(registry=self.registry, model_id=str(candidate["model_id"]))
@@ -413,7 +463,55 @@ class OperationalOrchestrator:
                 last_promotion_result=decision,
                 latest_warning_or_error=None,
             )
+        if decision["approval_status"] == "pending_manual_approval":
+            registry_payload = self.registry.load()
+            for item in registry_payload["models"]:
+                if item.get("model_id") == candidate["model_id"]:
+                    item["approval_status"] = "pending_manual_approval"
+                    item["last_promotion_result"] = decision
+            audit = _build_approval_audit_record(
+                candidate_model_id=str(candidate["model_id"]),
+                active_model_id=_optional_str(decision.get("active_model_id")),
+                promotion_gate_result=decision,
+                manual_approval_required=True,
+                approval_status="pending_manual_approval",
+                actor="system",
+                comment="technical gate passed; awaiting operator approval",
+                resulting_model_status="candidate",
+                event_index=len(registry_payload["events"]),
+            )
+            registry_payload["approval_audit"].append(audit)
+            registry_payload["events"].append(
+                {
+                    "timestamp": audit["timestamp"],
+                    "event_type": "candidate_pending_manual_approval",
+                    "model_id": candidate["model_id"],
+                    "actor": "system",
+                    "comment": audit["comment"],
+                }
+            )
+            self.registry.save(registry_payload)
+            self.event_log.append(event_type="candidate_pending_manual_approval", payload={"model_id": candidate["model_id"]})
+            return OperationalState(
+                phase="promotion_decision",
+                active_model_id=state.active_model_id,
+                active_model_path=state.active_model_path,
+                candidate_model_id=str(candidate["model_id"]),
+                candidate_model_path=str(candidate["path"]),
+                buffered_new_sample_count=state.buffered_new_sample_count,
+                last_retrain_time=state.last_retrain_time,
+                current_run_id=_optional_str(run_payload.get("run_id")) or str(Path(run_dir).name),
+                last_promotion_result=decision,
+                latest_warning_or_error=None,
+            )
 
+        registry_payload = self.registry.load()
+        for item in registry_payload["models"]:
+            if item.get("model_id") == candidate["model_id"]:
+                item["status"] = "rejected"
+                item["approval_status"] = "not_required"
+                item["last_promotion_result"] = decision
+        self.registry.save(registry_payload)
         return OperationalState(
             phase="candidate_rejected",
             active_model_id=state.active_model_id,
@@ -433,7 +531,10 @@ def summarize_operational_status(
     state: OperationalState,
     readiness: dict[str, object],
     latest_run_summary: dict[str, object] | None = None,
+    registry_payload: dict[str, object] | None = None,
 ) -> dict[str, object]:
+    pending_candidate = _pending_approval_candidate(registry_payload)
+    last_approval_event = _last_approval_event(registry_payload)
     return {
         "phase": state.phase,
         "active_model": {"model_id": state.active_model_id, "path": state.active_model_path},
@@ -442,7 +543,122 @@ def summarize_operational_status(
         "last_promotion_result": state.last_promotion_result,
         "latest_warning_or_error": state.latest_warning_or_error,
         "latest_run_summary_excerpt": _run_summary_excerpt(latest_run_summary),
+        "has_pending_manual_approval": pending_candidate is not None,
+        "candidate_approval_status": None if pending_candidate is None else pending_candidate.get("approval_status"),
+        "last_approval_event": last_approval_event,
+        "last_approval_comment": None if last_approval_event is None else last_approval_event.get("comment"),
     }
+
+
+def _record_operator_approval_decision(
+    *,
+    registry: ModelRegistry,
+    candidate_model_id: str,
+    actor: str,
+    comment: str | None,
+    decision_status: str,
+    resulting_model_status: str,
+    event_type: str,
+) -> dict[str, object]:
+    if decision_status not in APPROVAL_STATUSES:
+        raise ValueError(f"Unsupported approval status: {decision_status}")
+    payload = registry.load()
+    candidate = next((m for m in payload["models"] if m.get("model_id") == candidate_model_id), None)
+    if candidate is None:
+        raise ValueError(f"Unknown candidate model id: {candidate_model_id}")
+    if candidate.get("status") != "candidate":
+        raise ValueError("Only candidate models in pending approval may receive operator decisions")
+    if candidate.get("approval_status") != "pending_manual_approval":
+        raise ValueError("Candidate is not pending manual approval")
+
+    candidate["approval_status"] = decision_status
+    candidate["status"] = resulting_model_status
+    last_promotion = _optional_dict(candidate.get("last_promotion_result"))
+    audit = _build_approval_audit_record(
+        candidate_model_id=candidate_model_id,
+        active_model_id=_optional_str(payload.get("active_model_id")),
+        promotion_gate_result=last_promotion,
+        manual_approval_required=True,
+        approval_status=decision_status,
+        actor=actor,
+        comment=comment,
+        resulting_model_status=resulting_model_status,
+        event_index=len(payload["events"]),
+    )
+    payload["approval_audit"].append(audit)
+    payload["events"].append(
+        {
+            "timestamp": audit["timestamp"],
+            "event_type": event_type,
+            "model_id": candidate_model_id,
+            "actor": actor,
+            "comment": comment,
+        }
+    )
+    registry.save(payload)
+    return audit
+
+
+def _build_approval_audit_record(
+    *,
+    candidate_model_id: str,
+    active_model_id: str | None,
+    promotion_gate_result: dict[str, object] | None,
+    manual_approval_required: bool,
+    approval_status: str,
+    actor: str,
+    comment: str | None,
+    resulting_model_status: str,
+    event_index: int,
+) -> dict[str, object]:
+    return {
+        "candidate_model_id": candidate_model_id,
+        "active_model_id": active_model_id,
+        "promotion_gate_result": promotion_gate_result,
+        "manual_approval_required": manual_approval_required,
+        "approval_status": approval_status,
+        "actor": actor,
+        "comment": comment,
+        "timestamp": _utc_now_iso(),
+        "event_index": event_index,
+        "resulting_model_status": resulting_model_status,
+    }
+
+
+def _pending_approval_candidate(registry_payload: dict[str, object] | None) -> dict[str, object] | None:
+    if not isinstance(registry_payload, dict):
+        return None
+    models = registry_payload.get("models")
+    if not isinstance(models, list):
+        return None
+    return next(
+        (
+            item
+            for item in models
+            if isinstance(item, dict)
+            and item.get("status") == "candidate"
+            and item.get("approval_status") == "pending_manual_approval"
+        ),
+        None,
+    )
+
+
+def _last_approval_event(registry_payload: dict[str, object] | None) -> dict[str, object] | None:
+    if not isinstance(registry_payload, dict):
+        return None
+    events = registry_payload.get("events")
+    if not isinstance(events, list):
+        return None
+    for event in reversed(events):
+        if not isinstance(event, dict):
+            continue
+        if event.get("event_type") in {
+            "candidate_pending_manual_approval",
+            "candidate_approved_by_operator",
+            "candidate_rejected_by_operator",
+        }:
+            return dict(event)
+    return None
 
 
 def _run_summary_excerpt(summary: dict[str, object] | None) -> dict[str, object] | None:
