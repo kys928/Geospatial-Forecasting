@@ -458,3 +458,163 @@ def test_phase_h_checkpoint_selection_default_remains_val_mse_and_metadata_expos
     assert trainer.metadata["effective_lambda_smooth"] == pytest.approx(0.2)
     assert trainer.metadata["effective_lambda_mass"] == pytest.approx(0.1)
     assert trainer.metadata["active_stage"] == 1
+
+
+def test_phase_i_metric_gating_disabled_preserves_phase_h_epoch_stage_progression():
+    model = MinimalConvLSTMModel(input_channels=10, hidden_channels=2, seed=50)
+    cfg = ConvLSTMTrainingConfig(
+        physics_loss_enabled=True,
+        physics_schedule_enabled=True,
+        physics_schedule_stage_boundaries=(0, 2),
+        physics_schedule_lambda_smooth=(0.0, 0.4),
+        physics_schedule_lambda_mass=(0.0, 0.3),
+        metric_stage_progression_enabled=False,
+    )
+    trainer = ConvLSTMPlumeTrainer(model=model, config=cfg)
+    early = trainer._effective_physics_weights(epoch=1, step=0)
+    late = trainer._effective_physics_weights(epoch=2, step=0)
+    assert early["active_stage"] == pytest.approx(0.0)
+    assert late["active_stage"] == pytest.approx(1.0)
+    assert late["lambda_smooth"] == pytest.approx(0.4)
+    assert late["lambda_mass"] == pytest.approx(0.3)
+
+
+def test_phase_i_metric_gating_does_not_advance_when_threshold_not_met():
+    model = MinimalConvLSTMModel(input_channels=10, hidden_channels=2, seed=51)
+    cfg = ConvLSTMTrainingConfig(
+        physics_loss_enabled=True,
+        physics_schedule_enabled=True,
+        physics_schedule_stage_boundaries=(0, 1),
+        physics_schedule_lambda_smooth=(0.0, 0.5),
+        physics_schedule_lambda_mass=(0.0, 0.25),
+        metric_stage_progression_enabled=True,
+        metric_stage_monitor="val_mse",
+        metric_stage_direction="min",
+        metric_stage_thresholds=(0.20,),
+    )
+    trainer = ConvLSTMPlumeTrainer(model=model, config=cfg)
+    changed = trainer.update_stage_from_validation({"val_mse": 0.25}, epoch=1)
+    assert changed is False
+    weights = trainer._effective_physics_weights(epoch=999, step=0)
+    assert weights["active_stage"] == pytest.approx(0.0)
+    assert trainer.metadata["metric_stage_last_advanced"] is False
+
+
+def test_phase_i_metric_gating_advances_when_threshold_met_and_updates_effective_weights():
+    model = MinimalConvLSTMModel(input_channels=10, hidden_channels=2, seed=52)
+    cfg = ConvLSTMTrainingConfig(
+        physics_loss_enabled=True,
+        physics_schedule_enabled=True,
+        physics_schedule_stage_boundaries=(0, 1),
+        physics_schedule_lambda_smooth=(0.0, 0.6),
+        physics_schedule_lambda_mass=(0.0, 0.4),
+        metric_stage_progression_enabled=True,
+        metric_stage_monitor="val_mse",
+        metric_stage_direction="min",
+        metric_stage_thresholds=(0.30,),
+    )
+    trainer = ConvLSTMPlumeTrainer(model=model, config=cfg)
+    changed = trainer.update_stage_from_validation({"val_mse": 0.30}, epoch=2)
+    assert changed is True
+    weights = trainer._effective_physics_weights(epoch=2, step=0)
+    assert weights["active_stage"] == pytest.approx(1.0)
+    assert weights["lambda_smooth"] == pytest.approx(0.6)
+    assert weights["lambda_mass"] == pytest.approx(0.4)
+    assert trainer.metadata["metric_stage_last_value"] == pytest.approx(0.30)
+    assert trainer.metadata["metric_stage_last_advanced"] is True
+
+
+def test_phase_i_metric_direction_max_advances_on_greater_equal_threshold():
+    model = MinimalConvLSTMModel(input_channels=10, hidden_channels=2, seed=53)
+    cfg = ConvLSTMTrainingConfig(
+        physics_loss_enabled=True,
+        physics_schedule_enabled=True,
+        physics_schedule_stage_boundaries=(0, 1),
+        physics_schedule_lambda_smooth=(0.0, 0.2),
+        physics_schedule_lambda_mass=(0.0, 0.1),
+        metric_stage_progression_enabled=True,
+        metric_stage_monitor="val_score",
+        metric_stage_direction="max",
+        metric_stage_thresholds=(0.80,),
+    )
+    trainer = ConvLSTMPlumeTrainer(model=model, config=cfg)
+    assert trainer.update_stage_from_validation({"val_score": 0.79}, epoch=1) is False
+    assert trainer.update_stage_from_validation({"val_score": 0.80}, epoch=2) is True
+    assert trainer._effective_physics_weights(epoch=2, step=0)["active_stage"] == pytest.approx(1.0)
+
+
+def test_phase_i_metric_minimum_epoch_per_stage_prevents_premature_advancement():
+    model = MinimalConvLSTMModel(input_channels=10, hidden_channels=2, seed=54)
+    cfg = ConvLSTMTrainingConfig(
+        physics_loss_enabled=True,
+        physics_schedule_enabled=True,
+        physics_schedule_stage_boundaries=(0, 1),
+        physics_schedule_lambda_smooth=(0.0, 0.2),
+        physics_schedule_lambda_mass=(0.0, 0.1),
+        metric_stage_progression_enabled=True,
+        metric_stage_thresholds=(0.20,),
+        metric_stage_min_epoch_per_stage=2,
+    )
+    trainer = ConvLSTMPlumeTrainer(model=model, config=cfg)
+    assert trainer.update_stage_from_validation({"val_mse": 0.10}, epoch=1) is False
+    assert trainer._effective_physics_weights(epoch=1, step=0)["active_stage"] == pytest.approx(0.0)
+    assert trainer.update_stage_from_validation({"val_mse": 0.10}, epoch=2) is True
+
+
+def test_phase_i_metric_patience_requires_consecutive_threshold_satisfaction():
+    model = MinimalConvLSTMModel(input_channels=10, hidden_channels=2, seed=55)
+    cfg = ConvLSTMTrainingConfig(
+        physics_loss_enabled=True,
+        physics_schedule_enabled=True,
+        physics_schedule_stage_boundaries=(0, 1),
+        physics_schedule_lambda_smooth=(0.0, 0.2),
+        physics_schedule_lambda_mass=(0.0, 0.1),
+        metric_stage_progression_enabled=True,
+        metric_stage_thresholds=(0.30,),
+        metric_stage_patience=1,
+    )
+    trainer = ConvLSTMPlumeTrainer(model=model, config=cfg)
+    assert trainer.update_stage_from_validation({"val_mse": 0.29}, epoch=1) is False
+    assert trainer.metadata["metric_stage_satisfaction_streak"] == 1
+    assert trainer.update_stage_from_validation({"val_mse": 0.31}, epoch=2) is False
+    assert trainer.metadata["metric_stage_satisfaction_streak"] == 0
+    assert trainer.update_stage_from_validation({"val_mse": 0.28}, epoch=3) is False
+    assert trainer.update_stage_from_validation({"val_mse": 0.27}, epoch=4) is True
+
+
+def test_phase_i_metric_progression_is_one_way_and_no_stage_skips_per_update():
+    model = MinimalConvLSTMModel(input_channels=10, hidden_channels=2, seed=56)
+    cfg = ConvLSTMTrainingConfig(
+        physics_loss_enabled=True,
+        physics_schedule_enabled=True,
+        physics_schedule_stage_boundaries=(0, 1, 2),
+        physics_schedule_lambda_smooth=(0.0, 0.2, 0.4),
+        physics_schedule_lambda_mass=(0.0, 0.1, 0.3),
+        metric_stage_progression_enabled=True,
+        metric_stage_thresholds=(0.50, 0.20),
+    )
+    trainer = ConvLSTMPlumeTrainer(model=model, config=cfg)
+    assert trainer.update_stage_from_validation({"val_mse": 0.01}, epoch=1) is True
+    assert trainer._effective_physics_weights(epoch=1, step=0)["active_stage"] == pytest.approx(1.0)
+    # Only one stage advancement per update even if next threshold is already met.
+    assert trainer.update_stage_from_validation({"val_mse": 0.01}, epoch=2) is True
+    assert trainer._effective_physics_weights(epoch=2, step=0)["active_stage"] == pytest.approx(2.0)
+    assert trainer.update_stage_from_validation({"val_mse": 0.01}, epoch=3) is False
+    assert trainer._effective_physics_weights(epoch=3, step=0)["active_stage"] == pytest.approx(2.0)
+
+
+def test_phase_i_missing_monitored_metric_raises_clear_error():
+    model = MinimalConvLSTMModel(input_channels=10, hidden_channels=2, seed=57)
+    cfg = ConvLSTMTrainingConfig(
+        physics_loss_enabled=True,
+        physics_schedule_enabled=True,
+        physics_schedule_stage_boundaries=(0, 1),
+        physics_schedule_lambda_smooth=(0.0, 0.2),
+        physics_schedule_lambda_mass=(0.0, 0.1),
+        metric_stage_progression_enabled=True,
+        metric_stage_monitor="val_custom_metric",
+        metric_stage_thresholds=(0.2,),
+    )
+    trainer = ConvLSTMPlumeTrainer(model=model, config=cfg)
+    with pytest.raises(ValueError, match="requires 'val_custom_metric'"):
+        trainer.update_stage_from_validation({"val_mse": 0.1}, epoch=1)

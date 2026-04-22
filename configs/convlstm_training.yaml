@@ -48,3 +48,13 @@ convlstm_training:
   mass_ramp_type: none
   mass_ramp_start: 0
   mass_ramp_end: 0
+
+  # Phase-I optional metric-gated stage progression layered on top of Phase-H schedule.
+  # When disabled, stage advancement remains epoch-boundary based exactly as Phase-H.
+  metric_stage_progression_enabled: false
+  metric_stage_monitor: val_mse
+  metric_stage_direction: min
+  # One threshold per transition: stage0->1, stage1->2, ...
+  metric_stage_thresholds: []
+  metric_stage_min_epoch_per_stage: 0
+  metric_stage_patience: 0
