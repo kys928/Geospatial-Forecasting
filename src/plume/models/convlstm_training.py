@@ -80,6 +80,17 @@ class ConvLSTMRunArtifacts:
     run_summary_path: Path
 
 
+@dataclass(frozen=True)
+class ConvLSTMRunConfig:
+    """Minimal run-level orchestration controls for reproducible trainer flow."""
+
+    num_epochs: int
+    output_dir: Path
+    save_checkpoints: bool = True
+    save_last_checkpoint: bool = False
+    run_name: str | None = None
+
+
 class CanonicalConvLSTMSampleDataset:
     """Loader/validator for stored canonical ConvLSTM samples.
 
@@ -429,6 +440,105 @@ class ConvLSTMPlumeTrainer:
         self._last_run_summary = dict(summary)
         self.append_run_event(event_type="run_end", epoch=final_epoch, payload={"run_summary": str(self._run_artifacts.run_summary_path)})
         return summary
+
+    def run_training(
+        self,
+        *,
+        train_batches: list[tuple[np.ndarray, np.ndarray]],
+        val_batches: list[tuple[np.ndarray, np.ndarray]],
+        run_config: ConvLSTMRunConfig,
+    ) -> dict[str, object]:
+        """Execute a minimal, explicit ConvLSTM run flow using existing trainer helpers.
+
+        Epoch order is intentionally fixed:
+        1) train epoch
+        2) validation epoch
+        3) metric-gated stage update (if enabled)
+        4) best-checkpoint update
+        5) optional checkpoint save(s)
+        6) epoch report append
+        """
+        if run_config.num_epochs <= 0:
+            raise ValueError(f"run_config.num_epochs must be > 0, got {run_config.num_epochs}")
+
+        run_output_dir = Path(run_config.output_dir)
+        if run_config.run_name:
+            run_output_dir = run_output_dir / run_config.run_name
+        self.initialize_run_artifacts(run_output_dir)
+
+        final_train_metrics: dict[str, float] = {}
+        final_val_metrics: dict[str, float] = {}
+        for epoch in range(run_config.num_epochs):
+            train_loss = self.train_epoch(train_batches, epoch=epoch)
+            train_metrics = dict(self.last_train_step_metrics or {})
+            train_metrics["train_total_loss"] = float(train_loss)
+
+            val_metrics = self.evaluate_epoch(val_batches, metric_prefix="val")
+            self.update_stage_from_validation(val_metrics=val_metrics, epoch=epoch)
+            is_best = self.update_best_checkpoint(metrics=val_metrics, epoch=epoch, step=self._train_steps_completed)
+
+            if run_config.save_checkpoints:
+                checkpoint_path = run_output_dir / "checkpoints" / f"epoch_{epoch}.npz"
+                if self.config.save_best_only:
+                    if is_best:
+                        checkpoint_path = run_output_dir / "checkpoints" / "best.npz"
+                        self.save_checkpoint(
+                            checkpoint_path,
+                            metrics=val_metrics,
+                            epoch=epoch,
+                            step=self._train_steps_completed,
+                            is_best=True,
+                        )
+                else:
+                    self.save_checkpoint(
+                        checkpoint_path,
+                        metrics=val_metrics,
+                        epoch=epoch,
+                        step=self._train_steps_completed,
+                        is_best=is_best,
+                    )
+                    if is_best:
+                        self.save_checkpoint(
+                            run_output_dir / "checkpoints" / "best.npz",
+                            metrics=val_metrics,
+                            epoch=epoch,
+                            step=self._train_steps_completed,
+                            is_best=True,
+                        )
+
+            self.build_epoch_report(
+                epoch=epoch,
+                train_metrics=train_metrics,
+                val_metrics=val_metrics,
+                is_best_checkpoint=is_best,
+            )
+            final_train_metrics = dict(train_metrics)
+            final_val_metrics = dict(val_metrics)
+
+        if run_config.save_last_checkpoint and run_config.save_checkpoints:
+            self.save_checkpoint(
+                run_output_dir / "checkpoints" / "last.npz",
+                metrics=final_val_metrics,
+                epoch=run_config.num_epochs - 1,
+                step=self._train_steps_completed,
+                is_best=False,
+            )
+
+        summary = self.finalize_run_summary(
+            final_epoch=run_config.num_epochs - 1,
+            final_train_metrics=final_train_metrics,
+            final_validation_metrics=final_val_metrics,
+        )
+        return {
+            "run_artifacts": None if self._run_artifacts is None else asdict(self._run_artifacts),
+            "run_summary": summary,
+            "best_checkpoint": {
+                "metric_name": self.best_checkpoint_metric_name,
+                "metric_value": self.best_checkpoint_metric_value,
+                "epoch": self.best_checkpoint_epoch,
+                "step": self.best_checkpoint_step,
+            },
+        }
 
     def _build_run_config_snapshot(self) -> dict[str, object]:
         snapshot = {
