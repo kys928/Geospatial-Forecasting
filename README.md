@@ -146,7 +146,48 @@ This launches:
 - backend: `uvicorn plume.api.main:app --reload`
 - frontend: `npm run dev` in `frontend/`
 
-The script fails fast if the frontend directory is missing.
+`start_dev.py` now performs bootstrap checks before launch:
+- Python dependency checks (and optional install behavior)
+- Frontend dependency checks (`node_modules`) when frontend startup is enabled
+- `PYTHONPATH` wiring for `src/`
+- Optional retraining worker startup (`--with-worker`)
+- Optional Hugging Face preload when configured
+
+Useful flags:
+- `--install` / `--skip-install`
+- `--backend-only` / `--skip-frontend`
+- `--with-worker`
+- `--preload-models`
+
+Hugging Face preload env (used when `--preload-models` is passed or `PLUME_PRELOAD_HF_MODELS=true`):
+- `PLUME_HF_LLM_REPO_ID` (required when preload enabled)
+- `PLUME_HF_LLM_REVISION` (optional)
+- `PLUME_HF_LLM_LOCAL_DIR` (optional)
+
+## Ops retraining worker
+
+Ops retraining triggers now queue jobs and return immediately. A local worker process executes queued jobs.
+
+- API trigger endpoint: `POST /ops/retraining/trigger`
+- Auto-dispatch on trigger: enabled by default via `PLUME_OPS_AUTO_DISPATCH_WORKER=true`
+- Manual worker entrypoint:
+
+```bash
+PYTHONPATH=src python scripts/run_retraining_worker.py --once
+```
+
+Useful worker flags:
+- `--jobs-path <path>`: override retraining job store location
+- `--config-dir <path>`: override config directory containing `convlstm_training.yaml`
+- `--poll-interval <seconds>`: poll cadence in loop mode
+
+Ops metadata persistence can use a single SQLite file by setting:
+
+```bash
+export PLUME_OPS_DB_PATH=artifacts/convlstm_ops/ops.sqlite3
+```
+
+When `PLUME_OPS_DB_PATH` is set, ops state/registry/jobs/events read and write through SQLite-backed stores. Existing JSON artifacts remain supported when this env var is unset.
 
 See `docs/api-contract.md` for response examples.
 
@@ -160,6 +201,6 @@ pytest
 - ConvLSTM online path currently runs inference with random/untrained demo weights unless trained weights are wired in
 - Online backend does not implement gradient-based online training
 - State store is process-local in-memory only
-- No auth or persistence layer
+- Ops auth is token-based and limited to `/ops/*`; no full identity provider integration
 - OpenRemote adapter is a **provisional generic payload translation** only (not validated contract, not live integration)
 - OpenRemote HTTP endpoint shapes can vary by deployed OpenRemote version; timestamped/predicted routes may need minor path adjustments for a target instance

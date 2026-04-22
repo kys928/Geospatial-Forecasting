@@ -98,6 +98,9 @@ class ConvLSTMBackend(BaseBackend):
                 "resolved_active_model": {
                     "model_id": active["model_id"],
                     "checkpoint_path": active["checkpoint_path"],
+                    "model_source": "registry_active",
+                    "activation_event": active.get("activation_event"),
+                    "previous_active_model_id": active.get("previous_active_model_id"),
                 },
             }
         if checkpoint is not None and str(checkpoint).strip():

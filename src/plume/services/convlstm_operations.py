@@ -3,14 +3,31 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from contextlib import contextmanager
+import sqlite3
 import json
 import os
 from pathlib import Path
+import subprocess
+import sys
+import time
 from typing import Callable
 import uuid
 
+import numpy as np
+import yaml
+
+from plume.models.convlstm import MinimalConvLSTMModel
+from plume.models.convlstm_contract import CONVLSTM_INPUT_CHANNELS
 from plume.models.convlstm_contract import CONVLSTM_CONTRACT_VERSION, CONVLSTM_NORMALIZATION_MODE
-from plume.models.convlstm_training import load_best_checkpoint_summary, load_run_summary
+from plume.models.convlstm_training import (
+    ConvLSTMDatasetRunConfig,
+    ConvLSTMPlumeTrainer,
+    ConvLSTMRunConfig,
+    ConvLSTMTrainingConfig,
+    load_best_checkpoint_summary,
+    load_run_summary,
+    run_training_from_dataset,
+)
 
 
 OPERATIONAL_PHASES = {
@@ -102,6 +119,8 @@ class RetrainingJobRecord:
     error_message: str | None = None
     result_run_dir: str | None = None
     result_run_id: str | None = None
+    result_candidate_id: str | None = None
+    worker_pid: int | None = None
 
     def __post_init__(self) -> None:
         if self.status not in RETRAINING_JOB_STATUSES:
@@ -127,14 +146,20 @@ class RetrainingJobRecord:
             error_message=_optional_str(payload.get("error_message")),
             result_run_dir=_optional_str(payload.get("result_run_dir")),
             result_run_id=_optional_str(payload.get("result_run_id")),
+            result_candidate_id=_optional_str(payload.get("result_candidate_id")),
+            worker_pid=_optional_int(payload.get("worker_pid")),
         )
 
 
 class RetrainingJobStore:
     def __init__(self, path: str | Path):
         self.path = Path(path)
+        self.lock_path = self.path.with_suffix(f"{self.path.suffix}.lock")
+        self._sqlite = _is_sqlite_path(self.path)
 
     def load(self) -> dict[str, object]:
+        if self._sqlite:
+            return self._load_sqlite()
         if not self.path.exists():
             return {"jobs": [], "next_sequence": 0}
         payload = json.loads(self.path.read_text(encoding="utf-8"))
@@ -147,12 +172,11 @@ class RetrainingJobStore:
         return {"jobs": jobs, "next_sequence": next_sequence}
 
     def save(self, payload: dict[str, object]) -> None:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        serializable = {
-            "jobs": payload.get("jobs", []),
-            "next_sequence": int(payload.get("next_sequence", len(payload.get("jobs", [])))),
-        }
-        self.path.write_text(json.dumps(serializable, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        if self._sqlite:
+            self._save_sqlite(payload)
+            return
+        with self.acquire_lock():
+            self._atomic_write(payload)
 
     def list_jobs(self) -> list[dict[str, object]]:
         return [dict(item) for item in self.load()["jobs"] if isinstance(item, dict)]
@@ -165,6 +189,13 @@ class RetrainingJobStore:
         output_dir: str | None,
         job_id: str | None = None,
     ) -> dict[str, object]:
+        if self._sqlite:
+            return self._create_job_sqlite(
+                dataset_snapshot_ref=dataset_snapshot_ref,
+                run_config_ref=run_config_ref,
+                output_dir=output_dir,
+                job_id=job_id,
+            )
         payload = self.load()
         sequence = int(payload["next_sequence"])
         generated_job_id = job_id or f"retrain-job-{sequence:06d}"
@@ -185,16 +216,20 @@ class RetrainingJobStore:
         return record.to_dict()
 
     def update_job(self, *, job_id: str, **changes: object) -> dict[str, object]:
-        payload = self.load()
-        jobs = payload["jobs"]
-        for idx, item in enumerate(jobs):
-            if isinstance(item, dict) and item.get("job_id") == job_id:
-                updated = dict(item)
-                updated.update(changes)
-                validated = RetrainingJobRecord.from_dict(updated).to_dict()
-                jobs[idx] = validated
-                self.save(payload)
-                return validated
+        if self._sqlite:
+            return self._update_job_sqlite(job_id=job_id, **changes)
+        with self.acquire_lock():
+            payload = self.load()
+            jobs = payload["jobs"]
+            for idx, item in enumerate(jobs):
+                if isinstance(item, dict) and item.get("job_id") == job_id:
+                    updated = dict(item)
+                    updated.update(changes)
+                    _validate_job_transition(current_status=str(item.get("status", "queued")), next_status=str(updated.get("status")))
+                    validated = RetrainingJobRecord.from_dict(updated).to_dict()
+                    jobs[idx] = validated
+                    self._atomic_write(payload)
+                    return validated
         raise ValueError(f"Unknown retraining job id: {job_id}")
 
     def latest_job(self) -> dict[str, object] | None:
@@ -203,13 +238,270 @@ class RetrainingJobStore:
             return None
         return max(jobs, key=lambda item: int(item.get("created_sequence", -1)))
 
+    def claim_next_queued_job(self, *, worker_pid: int | None = None) -> dict[str, object] | None:
+        if self._sqlite:
+            return self._claim_next_queued_job_sqlite(worker_pid=worker_pid)
+        with self.acquire_lock():
+            payload = self.load()
+            jobs = payload["jobs"]
+            queued = sorted(
+                [item for item in jobs if isinstance(item, dict) and item.get("status") == "queued"],
+                key=lambda item: int(item.get("created_sequence", -1)),
+            )
+            if not queued:
+                return None
+            target = queued[0]
+            updated = dict(target)
+            updated["status"] = "running"
+            updated["started_at"] = _utc_now_iso()
+            updated["error_message"] = None
+            updated["worker_pid"] = worker_pid
+            _validate_job_transition(current_status=str(target.get("status", "queued")), next_status="running")
+            validated = RetrainingJobRecord.from_dict(updated).to_dict()
+            for idx, item in enumerate(jobs):
+                if isinstance(item, dict) and item.get("job_id") == target.get("job_id"):
+                    jobs[idx] = validated
+                    break
+            self._atomic_write(payload)
+            return validated
+
+    @contextmanager
+    def acquire_lock(self):
+        self.lock_path.parent.mkdir(parents=True, exist_ok=True)
+        fd: int | None = None
+        created_lock = False
+        try:
+            fd = os.open(self.lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            created_lock = True
+            os.write(fd, str(os.getpid()).encode("utf-8"))
+            yield
+        except FileExistsError as exc:
+            raise RuntimeError(f"Could not acquire retraining job lock: {self.lock_path}") from exc
+        finally:
+            if fd is not None:
+                os.close(fd)
+            if created_lock and self.lock_path.exists():
+                self.lock_path.unlink()
+
+    def _atomic_write(self, payload: dict[str, object]) -> None:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        serializable = {
+            "jobs": payload.get("jobs", []),
+            "next_sequence": int(payload.get("next_sequence", len(payload.get("jobs", [])))),
+        }
+        temp_path = self.path.with_suffix(f"{self.path.suffix}.{uuid.uuid4().hex}.tmp")
+        try:
+            temp_path.write_text(json.dumps(serializable, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+            temp_path.replace(self.path)
+        finally:
+            if temp_path.exists():
+                temp_path.unlink()
+
+    def _sqlite_conn(self) -> sqlite3.Connection:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        conn = sqlite3.connect(self.path, isolation_level=None)
+        conn.row_factory = sqlite3.Row
+        self._init_sqlite(conn)
+        return conn
+
+    @staticmethod
+    def _init_sqlite(conn: sqlite3.Connection) -> None:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS retraining_jobs (
+                job_id TEXT PRIMARY KEY,
+                status TEXT NOT NULL,
+                created_sequence INTEGER NOT NULL UNIQUE,
+                created_at TEXT NOT NULL,
+                started_at TEXT,
+                finished_at TEXT,
+                dataset_snapshot_ref TEXT,
+                run_config_ref TEXT,
+                output_dir TEXT,
+                error_message TEXT,
+                result_run_dir TEXT,
+                result_run_id TEXT,
+                result_candidate_id TEXT,
+                worker_pid INTEGER
+            )
+            """
+        )
+        conn.execute("CREATE TABLE IF NOT EXISTS retraining_job_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+        conn.execute("INSERT OR IGNORE INTO retraining_job_meta(key, value) VALUES ('next_sequence', '0')")
+
+    def _load_sqlite(self) -> dict[str, object]:
+        with self._sqlite_conn() as conn:
+            rows = conn.execute(
+                "SELECT * FROM retraining_jobs ORDER BY created_sequence ASC"
+            ).fetchall()
+            jobs = [dict(row) for row in rows]
+            next_sequence = int(conn.execute("SELECT value FROM retraining_job_meta WHERE key='next_sequence'").fetchone()[0])
+            return {"jobs": jobs, "next_sequence": next_sequence}
+
+    def _save_sqlite(self, payload: dict[str, object]) -> None:
+        with self._sqlite_conn() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            conn.execute("DELETE FROM retraining_jobs")
+            for item in payload.get("jobs", []):
+                if isinstance(item, dict):
+                    row = RetrainingJobRecord.from_dict(item).to_dict()
+                    conn.execute(
+                        """
+                        INSERT INTO retraining_jobs(
+                            job_id, status, created_sequence, created_at, started_at, finished_at,
+                            dataset_snapshot_ref, run_config_ref, output_dir, error_message,
+                            result_run_dir, result_run_id, result_candidate_id, worker_pid
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            row["job_id"],
+                            row["status"],
+                            row["created_sequence"],
+                            row["created_at"],
+                            row["started_at"],
+                            row["finished_at"],
+                            row["dataset_snapshot_ref"],
+                            row["run_config_ref"],
+                            row["output_dir"],
+                            row["error_message"],
+                            row["result_run_dir"],
+                            row["result_run_id"],
+                            row["result_candidate_id"],
+                            row["worker_pid"],
+                        ),
+                    )
+            next_sequence = int(payload.get("next_sequence", len(payload.get("jobs", []))))
+            conn.execute(
+                "INSERT INTO retraining_job_meta(key, value) VALUES ('next_sequence', ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                (str(next_sequence),),
+            )
+            conn.commit()
+
+    def _create_job_sqlite(
+        self,
+        *,
+        dataset_snapshot_ref: str | None,
+        run_config_ref: str | None,
+        output_dir: str | None,
+        job_id: str | None,
+    ) -> dict[str, object]:
+        with self._sqlite_conn() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            sequence = int(conn.execute("SELECT value FROM retraining_job_meta WHERE key='next_sequence'").fetchone()[0])
+            generated_job_id = job_id or f"retrain-job-{sequence:06d}"
+            existing = conn.execute("SELECT 1 FROM retraining_jobs WHERE job_id = ?", (generated_job_id,)).fetchone()
+            if existing is not None:
+                raise ValueError(f"Retraining job id already exists: {generated_job_id}")
+            record = RetrainingJobRecord(
+                job_id=generated_job_id,
+                status="queued",
+                created_sequence=sequence,
+                created_at=_utc_now_iso(),
+                dataset_snapshot_ref=dataset_snapshot_ref,
+                run_config_ref=run_config_ref,
+                output_dir=output_dir,
+            ).to_dict()
+            conn.execute(
+                """
+                INSERT INTO retraining_jobs(
+                    job_id, status, created_sequence, created_at, started_at, finished_at,
+                    dataset_snapshot_ref, run_config_ref, output_dir, error_message,
+                    result_run_dir, result_run_id, result_candidate_id, worker_pid
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    record["job_id"],
+                    record["status"],
+                    record["created_sequence"],
+                    record["created_at"],
+                    record["started_at"],
+                    record["finished_at"],
+                    record["dataset_snapshot_ref"],
+                    record["run_config_ref"],
+                    record["output_dir"],
+                    record["error_message"],
+                    record["result_run_dir"],
+                    record["result_run_id"],
+                    record["result_candidate_id"],
+                    record["worker_pid"],
+                ),
+            )
+            conn.execute(
+                "UPDATE retraining_job_meta SET value=? WHERE key='next_sequence'",
+                (str(sequence + 1),),
+            )
+            conn.commit()
+            return record
+
+    def _update_job_sqlite(self, *, job_id: str, **changes: object) -> dict[str, object]:
+        with self._sqlite_conn() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute("SELECT * FROM retraining_jobs WHERE job_id = ?", (job_id,)).fetchone()
+            if row is None:
+                raise ValueError(f"Unknown retraining job id: {job_id}")
+            current = dict(row)
+            updated = dict(current)
+            updated.update(changes)
+            _validate_job_transition(current_status=str(current.get("status", "queued")), next_status=str(updated.get("status")))
+            validated = RetrainingJobRecord.from_dict(updated).to_dict()
+            conn.execute(
+                """
+                UPDATE retraining_jobs SET
+                    status=?, started_at=?, finished_at=?, dataset_snapshot_ref=?, run_config_ref=?, output_dir=?,
+                    error_message=?, result_run_dir=?, result_run_id=?, result_candidate_id=?, worker_pid=?
+                WHERE job_id=?
+                """,
+                (
+                    validated["status"],
+                    validated["started_at"],
+                    validated["finished_at"],
+                    validated["dataset_snapshot_ref"],
+                    validated["run_config_ref"],
+                    validated["output_dir"],
+                    validated["error_message"],
+                    validated["result_run_dir"],
+                    validated["result_run_id"],
+                    validated["result_candidate_id"],
+                    validated["worker_pid"],
+                    validated["job_id"],
+                ),
+            )
+            conn.commit()
+            return validated
+
+    def _claim_next_queued_job_sqlite(self, *, worker_pid: int | None) -> dict[str, object] | None:
+        with self._sqlite_conn() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute(
+                "SELECT * FROM retraining_jobs WHERE status='queued' ORDER BY created_sequence ASC LIMIT 1"
+            ).fetchone()
+            if row is None:
+                conn.commit()
+                return None
+            current = dict(row)
+            updated = dict(current)
+            updated["status"] = "running"
+            updated["started_at"] = _utc_now_iso()
+            updated["error_message"] = None
+            updated["worker_pid"] = worker_pid
+            validated = RetrainingJobRecord.from_dict(updated).to_dict()
+            conn.execute(
+                "UPDATE retraining_jobs SET status=?, started_at=?, error_message=?, worker_pid=? WHERE job_id=?",
+                (validated["status"], validated["started_at"], validated["error_message"], validated["worker_pid"], validated["job_id"]),
+            )
+            conn.commit()
+            return validated
+
 
 class ModelRegistry:
     def __init__(self, path: str | Path):
         self.path = Path(path)
         self.lock_path = self.path.with_suffix(f"{self.path.suffix}.lock")
+        self._sqlite = _is_sqlite_path(self.path)
 
     def load(self) -> dict[str, object]:
+        if self._sqlite:
+            return self._load_sqlite()
         if not self.path.exists():
             return {
                 "active_model_id": None,
@@ -233,6 +525,9 @@ class ModelRegistry:
         return payload
 
     def save(self, payload: dict[str, object]) -> None:
+        if self._sqlite:
+            self._save_sqlite(payload)
+            return
         with self.acquire_lock():
             current_revision = 0
             if self.path.exists():
@@ -255,6 +550,9 @@ class ModelRegistry:
 
     @contextmanager
     def acquire_lock(self):
+        if self._sqlite:
+            yield
+            return
         self.lock_path.parent.mkdir(parents=True, exist_ok=True)
         fd: int | None = None
         created_lock = False
@@ -295,6 +593,69 @@ class ModelRegistry:
         if indexed:
             return max(indexed) + 1
         return len(events)
+
+    def _sqlite_conn(self) -> sqlite3.Connection:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        conn = sqlite3.connect(self.path, isolation_level=None)
+        conn.row_factory = sqlite3.Row
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS model_registry_state (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                payload_json TEXT NOT NULL
+            )
+            """
+        )
+        return conn
+
+    def _load_sqlite(self) -> dict[str, object]:
+        with self._sqlite_conn() as conn:
+            row = conn.execute("SELECT payload_json FROM model_registry_state WHERE id = 1").fetchone()
+            if row is None:
+                return {
+                    "active_model_id": None,
+                    "previous_active_model_id": None,
+                    "models": [],
+                    "events": [],
+                    "approval_audit": [],
+                    "revision": 0,
+                    "next_event_index": 0,
+                }
+            payload = json.loads(str(row["payload_json"]))
+            if not isinstance(payload, dict):
+                raise ValueError("SQLite model registry payload must decode to object")
+            payload.setdefault("models", [])
+            payload.setdefault("events", [])
+            payload.setdefault("approval_audit", [])
+            payload.setdefault("active_model_id", None)
+            payload.setdefault("previous_active_model_id", None)
+            payload["revision"] = int(payload.get("revision", 0))
+            payload["next_event_index"] = self._derive_next_event_index(payload["events"], payload.get("next_event_index"))
+            return payload
+
+    def _save_sqlite(self, payload: dict[str, object]) -> None:
+        with self._sqlite_conn() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute("SELECT payload_json FROM model_registry_state WHERE id = 1").fetchone()
+            current_revision = 0
+            if row is not None:
+                decoded = json.loads(str(row["payload_json"]))
+                if isinstance(decoded, dict):
+                    current_revision = int(decoded.get("revision", 0))
+            next_payload = dict(payload)
+            next_payload["revision"] = max(int(payload.get("revision", 0)), current_revision) + 1
+            next_payload["next_event_index"] = self._derive_next_event_index(
+                next_payload.get("events", []),
+                next_payload.get("next_event_index"),
+            )
+            conn.execute(
+                """
+                INSERT INTO model_registry_state(id, payload_json) VALUES (1, ?)
+                ON CONFLICT(id) DO UPDATE SET payload_json=excluded.payload_json
+                """,
+                (json.dumps(next_payload, sort_keys=True),),
+            )
+            conn.commit()
 
 
 def evaluate_retraining_readiness(
@@ -501,12 +862,8 @@ def activate_approved_model(*, registry: ModelRegistry, model_id: str) -> dict[s
         raise ValueError(f"Unknown model id: {model_id}")
     if record.get("status") != "approved":
         raise ValueError("Only approved candidate models may be activated")
-
-    path = Path(str(record.get("path")))
-    if not path.exists():
-        raise FileNotFoundError(f"Approved model artifact missing: {path}")
-    if record.get("contract_version") != CONVLSTM_CONTRACT_VERSION:
-        raise ValueError("Approved model contract version is incompatible with serving contract")
+    _validate_serving_compatible_record(record, context="Approved model")
+    _validate_checkpoint_readable(Path(str(record.get("path"))), context="Approved model")
 
     previous_active_id = payload.get("active_model_id")
     for item in models:
@@ -537,6 +894,8 @@ def rollback_to_previous_model(*, registry: ModelRegistry) -> dict[str, object]:
     target = next((m for m in models if m.get("model_id") == previous_id), None)
     if target is None:
         raise ValueError(f"Previous active model record not found: {previous_id}")
+    _validate_serving_compatible_record(target, context="Rollback target model")
+    _validate_checkpoint_readable(Path(str(target.get("path"))), context="Rollback target model")
 
     for item in models:
         if item.get("status") == "active":
@@ -559,10 +918,25 @@ def resolve_active_model_artifact(registry_path: str | Path) -> dict[str, object
         raise ValueError(f"Active model id not found in registry: {active_model_id}")
     if active_record.get("status") != "active":
         raise ValueError(f"Registry active model record must have status='active', got {active_record.get('status')}")
+    _validate_serving_compatible_record(active_record, context="Active model")
     checkpoint_path = Path(str(active_record.get("path")))
-    if not checkpoint_path.exists():
-        raise FileNotFoundError(f"Active model artifact missing: {checkpoint_path}")
-    return {"model_id": active_model_id, "checkpoint_path": str(checkpoint_path), "record": dict(active_record)}
+    _validate_checkpoint_readable(checkpoint_path, context="Active model")
+
+    activation_event = next(
+        (
+            dict(event)
+            for event in reversed(payload.get("events", []))
+            if isinstance(event, dict) and event.get("event_type") == "model_activated" and event.get("model_id") == active_model_id
+        ),
+        None,
+    )
+    return {
+        "model_id": active_model_id,
+        "checkpoint_path": str(checkpoint_path),
+        "record": dict(active_record),
+        "activation_event": activation_event,
+        "previous_active_model_id": _optional_str(payload.get("previous_active_model_id")),
+    }
 
 
 @dataclass
@@ -570,10 +944,116 @@ class OperationalEventLog:
     path: Path
 
     def append(self, *, event_type: str, payload: dict[str, object]) -> None:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
         event = {"timestamp": _utc_now_iso(), "event_type": event_type, "payload": payload}
+        if _is_sqlite_path(self.path):
+            with self._sqlite_conn() as conn:
+                conn.execute(
+                    "INSERT INTO operational_events(timestamp, event_type, payload_json) VALUES (?, ?, ?)",
+                    (event["timestamp"], event_type, json.dumps(payload, sort_keys=True)),
+                )
+                conn.commit()
+            return
+        self.path.parent.mkdir(parents=True, exist_ok=True)
         with self.path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(event, sort_keys=True) + "\n")
+
+    def recent(self, *, limit: int = 50) -> list[dict[str, object]]:
+        if _is_sqlite_path(self.path):
+            with self._sqlite_conn() as conn:
+                rows = conn.execute(
+                    "SELECT timestamp, event_type, payload_json FROM operational_events ORDER BY event_id ASC LIMIT ?",
+                    (max(1, limit),),
+                ).fetchall()
+            events: list[dict[str, object]] = []
+            for row in rows:
+                payload = json.loads(str(row["payload_json"]))
+                events.append(
+                    {
+                        "timestamp": str(row["timestamp"]),
+                        "event_type": str(row["event_type"]),
+                        "payload": payload if isinstance(payload, dict) else {},
+                    }
+                )
+            return events[-limit:]
+        if not self.path.exists():
+            return []
+        rows: list[dict[str, object]] = []
+        for line in self.path.read_text(encoding="utf-8").splitlines():
+            stripped = line.strip()
+            if not stripped:
+                continue
+            decoded = json.loads(stripped)
+            if isinstance(decoded, dict):
+                rows.append(decoded)
+        return rows[-limit:]
+
+    def _sqlite_conn(self) -> sqlite3.Connection:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        conn = sqlite3.connect(self.path, isolation_level=None)
+        conn.row_factory = sqlite3.Row
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS operational_events (
+                event_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp TEXT NOT NULL,
+                event_type TEXT NOT NULL,
+                payload_json TEXT NOT NULL
+            )
+            """
+        )
+        return conn
+
+
+class OperationalStateStore:
+    def __init__(self, path: str | Path):
+        self.path = Path(path)
+
+    def load(self) -> OperationalState:
+        if _is_sqlite_path(self.path):
+            with self._sqlite_conn() as conn:
+                row = conn.execute("SELECT payload_json FROM operational_state WHERE id = 1").fetchone()
+                if row is None:
+                    return OperationalState()
+                decoded = json.loads(str(row["payload_json"]))
+                if not isinstance(decoded, dict):
+                    raise ValueError("Operational state sqlite payload must decode to object")
+                return OperationalState.from_dict(decoded)
+        if not self.path.exists():
+            return OperationalState()
+        payload = json.loads(self.path.read_text(encoding="utf-8"))
+        if not isinstance(payload, dict):
+            raise ValueError("Operational state payload must be a JSON object")
+        return OperationalState.from_dict(payload)
+
+    def save(self, state: OperationalState) -> None:
+        payload = state.to_dict()
+        if _is_sqlite_path(self.path):
+            with self._sqlite_conn() as conn:
+                conn.execute(
+                    """
+                    INSERT INTO operational_state(id, payload_json) VALUES (1, ?)
+                    ON CONFLICT(id) DO UPDATE SET payload_json=excluded.payload_json
+                    """,
+                    (json.dumps(payload, sort_keys=True),),
+                )
+                conn.commit()
+            return
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+    def _sqlite_conn(self) -> sqlite3.Connection:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        conn = sqlite3.connect(self.path, isolation_level=None)
+        conn.row_factory = sqlite3.Row
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS operational_state (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                payload_json TEXT NOT NULL
+            )
+            """
+        )
+        return conn
 
 
 def submit_retraining_job(
@@ -596,7 +1076,21 @@ def execute_retraining_job(
     job_id: str,
     train_fn: Callable[[], dict[str, object]],
 ) -> dict[str, object]:
-    running_job = job_store.update_job(job_id=job_id, status="running", started_at=_utc_now_iso(), error_message=None)
+    current = next((item for item in job_store.list_jobs() if item.get("job_id") == job_id), None)
+    if current is None:
+        raise ValueError(f"Unknown retraining job id: {job_id}")
+    if current.get("status") == "queued":
+        running_job = job_store.update_job(
+            job_id=job_id,
+            status="running",
+            started_at=_utc_now_iso(),
+            error_message=None,
+            worker_pid=_optional_int(current.get("worker_pid")) or os.getpid(),
+        )
+    elif current.get("status") == "running":
+        running_job = current
+    else:
+        raise ValueError(f"Retraining job must be queued or running to execute, got {current.get('status')}")
     try:
         run_payload = train_fn()
         run_dir = run_payload.get("run_dir")
@@ -609,6 +1103,7 @@ def execute_retraining_job(
             finished_at=_utc_now_iso(),
             result_run_dir=run_dir,
             result_run_id=None if run_id is None else str(run_id),
+            result_candidate_id=None if run_payload.get("result_candidate_id") is None else str(run_payload.get("result_candidate_id")),
             error_message=None,
         )
     except Exception as exc:
@@ -619,7 +1114,74 @@ def execute_retraining_job(
             error_message=str(exc),
             result_run_dir=_optional_str(running_job.get("result_run_dir")),
             result_run_id=_optional_str(running_job.get("result_run_id")),
+            result_candidate_id=_optional_str(running_job.get("result_candidate_id")),
         )
+
+
+def process_next_queued_retraining_job(
+    *,
+    job_store: RetrainingJobStore,
+    train_fn: Callable[[dict[str, object]], dict[str, object]],
+    worker_pid: int | None = None,
+) -> dict[str, object] | None:
+    claimed = job_store.claim_next_queued_job(worker_pid=worker_pid or os.getpid())
+    if claimed is None:
+        return None
+    job_id = str(claimed["job_id"])
+    return execute_retraining_job(job_store=job_store, job_id=job_id, train_fn=lambda: train_fn(claimed))
+
+
+def run_local_retraining_job(
+    job: dict[str, object],
+    *,
+    config_dir: str | Path | None = None,
+) -> dict[str, object]:
+    train_cfg, dataset_cfg, run_cfg = _build_local_training_configs(job=job, config_dir=config_dir)
+    trainer = ConvLSTMPlumeTrainer(model=MinimalConvLSTMModel(input_channels=CONVLSTM_INPUT_CHANNELS), config=train_cfg)
+    run_result = run_training_from_dataset(trainer=trainer, run_config=run_cfg, dataset_config=dataset_cfg)
+    artifacts = run_result.get("run_artifacts")
+    if not isinstance(artifacts, dict):
+        raise ValueError("Training result missing run_artifacts payload")
+    run_dir = artifacts.get("output_dir")
+    if not isinstance(run_dir, str):
+        raise ValueError("Training result missing string run_artifacts.output_dir")
+    return {"run_dir": run_dir, "run_id": Path(run_dir).name}
+
+
+def dispatch_retraining_worker(
+    *,
+    jobs_path: str | Path,
+    config_dir: str | Path | None = None,
+) -> subprocess.Popen[bytes]:
+    script_path = Path(__file__).resolve().parents[3] / "scripts" / "run_retraining_worker.py"
+    cmd = [sys.executable, str(script_path), "--jobs-path", str(jobs_path), "--once"]
+    if config_dir is not None:
+        cmd.extend(["--config-dir", str(config_dir)])
+    return subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+
+
+def run_retraining_worker_loop(
+    *,
+    job_store: RetrainingJobStore,
+    config_dir: str | Path | None = None,
+    once: bool = False,
+    poll_interval_seconds: float = 1.0,
+) -> int:
+    processed = 0
+    while True:
+        completed = process_next_queued_retraining_job(
+            job_store=job_store,
+            worker_pid=os.getpid(),
+            train_fn=lambda job: run_local_retraining_job(job, config_dir=config_dir),
+        )
+        if completed is None:
+            if once:
+                return processed
+            time.sleep(max(0.1, poll_interval_seconds))
+            continue
+        processed += 1
+        if once:
+            return processed
 
 
 @dataclass
@@ -783,6 +1345,45 @@ def _derive_retraining_output_dir(state: OperationalState) -> str | None:
     if state.active_model_path:
         return str(Path(state.active_model_path).parent)
     return None
+
+
+def _build_local_training_configs(
+    *,
+    job: dict[str, object],
+    config_dir: str | Path | None,
+) -> tuple[ConvLSTMTrainingConfig, ConvLSTMDatasetRunConfig, ConvLSTMRunConfig]:
+    dataset_payload = _parse_json_object_ref(job.get("dataset_snapshot_ref"), field="dataset_snapshot_ref")
+    run_payload = _parse_json_object_ref(job.get("run_config_ref"), field="run_config_ref", allow_empty=True)
+    if "train_data_path" not in dataset_payload or "val_data_path" not in dataset_payload:
+        raise ValueError("dataset_snapshot_ref must include train_data_path and val_data_path")
+
+    base_cfg = _load_training_config(config_dir=config_dir)
+    training_fields = set(ConvLSTMTrainingConfig.__dataclass_fields__.keys())
+    overrides = {key: value for key, value in run_payload.items() if key in training_fields}
+    for key in ("physics_schedule_stage_boundaries", "physics_schedule_lambda_smooth", "physics_schedule_lambda_mass", "metric_stage_thresholds"):
+        if isinstance(overrides.get(key), list):
+            overrides[key] = tuple(overrides[key])
+    training_cfg = ConvLSTMTrainingConfig(**{**asdict(base_cfg), **overrides})
+
+    dataset_cfg = ConvLSTMDatasetRunConfig(
+        train_data_path=Path(str(dataset_payload["train_data_path"])),
+        val_data_path=Path(str(dataset_payload["val_data_path"])),
+        batch_size=int(dataset_payload.get("batch_size", 1)),
+        shuffle_train=bool(dataset_payload.get("shuffle_train", False)),
+        shuffle_seed=int(dataset_payload.get("shuffle_seed", 0)),
+        drop_last=bool(dataset_payload.get("drop_last", False)),
+    )
+
+    output_dir = job.get("output_dir") or run_payload.get("output_dir") or "artifacts/convlstm_runs"
+    run_name = run_payload.get("run_name") or str(job.get("job_id"))
+    run_cfg = ConvLSTMRunConfig(
+        num_epochs=int(run_payload.get("num_epochs", 1)),
+        output_dir=Path(str(output_dir)),
+        save_checkpoints=bool(run_payload.get("save_checkpoints", True)),
+        save_last_checkpoint=bool(run_payload.get("save_last_checkpoint", False)),
+        run_name=None if run_name is None else str(run_name),
+    )
+    return training_cfg, dataset_cfg, run_cfg
 
 
 def summarize_operational_status(
@@ -1011,6 +1612,89 @@ def _optional_dict(value: object) -> dict[str, object] | None:
     if not isinstance(value, dict):
         raise ValueError("Expected dictionary payload")
     return dict(value)
+
+
+def _optional_int(value: object) -> int | None:
+    if value is None:
+        return None
+    return int(value)
+
+
+def _parse_json_object_ref(value: object, *, field: str, allow_empty: bool = False) -> dict[str, object]:
+    if value is None:
+        if allow_empty:
+            return {}
+        raise ValueError(f"{field} is required")
+    if isinstance(value, dict):
+        return dict(value)
+    if not isinstance(value, str):
+        raise ValueError(f"{field} must be a JSON object or JSON-encoded object string")
+    decoded = json.loads(value)
+    if not isinstance(decoded, dict):
+        raise ValueError(f"{field} must decode to a JSON object")
+    return dict(decoded)
+
+
+def _load_training_config(*, config_dir: str | Path | None) -> ConvLSTMTrainingConfig:
+    if config_dir is None:
+        config_path = Path("configs") / "convlstm_training.yaml"
+    else:
+        config_path = Path(config_dir) / "convlstm_training.yaml"
+    if not config_path.exists():
+        return ConvLSTMTrainingConfig()
+    payload = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+    section = payload.get("convlstm_training", {}) if isinstance(payload, dict) else {}
+    if not isinstance(section, dict):
+        return ConvLSTMTrainingConfig()
+    fields = set(ConvLSTMTrainingConfig.__dataclass_fields__.keys())
+    normalized = {key: value for key, value in section.items() if key in fields}
+    for key in ("physics_schedule_stage_boundaries", "physics_schedule_lambda_smooth", "physics_schedule_lambda_mass", "metric_stage_thresholds"):
+        if isinstance(normalized.get(key), list):
+            normalized[key] = tuple(normalized[key])
+    return ConvLSTMTrainingConfig(**normalized)
+
+
+def _validate_job_transition(*, current_status: str, next_status: str) -> None:
+    if current_status == next_status:
+        return
+    allowed = {
+        "queued": {"running", "cancelled"},
+        "running": {"succeeded", "failed", "cancelled"},
+        "succeeded": set(),
+        "failed": set(),
+        "cancelled": set(),
+    }
+    if next_status not in allowed.get(current_status, set()):
+        raise ValueError(f"Invalid retraining job transition: {current_status} -> {next_status}")
+
+
+def _validate_serving_compatible_record(record: dict[str, object], *, context: str) -> None:
+    if record.get("contract_version") != CONVLSTM_CONTRACT_VERSION:
+        raise ValueError(f"{context} contract version is incompatible with serving contract")
+    if record.get("target_policy") not in {None, "plume_only"}:
+        raise ValueError(f"{context} target_policy must be plume_only for serving compatibility")
+    if record.get("normalization_mode") not in {None, CONVLSTM_NORMALIZATION_MODE}:
+        raise ValueError(f"{context} normalization_mode is incompatible with serving contract")
+    approval_status = record.get("approval_status")
+    if approval_status in {"pending_manual_approval", "rejected_by_operator"}:
+        raise ValueError(f"{context} approval_status is not deployable: {approval_status}")
+
+
+def _validate_checkpoint_readable(path: Path, *, context: str) -> None:
+    if not path.exists():
+        raise FileNotFoundError(f"{context} artifact missing: {path}")
+    if path.suffix.lower() != ".npz":
+        raise ValueError(f"{context} checkpoint must be .npz, got: {path.suffix}")
+    try:
+        with np.load(path, allow_pickle=False):
+            pass
+    except Exception as exc:  # noqa: BLE001
+        raise ValueError(f"{context} checkpoint is not readable: {path}") from exc
+
+
+def _is_sqlite_path(path: Path) -> bool:
+    suffixes = {s.lower() for s in path.suffixes}
+    return ".db" in suffixes or ".sqlite" in suffixes or ".sqlite3" in suffixes
 
 
 def _utc_now_iso() -> str:
