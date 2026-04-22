@@ -58,3 +58,14 @@ convlstm_training:
   metric_stage_thresholds: []
   metric_stage_min_epoch_per_stage: 0
   metric_stage_patience: 0
+
+  # Phase-J plume-specific evaluation metrics (trainer-local reporting only).
+  plume_mass_metric_enabled: true
+  # Optional raw-space mass error uses inverse transform for interpretation only.
+  plume_mass_metric_include_raw: false
+  plume_support_metric_enabled: true
+  plume_support_threshold_space: transformed
+  plume_support_threshold_value: 0.1
+  plume_centroid_metric_enabled: true
+  # Raster-space center-of-mass distance (index space, not geographic distance).
+  plume_centroid_metric_space: transformed

@@ -59,6 +59,13 @@ class ConvLSTMTrainingConfig:
     metric_stage_thresholds: tuple[float, ...] = ()
     metric_stage_min_epoch_per_stage: int = 0
     metric_stage_patience: int = 0
+    plume_mass_metric_enabled: bool = True
+    plume_mass_metric_include_raw: bool = False
+    plume_support_metric_enabled: bool = True
+    plume_support_threshold_space: str = "transformed"
+    plume_support_threshold_value: float = 0.1
+    plume_centroid_metric_enabled: bool = True
+    plume_centroid_metric_space: str = "transformed"
 
 
 class CanonicalConvLSTMSampleDataset:
@@ -194,6 +201,21 @@ class ConvLSTMPlumeTrainer:
                 "mass_ramp_type must be 'none' or 'linear', "
                 f"got {self.config.mass_ramp_type}"
             )
+        if self.config.plume_support_threshold_space not in {"transformed", "raw"}:
+            raise ValueError(
+                "plume_support_threshold_space must be 'transformed' or 'raw', "
+                f"got {self.config.plume_support_threshold_space}"
+            )
+        if self.config.plume_centroid_metric_space not in {"transformed", "raw"}:
+            raise ValueError(
+                "plume_centroid_metric_space must be 'transformed' or 'raw', "
+                f"got {self.config.plume_centroid_metric_space}"
+            )
+        if self.config.plume_support_threshold_value < 0.0:
+            raise ValueError(
+                "plume_support_threshold_value must be >= 0, "
+                f"got {self.config.plume_support_threshold_value}"
+            )
         self._validate_physics_schedule_config()
         self._validate_metric_stage_progression_config()
 
@@ -256,6 +278,13 @@ class ConvLSTMPlumeTrainer:
             "metric_stage_thresholds": self.config.metric_stage_thresholds,
             "metric_stage_min_epoch_per_stage": self.config.metric_stage_min_epoch_per_stage,
             "metric_stage_patience": self.config.metric_stage_patience,
+            "plume_mass_metric_enabled": self.config.plume_mass_metric_enabled,
+            "plume_mass_metric_include_raw": self.config.plume_mass_metric_include_raw,
+            "plume_support_metric_enabled": self.config.plume_support_metric_enabled,
+            "plume_support_threshold_space": self.config.plume_support_threshold_space,
+            "plume_support_threshold_value": self.config.plume_support_threshold_value,
+            "plume_centroid_metric_enabled": self.config.plume_centroid_metric_enabled,
+            "plume_centroid_metric_space": self.config.plume_centroid_metric_space,
             "metric_stage_last_value": self._metric_stage_last_value,
             "metric_stage_last_advanced": self._metric_stage_last_advanced,
             "epochs_in_current_stage": epochs_in_current_stage,
@@ -416,6 +445,14 @@ class ConvLSTMPlumeTrainer:
         transformed_metrics = self._regression_metrics(
             pred=predictions, target=plume_target, metric_prefix=metric_prefix, metric_space="transformed"
         )
+        transformed_metrics.update(
+            self._plume_specific_metrics(
+                pred=predictions,
+                target=plume_target,
+                metric_prefix=metric_prefix,
+                include_raw_space=include_raw_space,
+            )
+        )
         if include_loss_components:
             transformed_metrics.update(
                 self._evaluate_loss_component_metrics(
@@ -451,6 +488,8 @@ class ConvLSTMPlumeTrainer:
         total_smoothness_loss = 0.0
         total_mass_loss = 0.0
         total_samples = 0
+        plume_metric_totals: dict[str, float] = {}
+        plume_metric_counts: dict[str, int] = {}
 
         for batch_input, batch_target in batch_iterable:
             self._validate_batch(batch_input=batch_input, batch_target=batch_target)
@@ -467,6 +506,16 @@ class ConvLSTMPlumeTrainer:
                 raw_error = raw_pred - raw_target
                 total_raw_sq_error += float(np.sum(raw_error**2))
                 total_raw_abs_error += float(np.sum(np.abs(raw_error)))
+
+            plume_metrics = self._plume_specific_metrics(
+                pred=pred,
+                target=target,
+                metric_prefix=metric_prefix,
+                include_raw_space=include_raw_space,
+            )
+            for metric_name, metric_value in plume_metrics.items():
+                plume_metric_totals[metric_name] = plume_metric_totals.get(metric_name, 0.0) + float(metric_value) * pred.shape[0]
+                plume_metric_counts[metric_name] = plume_metric_counts.get(metric_name, 0) + int(pred.shape[0])
             if include_loss_components:
                 for i in range(pred.shape[0]):
                     components = self._loss_components(pred=pred[i], target=target[i])
@@ -492,6 +541,9 @@ class ConvLSTMPlumeTrainer:
                     metric_space="raw",
                 )
             )
+        for metric_name, metric_total in plume_metric_totals.items():
+            count = plume_metric_counts[metric_name]
+            metrics[metric_name] = float(metric_total / float(count))
         if include_loss_components:
             effective_weights = self._effective_physics_weights(epoch=0, step=self._train_steps_completed)
             metrics.update(
@@ -507,6 +559,37 @@ class ConvLSTMPlumeTrainer:
                 )
             )
         return metrics
+
+    def build_epoch_report(
+        self,
+        *,
+        epoch: int,
+        train_metrics: dict[str, float] | None = None,
+        val_metrics: dict[str, float] | None = None,
+        is_best_checkpoint: bool | None = None,
+    ) -> dict[str, object]:
+        train_metrics = train_metrics or {}
+        val_metrics = val_metrics or {}
+        active_stage = int(train_metrics.get("train_active_stage", self._last_active_stage))
+        effective_lambda_smooth = float(train_metrics.get("train_effective_lambda_smooth", self._last_effective_lambda_smooth))
+        effective_lambda_mass = float(train_metrics.get("train_effective_lambda_mass", self._last_effective_lambda_mass))
+        return {
+            "epoch": int(epoch),
+            "active_stage": active_stage,
+            "effective_lambdas": {
+                "lambda_smooth": effective_lambda_smooth,
+                "lambda_mass": effective_lambda_mass,
+            },
+            "train": dict(train_metrics),
+            "validation": dict(val_metrics),
+            "checkpoint": {
+                "metric_name": self.best_checkpoint_metric_name,
+                "metric_value": self.best_checkpoint_metric_value,
+                "epoch": self.best_checkpoint_epoch,
+                "step": self.best_checkpoint_step,
+                "is_best": is_best_checkpoint,
+            },
+        }
 
     def update_best_checkpoint(self, *, metrics: dict[str, float], epoch: int, step: int | None = None) -> bool:
         metric_name = self.config.checkpoint_metric
@@ -764,6 +847,90 @@ class ConvLSTMPlumeTrainer:
             effective_lambda_mass=effective_weights["lambda_mass"],
             active_stage=effective_weights["active_stage"],
         )
+
+    def _plume_specific_metrics(
+        self, *, pred: np.ndarray, target: np.ndarray, metric_prefix: str, include_raw_space: bool
+    ) -> dict[str, float]:
+        metrics: dict[str, float] = {}
+        if self.config.plume_mass_metric_enabled:
+            metrics[f"{metric_prefix}_mass_abs_error_transformed"] = self._mass_abs_error(pred=pred, target=target)
+            if include_raw_space or self.config.plume_mass_metric_include_raw:
+                raw_pred = plume_to_physical_space(pred)
+                raw_target = plume_to_physical_space(target)
+                metrics[f"{metric_prefix}_mass_abs_error_raw"] = self._mass_abs_error(pred=raw_pred, target=raw_target)
+        if self.config.plume_support_metric_enabled:
+            support_pred, support_target = self._to_metric_space(
+                pred=pred,
+                target=target,
+                space=self.config.plume_support_threshold_space,
+            )
+            metrics[f"{metric_prefix}_support_iou_{self.config.plume_support_threshold_space}"] = self._support_iou(
+                pred=support_pred,
+                target=support_target,
+                threshold=self.config.plume_support_threshold_value,
+            )
+        if self.config.plume_centroid_metric_enabled:
+            centroid_pred, centroid_target = self._to_metric_space(
+                pred=pred,
+                target=target,
+                space=self.config.plume_centroid_metric_space,
+            )
+            metrics[f"{metric_prefix}_centroid_distance_raster_{self.config.plume_centroid_metric_space}"] = (
+                self._centroid_distance_raster(pred=centroid_pred, target=centroid_target)
+            )
+        return metrics
+
+    @staticmethod
+    def _to_metric_space(*, pred: np.ndarray, target: np.ndarray, space: str) -> tuple[np.ndarray, np.ndarray]:
+        if space == "transformed":
+            return pred, target
+        if space == "raw":
+            return plume_to_physical_space(pred), plume_to_physical_space(target)
+        raise ValueError(f"Unsupported metric space '{space}'")
+
+    @staticmethod
+    def _mass_abs_error(*, pred: np.ndarray, target: np.ndarray) -> float:
+        pred_mass = np.sum(pred, axis=(1, 2))
+        target_mass = np.sum(target, axis=(1, 2))
+        return float(np.mean(np.abs(pred_mass - target_mass)))
+
+    @staticmethod
+    def _support_iou(*, pred: np.ndarray, target: np.ndarray, threshold: float) -> float:
+        pred_mask = pred >= threshold
+        target_mask = target >= threshold
+        intersection = np.sum(pred_mask & target_mask, axis=(1, 2)).astype(float)
+        union = np.sum(pred_mask | target_mask, axis=(1, 2)).astype(float)
+        iou = np.ones_like(union, dtype=float)
+        valid = union > 0.0
+        iou[valid] = intersection[valid] / union[valid]
+        return float(np.mean(iou))
+
+    @staticmethod
+    def _centroid_distance_raster(*, pred: np.ndarray, target: np.ndarray) -> float:
+        distances: list[float] = []
+        max_distance = float(np.sqrt((CONVLSTM_GRID_HEIGHT - 1) ** 2 + (CONVLSTM_GRID_WIDTH - 1) ** 2))
+        for i in range(pred.shape[0]):
+            pred_center = ConvLSTMPlumeTrainer._center_of_mass(pred[i])
+            target_center = ConvLSTMPlumeTrainer._center_of_mass(target[i])
+            if pred_center is None and target_center is None:
+                distances.append(0.0)
+            elif pred_center is None or target_center is None:
+                distances.append(max_distance)
+            else:
+                distances.append(float(np.linalg.norm(np.array(pred_center) - np.array(target_center))))
+        return float(np.mean(distances))
+
+    @staticmethod
+    def _center_of_mass(field: np.ndarray) -> tuple[float, float] | None:
+        positive = np.clip(field, a_min=0.0, a_max=None)
+        mass = float(np.sum(positive))
+        if mass <= 0.0:
+            return None
+        row_coords = np.arange(field.shape[0], dtype=float)[:, np.newaxis]
+        col_coords = np.arange(field.shape[1], dtype=float)[np.newaxis, :]
+        row = float(np.sum(positive * row_coords) / mass)
+        col = float(np.sum(positive * col_coords) / mass)
+        return row, col
 
     def _validate_physics_schedule_config(self) -> None:
         if not self.config.physics_schedule_enabled:
