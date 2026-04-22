@@ -36,6 +36,12 @@ class ConvLSTMTrainingConfig:
     checkpoint_metric: str = "val_mse"
     checkpoint_direction: str = "min"
     save_best_only: bool = True
+    physics_loss_enabled: bool = False
+    lambda_smooth: float = 0.0
+    lambda_mass: float = 0.0
+    smoothness_loss_mode: str = "finite_difference_l2"
+    mass_loss_mode: str = "mean_mass_mse"
+    mass_loss_space: str = "transformed"
 
 
 class CanonicalConvLSTMSampleDataset:
@@ -137,11 +143,31 @@ class ConvLSTMPlumeTrainer:
             raise ValueError(
                 f"checkpoint_direction must be 'min' or 'max', got {self.config.checkpoint_direction}"
             )
+        if self.config.smoothness_loss_mode != "finite_difference_l2":
+            raise ValueError(
+                "Only smoothness_loss_mode='finite_difference_l2' is supported in Phase-G, "
+                f"got {self.config.smoothness_loss_mode}"
+            )
+        if self.config.mass_loss_mode != "mean_mass_mse":
+            raise ValueError(
+                "Only mass_loss_mode='mean_mass_mse' is supported in Phase-G, "
+                f"got {self.config.mass_loss_mode}"
+            )
+        if self.config.mass_loss_space not in {"transformed", "raw"}:
+            raise ValueError(
+                "mass_loss_space must be 'transformed' or 'raw', "
+                f"got {self.config.mass_loss_space}"
+            )
+        if self.config.lambda_smooth < 0.0:
+            raise ValueError(f"lambda_smooth must be >= 0, got {self.config.lambda_smooth}")
+        if self.config.lambda_mass < 0.0:
+            raise ValueError(f"lambda_mass must be >= 0, got {self.config.lambda_mass}")
 
         self.best_checkpoint_metric_name: str | None = None
         self.best_checkpoint_metric_value: float | None = None
         self.best_checkpoint_epoch: int | None = None
         self.best_checkpoint_step: int | None = None
+        self.last_train_step_metrics: dict[str, float] | None = None
 
     @property
     def metadata(self) -> dict[str, object]:
@@ -160,6 +186,12 @@ class ConvLSTMPlumeTrainer:
             "checkpoint_metric": self.config.checkpoint_metric,
             "checkpoint_direction": self.config.checkpoint_direction,
             "save_best_only": self.config.save_best_only,
+            "physics_loss_enabled": self.config.physics_loss_enabled,
+            "lambda_smooth": self.config.lambda_smooth,
+            "lambda_mass": self.config.lambda_mass,
+            "smoothness_loss_mode": self.config.smoothness_loss_mode,
+            "mass_loss_mode": self.config.mass_loss_mode,
+            "mass_loss_space": self.config.mass_loss_space,
             "best_checkpoint_metric_name": self.best_checkpoint_metric_name,
             "best_checkpoint_metric_value": self.best_checkpoint_metric_value,
             "best_checkpoint_epoch": self.best_checkpoint_epoch,
@@ -167,12 +199,18 @@ class ConvLSTMPlumeTrainer:
         }
 
     def train_step(self, batch_input: np.ndarray, batch_target: np.ndarray) -> float:
+        metrics = self.train_step_with_metrics(batch_input=batch_input, batch_target=batch_target)
+        return float(metrics["train_total_loss"])
+
+    def train_step_with_metrics(self, *, batch_input: np.ndarray, batch_target: np.ndarray) -> dict[str, float]:
         self._validate_batch(batch_input=batch_input, batch_target=batch_target)
         plume_target = slice_plume_target(batch_target)
 
         batch_size = batch_input.shape[0]
         grads = self._zero_parameter_grads()
-        total_loss = 0.0
+        supervised_loss_total = 0.0
+        smoothness_loss_total = 0.0
+        mass_loss_total = 0.0
 
         for i in range(batch_size):
             sequence = batch_input[i]
@@ -180,17 +218,27 @@ class ConvLSTMPlumeTrainer:
             pred_linear = np.einsum("h,hrc->rc", self.model.w_out, cache["h_last"]) + self.model.b_out
             pred = np.clip(pred_linear, a_min=0.0, a_max=None)
             target = plume_target[i, 0, 0]
-            error = pred - target
-            total_loss += float(np.mean(error**2))
+            components = self._loss_components(pred=pred, target=target)
+            supervised_loss_total += components["supervised_loss"]
+            smoothness_loss_total += components["smoothness_loss"]
+            mass_loss_total += components["mass_loss"]
 
-            grad_pred = (2.0 / error.size) * error
+            grad_pred = self._loss_grad_wrt_prediction(pred=pred, target=target)
             grad_pred *= (pred_linear > 0.0).astype(float)
             sample_grads = self._backward_through_time(cache=cache, grad_pred=grad_pred)
             self._accumulate_grads(grads=grads, sample_grads=sample_grads)
 
         self._apply_gradients(grads=grads, batch_size=batch_size)
 
-        return total_loss / batch_size
+        metrics = self._mean_loss_metrics(
+            metric_prefix="train",
+            supervised_loss_total=supervised_loss_total,
+            smoothness_loss_total=smoothness_loss_total,
+            mass_loss_total=mass_loss_total,
+            count=batch_size,
+        )
+        self.last_train_step_metrics = metrics
+        return metrics
 
     def train_epoch(self, batch_iterable: list[tuple[np.ndarray, np.ndarray]]) -> float:
         """Run a narrow epoch helper over already-batched tensors."""
@@ -200,7 +248,13 @@ class ConvLSTMPlumeTrainer:
         return float(np.mean(losses))
 
     def evaluate_batch(
-        self, *, batch_input: np.ndarray, batch_target: np.ndarray, metric_prefix: str = "val", include_raw_space: bool = False
+        self,
+        *,
+        batch_input: np.ndarray,
+        batch_target: np.ndarray,
+        metric_prefix: str = "val",
+        include_raw_space: bool = False,
+        include_loss_components: bool = False,
     ) -> dict[str, float]:
         self._validate_batch(batch_input=batch_input, batch_target=batch_target)
         plume_target = slice_plume_target(batch_target)[:, 0, 0]
@@ -208,6 +262,14 @@ class ConvLSTMPlumeTrainer:
         transformed_metrics = self._regression_metrics(
             pred=predictions, target=plume_target, metric_prefix=metric_prefix, metric_space="transformed"
         )
+        if include_loss_components:
+            transformed_metrics.update(
+                self._evaluate_loss_component_metrics(
+                    pred=predictions,
+                    target=plume_target,
+                    metric_prefix=metric_prefix,
+                )
+            )
         if not include_raw_space:
             return transformed_metrics
 
@@ -217,7 +279,11 @@ class ConvLSTMPlumeTrainer:
         return {**transformed_metrics, **raw_metrics}
 
     def evaluate_epoch(
-        self, batch_iterable: list[tuple[np.ndarray, np.ndarray]], metric_prefix: str = "val", include_raw_space: bool = False
+        self,
+        batch_iterable: list[tuple[np.ndarray, np.ndarray]],
+        metric_prefix: str = "val",
+        include_raw_space: bool = False,
+        include_loss_components: bool = False,
     ) -> dict[str, float]:
         if not batch_iterable:
             raise ValueError("evaluate_epoch requires at least one batch")
@@ -227,6 +293,10 @@ class ConvLSTMPlumeTrainer:
         total_count = 0
         total_raw_sq_error = 0.0
         total_raw_abs_error = 0.0
+        total_supervised_loss = 0.0
+        total_smoothness_loss = 0.0
+        total_mass_loss = 0.0
+        total_samples = 0
 
         for batch_input, batch_target in batch_iterable:
             self._validate_batch(batch_input=batch_input, batch_target=batch_target)
@@ -243,6 +313,13 @@ class ConvLSTMPlumeTrainer:
                 raw_error = raw_pred - raw_target
                 total_raw_sq_error += float(np.sum(raw_error**2))
                 total_raw_abs_error += float(np.sum(np.abs(raw_error)))
+            if include_loss_components:
+                for i in range(pred.shape[0]):
+                    components = self._loss_components(pred=pred[i], target=target[i])
+                    total_supervised_loss += components["supervised_loss"]
+                    total_smoothness_loss += components["smoothness_loss"]
+                    total_mass_loss += components["mass_loss"]
+                total_samples += int(pred.shape[0])
 
         metrics = self._aggregate_metrics(
             total_sq_error=total_sq_error,
@@ -259,6 +336,16 @@ class ConvLSTMPlumeTrainer:
                     total_count=total_count,
                     metric_prefix=metric_prefix,
                     metric_space="raw",
+                )
+            )
+        if include_loss_components:
+            metrics.update(
+                self._mean_loss_metrics(
+                    metric_prefix=metric_prefix,
+                    supervised_loss_total=total_supervised_loss,
+                    smoothness_loss_total=total_smoothness_loss,
+                    mass_loss_total=total_mass_loss,
+                    count=total_samples,
                 )
             )
         return metrics
@@ -369,6 +456,122 @@ class ConvLSTMPlumeTrainer:
 
     def _predict_batch(self, batch_input: np.ndarray) -> np.ndarray:
         return np.stack([self.model.forward(batch_input[i]) for i in range(batch_input.shape[0])], axis=0)
+
+    def _physics_terms_active(self) -> bool:
+        return bool(self.config.physics_loss_enabled and (self.config.lambda_smooth > 0.0 or self.config.lambda_mass > 0.0))
+
+    def _loss_components(self, *, pred: np.ndarray, target: np.ndarray) -> dict[str, float]:
+        supervised_error = pred - target
+        supervised_loss = float(np.mean(supervised_error**2))
+        if not self._physics_terms_active():
+            return {
+                "supervised_loss": supervised_loss,
+                "smoothness_loss": 0.0,
+                "mass_loss": 0.0,
+                "total_loss": supervised_loss,
+            }
+
+        smoothness_loss = 0.0
+        mass_loss = 0.0
+        if self.config.lambda_smooth > 0.0:
+            smoothness_loss, _ = self._smoothness_loss_and_grad(pred)
+        if self.config.lambda_mass > 0.0:
+            mass_loss, _ = self._mass_loss_and_grad(pred=pred, target=target)
+
+        total_loss = supervised_loss + self.config.lambda_smooth * smoothness_loss + self.config.lambda_mass * mass_loss
+        return {
+            "supervised_loss": supervised_loss,
+            "smoothness_loss": float(smoothness_loss),
+            "mass_loss": float(mass_loss),
+            "total_loss": float(total_loss),
+        }
+
+    def _loss_grad_wrt_prediction(self, *, pred: np.ndarray, target: np.ndarray) -> np.ndarray:
+        grad = (2.0 / pred.size) * (pred - target)
+        if not self._physics_terms_active():
+            return grad
+        if self.config.lambda_smooth > 0.0:
+            _, smooth_grad = self._smoothness_loss_and_grad(pred)
+            grad += self.config.lambda_smooth * smooth_grad
+        if self.config.lambda_mass > 0.0:
+            _, mass_grad = self._mass_loss_and_grad(pred=pred, target=target)
+            grad += self.config.lambda_mass * mass_grad
+        return grad
+
+    def _smoothness_loss_and_grad(self, pred: np.ndarray) -> tuple[float, np.ndarray]:
+        grad = np.zeros_like(pred)
+        dx = pred[:, 1:] - pred[:, :-1]
+        dy = pred[1:, :] - pred[:-1, :]
+        loss_x = float(np.mean(dx**2))
+        loss_y = float(np.mean(dy**2))
+        loss = loss_x + loss_y
+
+        if dx.size > 0:
+            coeff_x = 2.0 / dx.size
+            grad[:, 1:] += coeff_x * dx
+            grad[:, :-1] -= coeff_x * dx
+        if dy.size > 0:
+            coeff_y = 2.0 / dy.size
+            grad[1:, :] += coeff_y * dy
+            grad[:-1, :] -= coeff_y * dy
+        return loss, grad
+
+    def _mass_loss_and_grad(self, *, pred: np.ndarray, target: np.ndarray) -> tuple[float, np.ndarray]:
+        grad = np.zeros_like(pred)
+        if self.config.mass_loss_space == "transformed":
+            pred_mean = float(np.mean(pred))
+            target_mean = float(np.mean(target))
+            diff = pred_mean - target_mean
+            loss = diff**2
+            grad.fill((2.0 * diff) / pred.size)
+            return float(loss), grad
+
+        raw_pred = plume_to_physical_space(pred, clamp_non_negative=False)
+        raw_target = plume_to_physical_space(target, clamp_non_negative=False)
+        diff = float(np.mean(raw_pred) - np.mean(raw_target))
+        loss = diff**2
+        d_raw_d_pred = np.exp(pred) / 1e12
+        grad = ((2.0 * diff) / pred.size) * d_raw_d_pred
+        return float(loss), grad
+
+    def _mean_loss_metrics(
+        self,
+        *,
+        metric_prefix: str,
+        supervised_loss_total: float,
+        smoothness_loss_total: float,
+        mass_loss_total: float,
+        count: int,
+    ) -> dict[str, float]:
+        if count <= 0:
+            raise ValueError("Cannot aggregate loss components for empty tensors")
+        supervised_loss = supervised_loss_total / float(count)
+        smoothness_loss = smoothness_loss_total / float(count)
+        mass_loss = mass_loss_total / float(count)
+        total_loss = supervised_loss + self.config.lambda_smooth * smoothness_loss + self.config.lambda_mass * mass_loss
+        return {
+            f"{metric_prefix}_supervised_loss": float(supervised_loss),
+            f"{metric_prefix}_smoothness_loss": float(smoothness_loss),
+            f"{metric_prefix}_mass_loss": float(mass_loss),
+            f"{metric_prefix}_total_loss": float(total_loss),
+        }
+
+    def _evaluate_loss_component_metrics(self, *, pred: np.ndarray, target: np.ndarray, metric_prefix: str) -> dict[str, float]:
+        supervised_total = 0.0
+        smoothness_total = 0.0
+        mass_total = 0.0
+        for i in range(pred.shape[0]):
+            components = self._loss_components(pred=pred[i], target=target[i])
+            supervised_total += components["supervised_loss"]
+            smoothness_total += components["smoothness_loss"]
+            mass_total += components["mass_loss"]
+        return self._mean_loss_metrics(
+            metric_prefix=metric_prefix,
+            supervised_loss_total=supervised_total,
+            smoothness_loss_total=smoothness_total,
+            mass_loss_total=mass_total,
+            count=int(pred.shape[0]),
+        )
 
     def _validate_batch(self, *, batch_input: np.ndarray, batch_target: np.ndarray) -> None:
         if batch_input.ndim != 5:

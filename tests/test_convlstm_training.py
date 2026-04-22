@@ -62,6 +62,10 @@ def test_training_config_defaults_preserve_no_extra_normalization_and_plume_poli
     assert cfg.loss_space == "transformed_plume"
     assert cfg.raw_interpretation_formula == "raw = (exp(pred) - 1) / 1e12"
     assert cfg.trainable_parameter_scope == "full_model"
+    assert cfg.physics_loss_enabled is False
+    assert cfg.lambda_smooth == 0.0
+    assert cfg.lambda_mass == 0.0
+    assert cfg.mass_loss_space == "transformed"
 
 
 def test_plume_trainer_metadata_and_smoke_train_step():
@@ -80,6 +84,11 @@ def test_plume_trainer_metadata_and_smoke_train_step():
     assert trainer.metadata["supervised_target_contract"] == (1, 1, 64, 64)
     assert trainer.metadata["trainable_parameter_scope"] == "full_model"
     assert trainer.metadata["trainable_parameters"] == ("w_x", "w_h", "b", "w_out", "b_out")
+    assert trainer.metadata["physics_loss_enabled"] is False
+    assert trainer.last_train_step_metrics is not None
+    assert trainer.last_train_step_metrics["train_supervised_loss"] == pytest.approx(
+        trainer.last_train_step_metrics["train_total_loss"]
+    )
 
 
 def test_plume_trainer_rejects_non_canonical_batch_shapes():
@@ -233,3 +242,114 @@ def test_best_checkpoint_selection_and_metadata_are_deterministic(tmp_path):
     assert loaded["metadata"]["selected_metric_name"] == "val_mse"
     assert loaded["metadata"]["contract_version"] == CONVLSTM_CONTRACT_VERSION
     np.testing.assert_allclose(model.w_x, before_state["w_x"])
+
+
+def test_smoothness_loss_zero_on_spatially_constant_prediction():
+    model = MinimalConvLSTMModel(input_channels=10, hidden_channels=2, seed=30)
+    cfg = ConvLSTMTrainingConfig(physics_loss_enabled=True, lambda_smooth=1.0, lambda_mass=0.0)
+    trainer = ConvLSTMPlumeTrainer(model=model, config=cfg)
+    pred = np.ones((64, 64), dtype=float) * 2.5
+    loss, grad = trainer._smoothness_loss_and_grad(pred)
+    assert loss == pytest.approx(0.0)
+    np.testing.assert_allclose(grad, 0.0)
+
+
+def test_smoothness_loss_positive_on_non_smooth_prediction():
+    model = MinimalConvLSTMModel(input_channels=10, hidden_channels=2, seed=31)
+    cfg = ConvLSTMTrainingConfig(physics_loss_enabled=True, lambda_smooth=1.0, lambda_mass=0.0)
+    trainer = ConvLSTMPlumeTrainer(model=model, config=cfg)
+    pred = np.zeros((64, 64), dtype=float)
+    pred[:, 32:] = 1.0
+    loss, _ = trainer._smoothness_loss_and_grad(pred)
+    assert loss > 0.0
+
+
+def test_mass_loss_matching_vs_mismatching_in_transformed_and_raw_space():
+    model = MinimalConvLSTMModel(input_channels=10, hidden_channels=2, seed=32)
+    cfg_t = ConvLSTMTrainingConfig(physics_loss_enabled=True, lambda_mass=1.0, mass_loss_space="transformed")
+    trainer_t = ConvLSTMPlumeTrainer(model=model, config=cfg_t)
+    pred = np.ones((64, 64), dtype=float) * 0.5
+    target_match = np.ones((64, 64), dtype=float) * 0.5
+    target_mismatch = np.ones((64, 64), dtype=float) * 0.8
+    loss_match_t, _ = trainer_t._mass_loss_and_grad(pred=pred, target=target_match)
+    loss_mismatch_t, _ = trainer_t._mass_loss_and_grad(pred=pred, target=target_mismatch)
+    assert loss_match_t == pytest.approx(0.0)
+    assert loss_mismatch_t > 0.0
+
+    cfg_r = ConvLSTMTrainingConfig(physics_loss_enabled=True, lambda_mass=1.0, mass_loss_space="raw")
+    trainer_r = ConvLSTMPlumeTrainer(model=model, config=cfg_r)
+    loss_match_r, _ = trainer_r._mass_loss_and_grad(pred=pred, target=target_match)
+    loss_mismatch_r, _ = trainer_r._mass_loss_and_grad(pred=pred, target=target_mismatch)
+    assert loss_match_r == pytest.approx(0.0)
+    assert loss_mismatch_r > 0.0
+
+
+def test_ablation_switches_disable_physics_terms_and_loss_composition_is_explicit():
+    model = MinimalConvLSTMModel(input_channels=10, hidden_channels=2, seed=33)
+    pred = np.ones((64, 64), dtype=float) * 0.5
+    target = np.ones((64, 64), dtype=float) * 0.25
+
+    cfg_disabled = ConvLSTMTrainingConfig(
+        physics_loss_enabled=False,
+        lambda_smooth=0.3,
+        lambda_mass=0.4,
+    )
+    trainer_disabled = ConvLSTMPlumeTrainer(model=model, config=cfg_disabled)
+    components_disabled = trainer_disabled._loss_components(pred=pred, target=target)
+    assert components_disabled["smoothness_loss"] == pytest.approx(0.0)
+    assert components_disabled["mass_loss"] == pytest.approx(0.0)
+    assert components_disabled["total_loss"] == pytest.approx(components_disabled["supervised_loss"])
+
+    cfg_enabled = ConvLSTMTrainingConfig(
+        physics_loss_enabled=True,
+        lambda_smooth=0.3,
+        lambda_mass=0.4,
+    )
+    trainer_enabled = ConvLSTMPlumeTrainer(model=model, config=cfg_enabled)
+    components_enabled = trainer_enabled._loss_components(pred=pred, target=target)
+    expected_total = (
+        components_enabled["supervised_loss"]
+        + 0.3 * components_enabled["smoothness_loss"]
+        + 0.4 * components_enabled["mass_loss"]
+    )
+    assert components_enabled["total_loss"] == pytest.approx(expected_total)
+
+
+def test_evaluation_can_surface_component_losses_without_changing_default_checkpoint_metric():
+    model = MinimalConvLSTMModel(input_channels=10, hidden_channels=2, seed=34)
+    cfg = ConvLSTMTrainingConfig(
+        checkpoint_metric="val_mse",
+        checkpoint_direction="min",
+        physics_loss_enabled=True,
+        lambda_smooth=0.2,
+        lambda_mass=0.1,
+    )
+    trainer = ConvLSTMPlumeTrainer(model=model, config=cfg)
+
+    batch_input = np.zeros((1, 3, 10, 64, 64), dtype=float)
+    batch_target = np.zeros((1, 1, 10, 64, 64), dtype=float)
+    batch_target[:, :, 0, :, :] = 0.2
+
+    metrics = trainer.evaluate_batch(
+        batch_input=batch_input,
+        batch_target=batch_target,
+        metric_prefix="val",
+        include_loss_components=True,
+    )
+    assert "val_supervised_loss" in metrics
+    assert "val_smoothness_loss" in metrics
+    assert "val_mass_loss" in metrics
+    assert "val_total_loss" in metrics
+    assert trainer.config.checkpoint_metric == "val_mse"
+
+
+def test_no_hidden_normalization_drift_with_physics_scaffolding_enabled():
+    model = MinimalConvLSTMModel(input_channels=10, hidden_channels=2, seed=35)
+    cfg = ConvLSTMTrainingConfig(
+        normalization_mode="none",
+        physics_loss_enabled=True,
+        lambda_smooth=0.1,
+        lambda_mass=0.1,
+    )
+    trainer = ConvLSTMPlumeTrainer(model=model, config=cfg)
+    assert trainer.metadata["normalization_mode"] == "none"

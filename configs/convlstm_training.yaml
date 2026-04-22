@@ -21,3 +21,13 @@ convlstm_training:
   checkpoint_metric: val_mse
   checkpoint_direction: min
   save_best_only: true
+
+  # Phase-G physics-loss scaffolding (off by default).
+  physics_loss_enabled: false
+  lambda_smooth: 0.0
+  lambda_mass: 0.0
+  smoothness_loss_mode: finite_difference_l2
+  mass_loss_mode: mean_mass_mse
+  # transformed = transformed-space mass consistency
+  # raw = inverse-transformed mass consistency (not full physical conservation)
+  mass_loss_space: transformed
