@@ -40,7 +40,8 @@ def test_build_process_commands_respects_frontend_and_worker(tmp_path: Path):
     )
     assert len(commands) == 3
     assert commands[0][0][0].endswith("python") or commands[0][0][0].endswith("python3")
-    assert commands[1][0][-2:] == ["run", "dev"]
+    assert commands[0][0][-4:] == ["--host", "0.0.0.0", "--port", "8000"]
+    assert commands[1][0][-5:] == ["--", "--host", "0.0.0.0", "--port", "5173"]
     assert commands[2][0][1:] == ["scripts/run_retraining_worker.py"]
 
 
@@ -56,6 +57,41 @@ def test_hf_preload_requires_repo_id(monkeypatch, tmp_path: Path):
     monkeypatch.delenv("PLUME_HF_LLM_REPO_ID", raising=False)
     with pytest.raises(RuntimeError, match="PLUME_HF_LLM_REPO_ID"):
         start_dev._ensure_hf_preload(repo_root=tmp_path, install_enabled=False)
+
+
+
+def test_check_required_ports_reports_backend_conflict(monkeypatch):
+    monkeypatch.setattr(start_dev, "_is_port_in_use", lambda port: port == 8000)
+    with pytest.raises(RuntimeError, match="Backend port 8000 is already in use"):
+        start_dev._check_required_ports(include_frontend=True)
+
+
+def test_check_required_ports_reports_frontend_conflict(monkeypatch):
+    monkeypatch.setattr(start_dev, "_is_port_in_use", lambda port: port == 5173)
+    with pytest.raises(RuntimeError, match="Frontend port 5173 is already in use"):
+        start_dev._check_required_ports(include_frontend=True)
+
+
+def test_main_fails_with_clear_port_conflict_message(monkeypatch, tmp_path: Path, capsys):
+    repo_root = tmp_path
+    frontend_dir = repo_root / "frontend"
+    scripts_dir = repo_root / "scripts"
+    frontend_dir.mkdir(parents=True)
+    scripts_dir.mkdir(parents=True)
+    (frontend_dir / "package.json").write_text("{}", encoding="utf-8")
+    (scripts_dir / "start_dev.py").write_text("# placeholder", encoding="utf-8")
+
+    monkeypatch.setattr(start_dev.Path, "resolve", lambda self: repo_root / "scripts" / "start_dev.py")
+    monkeypatch.setattr(start_dev, "_ensure_python_dependencies", lambda **_: None)
+    monkeypatch.setattr(start_dev, "_ensure_frontend_dependencies", lambda **_: None)
+    monkeypatch.setattr(start_dev, "_should_preload_models", lambda _args: False)
+    monkeypatch.setattr(start_dev, "_is_port_in_use", lambda port: port == 5173)
+
+    result = start_dev.main(["--skip-install"])
+    captured = capsys.readouterr()
+
+    assert result == 1
+    assert "Startup blocked: Frontend port 5173 is already in use" in captured.err
 
 
 def test_main_constructs_processes_with_backend_only_and_worker(monkeypatch, tmp_path: Path):
