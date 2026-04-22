@@ -23,13 +23,23 @@ export function SessionsPage() {
     await Promise.all([refresh(), sessionState.refresh()]);
   });
 
+  const lastActionType = actions.lastPrediction
+    ? "predict"
+    : actions.lastIngestResult
+      ? "ingest"
+      : actions.lastUpdateResult
+        ? "update"
+        : null;
+
+  const lastActionPayload = actions.lastPrediction ?? actions.lastIngestResult ?? actions.lastUpdateResult;
+
   return (
     <AppShell
       title="Sessions workspace"
       subtitle="Create and operate forecasting sessions with ingest, update, and prediction actions."
       metaItems={sessionState.detail?.model_name ? [{ label: sessionState.detail.model_name }] : undefined}
     >
-      <div className="workspace-grid">
+      <div className="workspace-grid" style={{ gridTemplateColumns: "0.9fr 1.35fr 1fr" }}>
         <div className="workspace-column">
           <SessionListPanel
             sessions={sessions}
@@ -49,7 +59,6 @@ export function SessionsPage() {
 
         <div className="workspace-column">
           <SessionStateRibbon detail={sessionState.detail} state={sessionState.state} />
-          <SessionBackendPanel detail={sessionState.detail} />
           <SessionActionBar
             disabled={!effectiveSessionId}
             runningAction={actions.runningAction}
@@ -57,11 +66,6 @@ export function SessionsPage() {
               await actions.update();
             }}
           />
-          <RecentObservationsTable state={sessionState.state} />
-          <SessionStateInspector detail={sessionState.detail} state={sessionState.state} />
-        </div>
-
-        <div className="workspace-column">
           <ObservationIngestPanel
             disabled={!effectiveSessionId || actions.runningAction !== null}
             onIngest={async (observations) => {
@@ -74,22 +78,26 @@ export function SessionsPage() {
               await actions.predict(payload);
             }}
           />
+        </div>
+
+        <div className="workspace-column">
+          <SessionBackendPanel detail={sessionState.detail} />
+          <RecentObservationsTable state={sessionState.state} />
+          <SessionStateInspector detail={sessionState.detail} state={sessionState.state} />
           <section className="panel">
-            <h3>Action output</h3>
+            <h3>Recent action status</h3>
             {sessionState.loading ? <p className="muted">Loading session details...</p> : null}
             {sessionState.error ? <p className="muted">{sessionState.error}</p> : null}
-            {actions.error ? <p className="muted">{actions.error}</p> : null}
-            <pre style={{ margin: 0, maxHeight: 360, overflow: "auto" }}>
-              {JSON.stringify(
-                {
-                  lastIngestResult: actions.lastIngestResult,
-                  lastUpdateResult: actions.lastUpdateResult,
-                  lastPrediction: actions.lastPrediction
-                },
-                null,
-                2
-              )}
-            </pre>
+            {!lastActionType && !actions.error ? <p className="muted">No recent session action.</p> : null}
+            {lastActionType ? <p><strong>Last action:</strong> {lastActionType}</p> : null}
+            <p><strong>Result:</strong> {actions.error ? "Failure" : lastActionPayload ? "Success" : "Idle"}</p>
+            <p>{actions.error ?? "No action failures reported."}</p>
+            {lastActionPayload ? (
+              <details>
+                <summary>Technical details</summary>
+                <pre style={{ margin: 0, maxHeight: 240, overflow: "auto" }}>{JSON.stringify(lastActionPayload, null, 2)}</pre>
+              </details>
+            ) : null}
           </section>
         </div>
       </div>
