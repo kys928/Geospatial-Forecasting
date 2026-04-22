@@ -15,6 +15,13 @@ convlstm_training:
   raw_interpretation_formula: "raw = (exp(pred) - 1) / 1e12"
   learning_rate: 0.001
   trainable_parameter_scope: full_model
+  # Phase-M canonical stored dataset wiring (optional convenience fields).
+  train_data_path: null
+  val_data_path: null
+  batch_size: 1
+  shuffle_train: false
+  shuffle_seed: 0
+  drop_last: false
 
   eval_metric: val_mse
   eval_direction: min
