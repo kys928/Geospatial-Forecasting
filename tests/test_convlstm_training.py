@@ -9,6 +9,7 @@ from plume.models.convlstm_contract import CONVLSTM_CONTRACT_VERSION, CONVLSTM_N
 from plume.models.convlstm_training import (
     CanonicalConvLSTMSampleDataset,
     ConvLSTMPlumeTrainer,
+    ConvLSTMRunConfig,
     ConvLSTMTrainingConfig,
     slice_plume_target,
 )
@@ -19,6 +20,13 @@ def _valid_sample_tensors() -> tuple[np.ndarray, np.ndarray]:
     target_tensor = np.zeros((1, 10, 64, 64), dtype=float)
     target_tensor[:, 0, :, :] = 1.25
     return input_tensor, target_tensor
+
+
+def _tiny_batches(*, value: float = 0.25) -> list[tuple[np.ndarray, np.ndarray]]:
+    batch_input = np.zeros((1, 3, 10, 64, 64), dtype=float)
+    batch_target = np.zeros((1, 1, 10, 64, 64), dtype=float)
+    batch_target[:, :, 0, :, :] = value
+    return [(batch_input, batch_target)]
 
 
 def test_canonical_dataset_validation_accepts_exact_shapes_and_finite_values():
@@ -576,6 +584,80 @@ def test_phase_k_stage_advancement_event_logged_when_metric_gate_advances(tmp_pa
     stage_events = [event for event in events if event["event_type"] == "stage_advanced"]
     assert len(stage_events) == 1
     assert stage_events[0]["payload"]["active_stage"] == 1
+
+
+def test_phase_l_run_orchestration_persists_run_start_end_reports_and_summary(tmp_path):
+    model = MinimalConvLSTMModel(input_channels=10, hidden_channels=2, seed=460)
+    trainer = ConvLSTMPlumeTrainer(model=model)
+    train_batches = _tiny_batches(value=0.1)
+    val_batches = _tiny_batches(value=0.1)
+    run_result = trainer.run_training(
+        train_batches=train_batches,
+        val_batches=val_batches,
+        run_config=ConvLSTMRunConfig(
+            num_epochs=2,
+            output_dir=tmp_path / "phase_l_run",
+            save_checkpoints=True,
+            save_last_checkpoint=True,
+        ),
+    )
+
+    assert run_result["run_summary"] is not None
+    artifacts = trainer.run_artifacts
+    assert artifacts is not None
+    assert artifacts.run_summary_path.exists()
+    assert (artifacts.output_dir / "checkpoints" / "best.npz").exists()
+    assert (artifacts.output_dir / "checkpoints" / "last.npz").exists()
+
+    events = [json.loads(line) for line in artifacts.run_events_path.read_text(encoding="utf-8").splitlines() if line]
+    assert events[0]["event_type"] == "run_start"
+    assert events[-1]["event_type"] == "run_end"
+
+    reports = [json.loads(line) for line in artifacts.epoch_reports_path.read_text(encoding="utf-8").splitlines() if line]
+    assert len(reports) == 2
+    assert reports[0]["epoch"] == 0
+    assert reports[1]["epoch"] == 1
+
+
+def test_phase_l_run_orchestration_logs_stage_advance_and_respects_checkpoint_metric_policy(tmp_path):
+    model = MinimalConvLSTMModel(input_channels=10, hidden_channels=2, seed=461)
+    cfg = ConvLSTMTrainingConfig(
+        checkpoint_metric="val_mae",
+        checkpoint_direction="min",
+        physics_loss_enabled=True,
+        physics_schedule_enabled=True,
+        physics_schedule_stage_boundaries=(0, 1),
+        physics_schedule_lambda_smooth=(0.0, 0.2),
+        physics_schedule_lambda_mass=(0.0, 0.1),
+        metric_stage_progression_enabled=True,
+        metric_stage_monitor="val_mse",
+        metric_stage_direction="min",
+        metric_stage_thresholds=(10.0,),
+        metric_stage_min_epoch_per_stage=0,
+        metric_stage_patience=0,
+    )
+    trainer = ConvLSTMPlumeTrainer(model=model, config=cfg)
+    trainer.run_training(
+        train_batches=_tiny_batches(value=0.2),
+        val_batches=_tiny_batches(value=0.2),
+        run_config=ConvLSTMRunConfig(
+            num_epochs=1,
+            output_dir=tmp_path / "phase_l_metric_policy",
+            save_checkpoints=True,
+            save_last_checkpoint=False,
+        ),
+    )
+
+    artifacts = trainer.run_artifacts
+    assert artifacts is not None
+    best_summary = json.loads(artifacts.best_checkpoint_summary_path.read_text(encoding="utf-8"))
+    assert best_summary["best_metric_name"] == "val_mae"
+
+    events = [json.loads(line) for line in artifacts.run_events_path.read_text(encoding="utf-8").splitlines() if line]
+    event_types = [event["event_type"] for event in events]
+    assert "stage_advanced" in event_types
+    assert "best_checkpoint_improved" in event_types
+    assert trainer.metadata["normalization_mode"] == "none"
 
 def test_phase_h_stage_zero_supervised_only_weights_are_zero_and_exposed():
     model = MinimalConvLSTMModel(input_channels=10, hidden_channels=2, seed=40)
