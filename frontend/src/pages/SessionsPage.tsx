@@ -24,7 +24,11 @@ export function SessionsPage() {
   });
 
   return (
-    <AppShell scenarioName="Sessions" modelLabel={sessionState.detail?.model_name ?? "Session management"}>
+    <AppShell
+      title="Sessions workspace"
+      subtitle="Create and operate forecasting sessions with ingest, update, and prediction actions."
+      metaItems={[{ label: sessionState.detail?.model_name ?? "Session management" }]}
+    >
       <div className="workspace-grid">
         <div style={{ display: "grid", gap: 12 }}>
           <SessionListPanel

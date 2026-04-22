@@ -28,7 +28,12 @@ export function RegistryPage() {
   );
 
   return (
-    <AppShell scenarioName="Registry" modelLabel={registry?.active_model_id ?? "Model registry"} statusText={error ?? actions.error ?? "Ready"}>
+    <AppShell
+      title="Registry workspace"
+      subtitle="Inspect model versions, approvals, activation, and rollback actions."
+      statusText={error ?? actions.error ?? "Ready"}
+      metaItems={[{ label: registry?.active_model_id ? `Active: ${registry.active_model_id}` : "Model registry" }]}
+    >
       <div className="workspace-grid">
         <div style={{ display: "grid", gap: 12 }}>
           <BackendCapabilitiesPanel registry={registry} />
