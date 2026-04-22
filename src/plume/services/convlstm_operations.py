@@ -2,9 +2,12 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
+from contextlib import contextmanager
 import json
+import os
 from pathlib import Path
 from typing import Callable
+import uuid
 
 from plume.models.convlstm_contract import CONVLSTM_CONTRACT_VERSION, CONVLSTM_NORMALIZATION_MODE
 from plume.models.convlstm_training import load_best_checkpoint_summary, load_run_summary
@@ -87,6 +90,7 @@ class PromotionPolicy:
 class ModelRegistry:
     def __init__(self, path: str | Path):
         self.path = Path(path)
+        self.lock_path = self.path.with_suffix(f"{self.path.suffix}.lock")
 
     def load(self) -> dict[str, object]:
         if not self.path.exists():
@@ -96,6 +100,8 @@ class ModelRegistry:
                 "models": [],
                 "events": [],
                 "approval_audit": [],
+                "revision": 0,
+                "next_event_index": 0,
             }
         payload = json.loads(self.path.read_text(encoding="utf-8"))
         if not isinstance(payload, dict):
@@ -105,13 +111,23 @@ class ModelRegistry:
         payload.setdefault("approval_audit", [])
         payload.setdefault("active_model_id", None)
         payload.setdefault("previous_active_model_id", None)
+        payload["revision"] = int(payload.get("revision", 0))
+        payload["next_event_index"] = self._derive_next_event_index(payload["events"], payload.get("next_event_index"))
         return payload
 
     def save(self, payload: dict[str, object]) -> None:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        temp_path = self.path.with_suffix(f"{self.path.suffix}.tmp")
-        temp_path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-        temp_path.replace(self.path)
+        with self.acquire_lock():
+            current_revision = 0
+            if self.path.exists():
+                current_payload = self.load()
+                current_revision = int(current_payload.get("revision", 0))
+            next_payload = dict(payload)
+            next_payload["revision"] = max(int(payload.get("revision", 0)), current_revision) + 1
+            next_payload["next_event_index"] = self._derive_next_event_index(
+                next_payload.get("events", []),
+                next_payload.get("next_event_index"),
+            )
+            self._atomic_write(next_payload)
 
     def find_record(self, model_id: str) -> dict[str, object] | None:
         payload = self.load()
@@ -119,6 +135,49 @@ class ModelRegistry:
             if record.get("model_id") == model_id:
                 return dict(record)
         return None
+
+    @contextmanager
+    def acquire_lock(self):
+        self.lock_path.parent.mkdir(parents=True, exist_ok=True)
+        fd: int | None = None
+        created_lock = False
+        try:
+            fd = os.open(self.lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            created_lock = True
+            os.write(fd, str(os.getpid()).encode("utf-8"))
+            yield
+        except FileExistsError as exc:
+            raise RuntimeError(f"Could not acquire model registry lock: {self.lock_path}") from exc
+        finally:
+            if fd is not None:
+                os.close(fd)
+            if created_lock and self.lock_path.exists():
+                self.lock_path.unlink()
+
+    def _atomic_write(self, payload: dict[str, object]) -> None:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        temp_path = self.path.with_suffix(f"{self.path.suffix}.{uuid.uuid4().hex}.tmp")
+        try:
+            temp_path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+            temp_path.replace(self.path)
+        finally:
+            if temp_path.exists():
+                temp_path.unlink()
+
+    @staticmethod
+    def _derive_next_event_index(events: object, provided: object) -> int:
+        if isinstance(provided, int) and provided >= 0:
+            return provided
+        if not isinstance(events, list):
+            return 0
+        indexed = [
+            int(item.get("event_index"))
+            for item in events
+            if isinstance(item, dict) and isinstance(item.get("event_index"), int)
+        ]
+        if indexed:
+            return max(indexed) + 1
+        return len(events)
 
 
 def evaluate_retraining_readiness(
@@ -206,8 +265,9 @@ def register_candidate_from_run(
     if any(item.get("model_id") == record_id for item in payload["models"]):
         raise ValueError(f"Model id already exists in registry: {record_id}")
     payload["models"].append(record)
-    payload["events"].append(
-        {"timestamp": now, "event_type": "candidate_registered", "model_id": record_id, "run_id": record["run_id"]}
+    _append_registry_event(
+        payload,
+        {"timestamp": now, "event_type": "candidate_registered", "model_id": record_id, "run_id": record["run_id"]},
     )
     registry.save(payload)
     return record
@@ -338,13 +398,14 @@ def activate_approved_model(*, registry: ModelRegistry, model_id: str) -> dict[s
     record["status"] = "active"
     payload["previous_active_model_id"] = previous_active_id
     payload["active_model_id"] = model_id
-    payload["events"].append(
+    _append_registry_event(
+        payload,
         {
             "timestamp": _utc_now_iso(),
             "event_type": "model_activated",
             "model_id": model_id,
             "previous_active_model_id": previous_active_id,
-        }
+        },
     )
     registry.save(payload)
     return {"activated": True, "model_id": model_id, "previous_active_model_id": previous_active_id}
@@ -365,7 +426,7 @@ def rollback_to_previous_model(*, registry: ModelRegistry) -> dict[str, object]:
             item["status"] = "archived"
     target["status"] = "active"
     payload["active_model_id"] = previous_id
-    payload["events"].append({"timestamp": _utc_now_iso(), "event_type": "rollback_performed", "model_id": previous_id})
+    _append_registry_event(payload, {"timestamp": _utc_now_iso(), "event_type": "rollback_performed", "model_id": previous_id})
     registry.save(payload)
     return {"rolled_back": True, "active_model_id": previous_id}
 
@@ -478,17 +539,18 @@ class OperationalOrchestrator:
                 actor="system",
                 comment="technical gate passed; awaiting operator approval",
                 resulting_model_status="candidate",
-                event_index=len(registry_payload["events"]),
+                event_index=int(registry_payload.get("next_event_index", len(registry_payload["events"]))),
             )
             registry_payload["approval_audit"].append(audit)
-            registry_payload["events"].append(
+            _append_registry_event(
+                registry_payload,
                 {
                     "timestamp": audit["timestamp"],
                     "event_type": "candidate_pending_manual_approval",
                     "model_id": candidate["model_id"],
                     "actor": "system",
                     "comment": audit["comment"],
-                }
+                },
             )
             self.registry.save(registry_payload)
             self.event_log.append(event_type="candidate_pending_manual_approval", payload={"model_id": candidate["model_id"]})
@@ -583,17 +645,18 @@ def _record_operator_approval_decision(
         actor=actor,
         comment=comment,
         resulting_model_status=resulting_model_status,
-        event_index=len(payload["events"]),
+        event_index=int(payload.get("next_event_index", len(payload["events"]))),
     )
     payload["approval_audit"].append(audit)
-    payload["events"].append(
+    _append_registry_event(
+        payload,
         {
             "timestamp": audit["timestamp"],
             "event_type": event_type,
             "model_id": candidate_model_id,
             "actor": actor,
             "comment": comment,
-        }
+        },
     )
     registry.save(payload)
     return audit
@@ -720,6 +783,15 @@ def _validate_plume_regressions(
         a_val = active_metrics.get("val_centroid_distance_raster_transformed")
         if isinstance(c_val, (float, int)) and isinstance(a_val, (float, int)) and (float(c_val) - float(a_val)) > max_centroid:
             reasons.append("centroid_regression_exceeds_tolerance")
+
+
+def _append_registry_event(payload: dict[str, object], event: dict[str, object]) -> None:
+    events = payload.setdefault("events", [])
+    if not isinstance(events, list):
+        raise ValueError("Registry events must be a list")
+    next_index = int(payload.get("next_event_index", len(events)))
+    events.append({**event, "event_index": next_index})
+    payload["next_event_index"] = next_index + 1
 
 
 def _optional_str(value: object) -> str | None:
