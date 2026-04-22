@@ -136,6 +136,23 @@ def _env_flag(name: str, *, default: bool) -> bool:
     return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _cors_settings() -> tuple[list[str], str | None]:
+    allow_origins = [
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+    ]
+    extra_origins = os.getenv("PLUME_CORS_ALLOW_ORIGINS", "")
+    allow_origins.extend(
+        origin.strip()
+        for origin in extra_origins.split(",")
+        if origin.strip()
+    )
+    allow_origin_regex = os.getenv("PLUME_CORS_ALLOW_ORIGIN_REGEX")
+    if allow_origin_regex is not None:
+        allow_origin_regex = allow_origin_regex.strip() or None
+    return allow_origins, allow_origin_regex
+
+
 @dataclass(frozen=True)
 class OpsAuthSettings:
     enabled: bool
@@ -220,13 +237,12 @@ def _pending_candidate_from_registry(registry_payload: dict[str, object]) -> dic
 
 def create_app() -> FastAPI:
     app = FastAPI(title="Geospatial Forecasting API", version="0.1.0")
+    cors_allow_origins, cors_allow_origin_regex = _cors_settings()
 
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=[
-            "http://localhost:5173",
-            "http://127.0.0.1:5173",
-        ],
+        allow_origins=cors_allow_origins,
+        allow_origin_regex=cors_allow_origin_regex,
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
