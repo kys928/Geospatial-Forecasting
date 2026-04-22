@@ -131,7 +131,7 @@ python scripts/seed_demo_data.py
 ## Run API only
 
 ```bash
-uvicorn plume.api.main:app --reload
+uvicorn plume.api.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
 ## Run backend + frontend (one command)
@@ -143,8 +143,8 @@ python scripts/start_dev.py
 ```
 
 This launches:
-- backend: `uvicorn plume.api.main:app --reload`
-- frontend: `npm run dev` in `frontend/`
+- backend: `python -m uvicorn plume.api.main:app --reload --host 0.0.0.0 --port 8000`
+- frontend: `npm run dev -- --host 0.0.0.0 --port 5173` in `frontend/`
 
 `start_dev.py` now performs bootstrap checks before launch:
 - Python dependency checks (and optional install behavior)
@@ -158,6 +158,17 @@ Useful flags:
 - `--backend-only` / `--skip-frontend`
 - `--with-worker`
 - `--preload-models`
+
+
+Frontend API base URL is environment-driven:
+
+```bash
+# frontend/.env (or shell env before npm run dev)
+VITE_API_BASE_URL=http://<pod-backend-url>
+```
+
+If `VITE_API_BASE_URL` is unset, the frontend falls back to `http://localhost:8000` for local development.
+For remote pod usage, do not rely on browser `localhost` unless you are explicitly port-forwarding backend port `8000`.
 
 Hugging Face preload env (used when `--preload-models` is passed or `PLUME_PRELOAD_HF_MODELS=true`):
 - `PLUME_HF_LLM_REPO_ID` (required when preload enabled)
