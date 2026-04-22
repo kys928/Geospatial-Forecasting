@@ -10,14 +10,20 @@ from plume.models.convlstm_training import (
     CanonicalConvLSTMSampleDataset,
     ConvLSTMDatasetRunConfig,
     ConvLSTMPlumeTrainer,
+    ConvLSTMRunLoadError,
     ConvLSTMRunConfig,
     ConvLSTMTrainingConfig,
     build_canonical_batches,
+    compare_run_dirs,
     create_train_val_batches_from_dataset_paths,
+    extract_run_comparison_record,
     load_canonical_sample_dataset,
+    load_run_summary,
     resolve_canonical_sample_paths,
     run_training_from_dataset,
     slice_plume_target,
+    summarize_ablation_groups,
+    write_run_comparison_json,
 )
 
 
@@ -735,6 +741,140 @@ def test_phase_m_run_training_from_dataset_wires_into_phase_l_run_orchestration(
     assert (artifacts.output_dir / "checkpoints" / "best.npz").exists()
     payload = json.loads(artifacts.run_summary_path.read_text(encoding="utf-8"))
     assert payload["policy"]["normalization_mode"] == "none"
+
+
+def test_phase_n_loaders_and_comparison_record_extract_stable_fields(tmp_path):
+    run_dir = tmp_path / "run_a"
+    run_dir.mkdir()
+    (run_dir / "run_config.json").write_text(
+        json.dumps(
+            {
+                "config": {
+                    "physics_schedule_enabled": True,
+                    "metric_stage_progression_enabled": True,
+                    "lambda_smooth": 0.2,
+                    "lambda_mass": 0.1,
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    (run_dir / "best_checkpoint_summary.json").write_text(
+        json.dumps({"best_metric_name": "val_mse", "best_metric_value": 0.12}),
+        encoding="utf-8",
+    )
+    (run_dir / "run_summary.json").write_text(
+        json.dumps(
+            {
+                "final_active_stage": 1,
+                "final_validation_metrics": {
+                    "val_mse": 0.13,
+                    "val_mae": 0.09,
+                    "val_rmse": 0.3605551275,
+                    "val_mass_abs_error_transformed": 0.01,
+                    "val_mass_abs_error_raw": 0.5,
+                },
+                "policy": {
+                    "contract_version": CONVLSTM_CONTRACT_VERSION,
+                    "target_policy": "plume_only",
+                    "normalization_mode": "none",
+                    "trainable_parameter_scope": "full_model",
+                    "checkpoint_metric": "val_mse",
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    summary = load_run_summary(run_dir)
+    assert summary["final_active_stage"] == 1
+    record = extract_run_comparison_record(run_dir)
+    assert record["run_name"] == "run_a"
+    assert record["target_policy"] == "plume_only"
+    assert record["normalization_mode"] == "none"
+    assert record["best_metric_name"] == "val_mse"
+    assert record["metrics"]["val_mse"] == pytest.approx(0.13)
+    assert "val_mass_abs_error_raw" in record["metrics"]
+
+
+def test_phase_n_compare_run_dirs_sorts_deterministically_and_skips_with_reason(tmp_path):
+    complete = tmp_path / "complete"
+    complete.mkdir()
+    (complete / "run_config.json").write_text(
+        json.dumps({"config": {"physics_schedule_enabled": False, "metric_stage_progression_enabled": False}}),
+        encoding="utf-8",
+    )
+    (complete / "best_checkpoint_summary.json").write_text(
+        json.dumps({"best_metric_name": "val_mse", "best_metric_value": 0.10}),
+        encoding="utf-8",
+    )
+    (complete / "run_summary.json").write_text(
+        json.dumps(
+            {
+                "final_active_stage": 0,
+                "final_validation_metrics": {"val_mse": 0.11, "val_mae": 0.08, "val_rmse": 0.331662479},
+                "policy": {
+                    "contract_version": CONVLSTM_CONTRACT_VERSION,
+                    "target_policy": "plume_only",
+                    "normalization_mode": "none",
+                    "trainable_parameter_scope": "full_model",
+                    "checkpoint_metric": "val_mse",
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    broken = tmp_path / "broken"
+    broken.mkdir()
+    (broken / "run_summary.json").write_text("{bad json", encoding="utf-8")
+
+    compared = compare_run_dirs([broken, complete], sort_by="best_metric_value", ascending=True, skip_incomplete=True)
+    assert [record["run_name"] for record in compared["records"]] == ["complete"]
+    assert compared["skipped"][0]["run_dir"].endswith("broken")
+    assert "Malformed JSON in run artifact" in compared["skipped"][0]["reason"]
+
+    with pytest.raises(ConvLSTMRunLoadError):
+        compare_run_dirs([broken], skip_incomplete=False)
+
+
+def test_phase_n_ablation_group_summary_and_json_export_are_deterministic(tmp_path):
+    records = [
+        {
+            "run_name": "r0",
+            "physics_schedule_enabled": True,
+            "metric_stage_progression_enabled": False,
+            "lambda_smooth": 0.2,
+            "lambda_mass": 0.1,
+            "best_metric_value": 0.3,
+        },
+        {
+            "run_name": "r1",
+            "physics_schedule_enabled": True,
+            "metric_stage_progression_enabled": False,
+            "lambda_smooth": 0.2,
+            "lambda_mass": 0.1,
+            "best_metric_value": 0.1,
+        },
+        {
+            "run_name": "r2",
+            "physics_schedule_enabled": False,
+            "metric_stage_progression_enabled": False,
+            "lambda_smooth": 0.0,
+            "lambda_mass": 0.0,
+            "best_metric_value": 0.2,
+        },
+    ]
+    grouped = summarize_ablation_groups(records)
+    assert grouped[0]["count"] == 1
+    assert grouped[0]["best_metric_value"] == pytest.approx(0.2)
+    assert grouped[1]["count"] == 2
+    assert grouped[1]["best_metric_value"] == pytest.approx(0.1)
+    assert grouped[1]["mean_metric_value"] == pytest.approx(0.2)
+
+    output_path = write_run_comparison_json(tmp_path / "comparison.json", {"records": records, "groups": grouped})
+    exported = json.loads(output_path.read_text(encoding="utf-8"))
+    assert output_path.exists()
+    assert exported["records"][0]["run_name"] == "r0"
 
 
 def test_phase_l_run_orchestration_logs_stage_advance_and_respects_checkpoint_metric_policy(tmp_path):
