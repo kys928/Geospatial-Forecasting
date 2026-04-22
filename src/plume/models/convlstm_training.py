@@ -53,6 +53,12 @@ class ConvLSTMTrainingConfig:
     mass_ramp_type: str = "none"
     mass_ramp_start: int = 0
     mass_ramp_end: int = 0
+    metric_stage_progression_enabled: bool = False
+    metric_stage_monitor: str = "val_mse"
+    metric_stage_direction: str = "min"
+    metric_stage_thresholds: tuple[float, ...] = ()
+    metric_stage_min_epoch_per_stage: int = 0
+    metric_stage_patience: int = 0
 
 
 class CanonicalConvLSTMSampleDataset:
@@ -189,6 +195,7 @@ class ConvLSTMPlumeTrainer:
                 f"got {self.config.mass_ramp_type}"
             )
         self._validate_physics_schedule_config()
+        self._validate_metric_stage_progression_config()
 
         self.best_checkpoint_metric_name: str | None = None
         self.best_checkpoint_metric_value: float | None = None
@@ -199,9 +206,18 @@ class ConvLSTMPlumeTrainer:
         self._last_effective_lambda_smooth: float = 0.0
         self._last_effective_lambda_mass: float = 0.0
         self._last_active_stage: int = 0
+        self._metric_active_stage: int = 0
+        self._metric_stage_start_epoch: int = 0
+        self._metric_stage_satisfaction_streak: int = 0
+        self._metric_stage_last_value: float | None = None
+        self._metric_stage_last_advanced: bool = False
+        self._metric_stage_last_update_epoch: int | None = None
 
     @property
     def metadata(self) -> dict[str, object]:
+        epochs_in_current_stage = 0
+        if self.config.metric_stage_progression_enabled and self._metric_stage_last_update_epoch is not None:
+            epochs_in_current_stage = max(0, self._metric_stage_last_update_epoch - self._metric_stage_start_epoch)
         return {
             "contract_version": CONVLSTM_CONTRACT_VERSION,
             "target_policy": self.config.target_policy,
@@ -234,6 +250,16 @@ class ConvLSTMPlumeTrainer:
             "mass_ramp_type": self.config.mass_ramp_type,
             "mass_ramp_start": self.config.mass_ramp_start,
             "mass_ramp_end": self.config.mass_ramp_end,
+            "metric_stage_progression_enabled": self.config.metric_stage_progression_enabled,
+            "metric_stage_monitor": self.config.metric_stage_monitor,
+            "metric_stage_direction": self.config.metric_stage_direction,
+            "metric_stage_thresholds": self.config.metric_stage_thresholds,
+            "metric_stage_min_epoch_per_stage": self.config.metric_stage_min_epoch_per_stage,
+            "metric_stage_patience": self.config.metric_stage_patience,
+            "metric_stage_last_value": self._metric_stage_last_value,
+            "metric_stage_last_advanced": self._metric_stage_last_advanced,
+            "epochs_in_current_stage": epochs_in_current_stage,
+            "metric_stage_satisfaction_streak": self._metric_stage_satisfaction_streak,
             "effective_lambda_smooth": self._last_effective_lambda_smooth,
             "effective_lambda_mass": self._last_effective_lambda_mass,
             "active_stage": self._last_active_stage,
@@ -316,6 +342,57 @@ class ConvLSTMPlumeTrainer:
         self.last_train_step_metrics = metrics
         self._train_steps_completed += 1
         return metrics
+
+    def update_stage_from_validation(self, val_metrics: dict[str, float], *, epoch: int) -> bool:
+        """Update metric-gated stage progression from validation metrics.
+
+        Returns True when stage advanced, otherwise False.
+        """
+        self._metric_stage_last_advanced = False
+        if not self.config.metric_stage_progression_enabled:
+            return False
+        metric_name = self.config.metric_stage_monitor
+        if metric_name not in val_metrics:
+            raise ValueError(
+                f"Metric-gated stage progression requires '{metric_name}' in validation metrics, "
+                f"got keys: {sorted(val_metrics.keys())}"
+            )
+        metric_value = float(val_metrics[metric_name])
+        self._metric_stage_last_value = metric_value
+        self._metric_stage_last_update_epoch = int(epoch)
+
+        current_stage = self._metric_active_stage
+        max_stage = len(self.config.physics_schedule_stage_boundaries) - 1
+        if current_stage >= max_stage:
+            self._metric_stage_satisfaction_streak = 0
+            return False
+
+        epochs_in_current_stage = max(0, int(epoch) - self._metric_stage_start_epoch)
+        if epochs_in_current_stage < self.config.metric_stage_min_epoch_per_stage:
+            self._metric_stage_satisfaction_streak = 0
+            return False
+
+        threshold = float(self.config.metric_stage_thresholds[current_stage])
+        threshold_satisfied = (
+            metric_value <= threshold
+            if self.config.metric_stage_direction == "min"
+            else metric_value >= threshold
+        )
+        if threshold_satisfied:
+            self._metric_stage_satisfaction_streak += 1
+        else:
+            self._metric_stage_satisfaction_streak = 0
+
+        required_streak = max(1, self.config.metric_stage_patience + 1)
+        if self._metric_stage_satisfaction_streak < required_streak:
+            return False
+
+        self._metric_active_stage += 1
+        self._metric_stage_start_epoch = int(epoch)
+        self._metric_stage_satisfaction_streak = 0
+        self._metric_stage_last_advanced = True
+        self._last_active_stage = self._metric_active_stage
+        return True
 
     def train_epoch(self, batch_iterable: list[tuple[np.ndarray, np.ndarray]], *, epoch: int = 0) -> float:
         """Run a narrow epoch helper over already-batched tensors."""
@@ -715,6 +792,26 @@ class ConvLSTMPlumeTrainer:
         self._validate_linear_ramp_bounds(self.config.smoothness_ramp_type, self.config.smoothness_ramp_start, self.config.smoothness_ramp_end)
         self._validate_linear_ramp_bounds(self.config.mass_ramp_type, self.config.mass_ramp_start, self.config.mass_ramp_end)
 
+    def _validate_metric_stage_progression_config(self) -> None:
+        if not self.config.metric_stage_progression_enabled:
+            return
+        if not self.config.physics_schedule_enabled:
+            raise ValueError(
+                "metric_stage_progression_enabled=True requires physics_schedule_enabled=True"
+            )
+        if self.config.metric_stage_direction not in {"min", "max"}:
+            raise ValueError("metric_stage_direction must be 'min' or 'max'")
+        if self.config.metric_stage_min_epoch_per_stage < 0:
+            raise ValueError("metric_stage_min_epoch_per_stage must be >= 0")
+        if self.config.metric_stage_patience < 0:
+            raise ValueError("metric_stage_patience must be >= 0")
+        expected_thresholds = len(self.config.physics_schedule_stage_boundaries) - 1
+        if len(self.config.metric_stage_thresholds) != expected_thresholds:
+            raise ValueError(
+                "metric_stage_thresholds length must equal number of stage transitions "
+                f"({expected_thresholds})"
+            )
+
     @staticmethod
     def _validate_linear_ramp_bounds(ramp_type: str, ramp_start: int, ramp_end: int) -> None:
         if ramp_start < 0 or ramp_end < 0:
@@ -735,12 +832,15 @@ class ConvLSTMPlumeTrainer:
 
         progress = 0 if epoch is None else int(epoch)
         boundaries = self.config.physics_schedule_stage_boundaries
-        active_stage = 0
-        for idx, start in enumerate(boundaries):
-            if progress >= start:
-                active_stage = idx
-            else:
-                break
+        if self.config.metric_stage_progression_enabled:
+            active_stage = min(self._metric_active_stage, len(boundaries) - 1)
+        else:
+            active_stage = 0
+            for idx, start in enumerate(boundaries):
+                if progress >= start:
+                    active_stage = idx
+                else:
+                    break
         lambda_smooth = float(self.config.physics_schedule_lambda_smooth[active_stage])
         lambda_mass = float(self.config.physics_schedule_lambda_mass[active_stage])
         lambda_smooth = self._apply_linear_ramp(
