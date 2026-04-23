@@ -1,4 +1,4 @@
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { sessionClient } from "../api/sessionClient";
 import type {
   IngestObservationsResponse,
@@ -49,6 +49,13 @@ export function useSessionActions(sessionId: string | null, onSuccess?: () => Pr
     setLastPrediction(result);
     return result;
   }, [sessionId, withAction]);
+
+  useEffect(() => {
+    setError(null);
+    setLastUpdateResult(null);
+    setLastIngestResult(null);
+    setLastPrediction(null);
+  }, [sessionId]);
 
   return {
     runningAction,

@@ -68,3 +68,10 @@ export interface SessionPredictionRequest {
 }
 
 export type SessionPredictionResponse = Record<string, unknown>;
+
+export interface SessionForecastBundle {
+  summary: Record<string, unknown>;
+  geojson: Record<string, unknown>;
+  rasterMetadata: Record<string, unknown>;
+  explanation: Record<string, unknown>;
+}

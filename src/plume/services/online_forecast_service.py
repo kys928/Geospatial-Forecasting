@@ -22,6 +22,7 @@ class OnlineForecastService:
         self.config = config
         self.state_store = state_store
         self.observation_service = observation_service or ObservationService()
+        self._latest_forecast_by_session: dict[str, ForecastRunResult] = {}
 
     def create_session(
         self,
@@ -145,7 +146,7 @@ class OnlineForecastService:
         )
 
         summary_statistics = ForecastPostprocessor(self.config.load_inference()).compute_summary_statistics(forecast)
-        return ForecastRunResult(
+        result = ForecastRunResult(
             forecast_id=request.session_id,
             issued_at=now,
             model_name=session.model_name or execution_backend_name,
@@ -164,6 +165,15 @@ class OnlineForecastService:
                 "request_metadata": request.metadata,
             },
         )
+        self._latest_forecast_by_session[request.session_id] = result
+        return result
+
+    def get_latest_forecast_result(self, session_id: str) -> ForecastRunResult:
+        self.get_session(session_id)
+        result = self._latest_forecast_by_session.get(session_id)
+        if result is None:
+            raise ValueError(f"No forecast result found for session: {session_id}")
+        return result
 
     def _predict_with_optional_fallback(
         self,
