@@ -59,7 +59,7 @@ export function SessionResultSummary({ lastPrediction, loading, error }: Session
         <div className="section-spacer" />
 
         <h3>Inspect map</h3>
-        <p className="muted">Open the Demo workspace to inspect plume layers and source details on the map.</p>
+        <p className="muted">Use the Sessions map panel above to inspect plume layers and source details.</p>
       </div>
     </section>
   );

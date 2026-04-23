@@ -93,6 +93,15 @@ def _session_response(session) -> dict[str, object]:
     }
 
 
+def _get_latest_session_forecast_result(online_forecast_service, session_id: str):
+    try:
+        return online_forecast_service.get_latest_forecast_result(session_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
 def _load_retraining_policy(forecast_service) -> RetrainingPolicy:
     config_path = Path(forecast_service.config.config_dir) / "convlstm_training.yaml"
     if not config_path.exists():
@@ -481,6 +490,58 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=400, detail=f"Invalid prediction payload: {exc}") from exc
 
         return forecast_service.summarize_forecast(result)
+
+    @app.get("/sessions/{session_id}/forecast/latest/summary")
+    def get_session_latest_forecast_summary(session_id: str):
+        result = _get_latest_session_forecast_result(online_forecast_service, session_id)
+        return forecast_service.summarize_forecast(result)
+
+    @app.get("/sessions/{session_id}/forecast/latest/geojson")
+    def get_session_latest_forecast_geojson(session_id: str):
+        result = _get_latest_session_forecast_result(online_forecast_service, session_id)
+        return export_service.to_geojson(result)
+
+    @app.get("/sessions/{session_id}/forecast/latest/raster-metadata")
+    def get_session_latest_forecast_raster_metadata(session_id: str):
+        result = _get_latest_session_forecast_result(online_forecast_service, session_id)
+        return export_service.to_raster_metadata(result).__dict__
+
+    @app.get("/sessions/{session_id}/forecast/latest/explanation")
+    def get_session_latest_forecast_explanation(
+        session_id: str,
+        threshold: float = 1e-5,
+        use_llm: bool = True,
+    ):
+        result = _get_latest_session_forecast_result(online_forecast_service, session_id)
+
+        explanation_result = explain_service.explain(
+            result,
+            threshold=threshold,
+            use_llm=use_llm,
+        )
+
+        return {
+            "forecast_id": result.forecast_id,
+            "issued_at": result.issued_at.isoformat(),
+            "model": result.model_name,
+            "used_llm": explanation_result.used_llm,
+            "summary": {
+                "source_latitude": explanation_result.summary.source_latitude,
+                "source_longitude": explanation_result.summary.source_longitude,
+                "grid_rows": explanation_result.summary.grid_rows,
+                "grid_columns": explanation_result.summary.grid_columns,
+                "projection": explanation_result.summary.projection,
+                "max_concentration": explanation_result.summary.max_concentration,
+                "mean_concentration": explanation_result.summary.mean_concentration,
+                "affected_cells_above_threshold": explanation_result.summary.affected_cells_above_threshold,
+                "affected_area_m2": explanation_result.summary.affected_area_m2,
+                "affected_area_hectares": explanation_result.summary.affected_area_hectares,
+                "dominant_spread_direction": explanation_result.summary.dominant_spread_direction,
+                "threshold_used": explanation_result.summary.threshold_used,
+                "note": explanation_result.summary.note,
+            },
+            "explanation": explanation_result.explanation,
+        }
 
     @app.get("/ops/status", response_model=OpsStatusResponse)
     def get_ops_status(_role: str = Depends(_require_ops_read_access)):

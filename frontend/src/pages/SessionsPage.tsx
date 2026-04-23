@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { AppShell } from "../app/AppShell";
 import { SessionListPanel } from "../features/sessions/components/SessionListPanel";
 import { SessionCreateForm } from "../features/sessions/components/SessionCreateForm";
@@ -13,6 +13,9 @@ import { SessionResultSummary } from "../features/sessions/components/SessionRes
 import { useSessions } from "../features/sessions/hooks/useSessions";
 import { useSessionState } from "../features/sessions/hooks/useSessionState";
 import { useSessionActions } from "../features/sessions/hooks/useSessionActions";
+import { useSessionForecastBundle } from "../features/sessions/hooks/useSessionForecastBundle";
+import { ForecastMap } from "../features/map/components/ForecastMap";
+import type { GeoJsonFeatureCollection, SelectedFeatureState } from "../features/forecast/types/forecast.types";
 
 type SessionWorkspaceMode = "basic" | "operator";
 
@@ -23,11 +26,19 @@ export function SessionsPage() {
 
   const effectiveSessionId = useMemo(() => selectedSessionId ?? sessions[0]?.session_id ?? null, [selectedSessionId, sessions]);
   const sessionState = useSessionState(effectiveSessionId);
+  const latestForecast = useSessionForecastBundle(effectiveSessionId);
+  const [selectedFeature, setSelectedFeature] = useState<SelectedFeatureState | null>(null);
   const actions = useSessionActions(effectiveSessionId, async () => {
     await Promise.all([refresh(), sessionState.refresh()]);
   });
 
+  const latestGeojson = (latestForecast.bundle?.geojson ?? null) as GeoJsonFeatureCollection | null;
+
   const showOperatorPanels = mode === "operator";
+
+  useEffect(() => {
+    setSelectedFeature(null);
+  }, [effectiveSessionId]);
 
   return (
     <AppShell
@@ -85,12 +96,33 @@ export function SessionsPage() {
             disabled={!effectiveSessionId || actions.runningAction !== null}
             onPredict={async (payload) => {
               await actions.predict(payload);
+              setSelectedFeature(null);
+              await latestForecast.refresh();
             }}
           />
+          <section className="panel">
+            <div className="panel-header">
+              <h2>Forecast map</h2>
+            </div>
+            <div className="panel-body" style={{ gap: "0.75rem", display: "grid" }}>
+              <p className="muted" style={{ margin: 0 }}>
+                {latestForecast.loading
+                  ? "Loading latest session forecast map..."
+                  : latestForecast.error
+                    ? "Run a forecast to load map artifacts for this session."
+                    : "Inspect the selected session forecast plume and source directly in Sessions."}
+              </p>
+              <ForecastMap
+                geojson={latestGeojson}
+                selectedFeature={selectedFeature}
+                onSelectFeature={setSelectedFeature}
+              />
+            </div>
+          </section>
           <SessionResultSummary
-            loading={sessionState.loading}
-            error={actions.error ?? sessionState.error}
-            lastPrediction={actions.lastPrediction}
+            loading={sessionState.loading || latestForecast.loading}
+            error={actions.error ?? latestForecast.error ?? sessionState.error}
+            lastPrediction={actions.lastPrediction ?? latestForecast.bundle?.explanation ?? latestForecast.bundle?.summary ?? null}
           />
         </div>
       </div>
