@@ -9,7 +9,7 @@ interface SessionResultSummaryProps {
 
 function formatSource(source: string | null): string {
   if (!source) {
-    return "session prediction";
+    return "session forecast";
   }
 
   return source;
@@ -31,7 +31,7 @@ export function SessionResultSummary({ lastPrediction, loading, error }: Session
         {error ? <p className="muted">{error}</p> : null}
 
         <p className="detail-explanation-text">
-          {normalized?.explanation ?? "Run a prediction to generate a readable result summary."}
+          {normalized?.explanation ?? "Run a forecast to generate a readable result summary."}
         </p>
 
         {normalized?.riskLevel ? (
@@ -59,7 +59,7 @@ export function SessionResultSummary({ lastPrediction, loading, error }: Session
         <div className="section-spacer" />
 
         <h3>Inspect map</h3>
-        <p className="muted">Open the Forecast workspace to inspect plume layers and source details on the map.</p>
+        <p className="muted">Open the Demo workspace to inspect plume layers and source details on the map.</p>
       </div>
     </section>
   );
