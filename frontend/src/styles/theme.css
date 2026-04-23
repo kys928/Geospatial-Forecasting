@@ -495,3 +495,24 @@ textarea {
     flex-direction: column;
   }
 }
+
+
+.advanced-section {
+  display: grid;
+  gap: 10px;
+}
+
+.advanced-section summary {
+  cursor: pointer;
+  font-weight: 600;
+  color: #334155;
+}
+
+.advanced-section[open] summary {
+  margin-bottom: 4px;
+}
+
+.advanced-content {
+  display: grid;
+  gap: 12px;
+}
