@@ -5,20 +5,16 @@ interface SessionCreateFormProps {
   onCreate: (payload: CreateSessionRequest) => Promise<void>;
 }
 
+const DEFAULT_BACKEND_NAME = "convlstm_online";
+
 export function SessionCreateForm({ onCreate }: SessionCreateFormProps) {
-  const [backendName, setBackendName] = useState("convlstm_online");
-  const [modelName, setModelName] = useState("");
-  const [metadataText, setMetadataText] = useState("{}");
   const [error, setError] = useState<string | null>(null);
 
   async function handleCreate() {
     setError(null);
     try {
-      const metadata = metadataText.trim() ? (JSON.parse(metadataText) as Record<string, unknown>) : {};
       await onCreate({
-        backend_name: backendName.trim(),
-        model_name: modelName.trim() || undefined,
-        metadata
+        backend_name: DEFAULT_BACKEND_NAME
       });
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unable to create session");
@@ -27,10 +23,8 @@ export function SessionCreateForm({ onCreate }: SessionCreateFormProps) {
 
   return (
     <section className="panel">
-      <h3>Create Session</h3>
-      <div className="field"><span>backend_name</span><input value={backendName} onChange={(e) => setBackendName(e.target.value)} /></div>
-      <div className="field"><span>model_name (optional)</span><input value={modelName} onChange={(e) => setModelName(e.target.value)} /></div>
-      <div className="field"><span>metadata JSON</span><textarea value={metadataText} onChange={(e) => setMetadataText(e.target.value)} rows={4} /></div>
+      <h3>Create session</h3>
+      <p className="muted">Creates a new forecasting session using the default online backend.</p>
       {error ? <p className="muted">{error}</p> : null}
       <button className="primary-button" onClick={() => void handleCreate()}>Create session</button>
     </section>

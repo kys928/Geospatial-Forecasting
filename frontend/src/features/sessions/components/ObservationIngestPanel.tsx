@@ -21,10 +21,13 @@ export function ObservationIngestPanel({ disabled, onIngest }: ObservationIngest
 
   return (
     <section className="panel">
-      <h3>Observation ingest</h3>
-      <textarea rows={8} value={text} onChange={(e) => setText(e.target.value)} style={{ width: "100%" }} />
-      {error ? <p className="muted">{error}</p> : null}
-      <button className="primary-button" disabled={disabled} onClick={() => void handleIngest()}>Post observations</button>
+      <details className="advanced-section">
+        <summary>Advanced observation ingest (JSON)</summary>
+        <p className="muted">Manual observation payloads can be posted here for diagnostics or custom runs.</p>
+        <textarea rows={8} value={text} onChange={(e) => setText(e.target.value)} style={{ width: "100%" }} />
+        {error ? <p className="muted">{error}</p> : null}
+        <button className="secondary-button" disabled={disabled} onClick={() => void handleIngest()}>Post observations</button>
+      </details>
     </section>
   );
 }

@@ -36,7 +36,7 @@ export function SessionsPage() {
   return (
     <AppShell
       title="Sessions workspace"
-      subtitle="Create and operate forecasting sessions with ingest, update, and prediction actions."
+      subtitle="Create or select a session, refresh state when needed, then run predictions."
       metaItems={sessionState.detail?.model_name ? [{ label: sessionState.detail.model_name }] : undefined}
     >
       <div className="workspace-grid" style={{ gridTemplateColumns: "0.9fr 1.35fr 1fr" }}>
@@ -59,6 +59,12 @@ export function SessionsPage() {
 
         <div className="workspace-column">
           <SessionStateRibbon detail={sessionState.detail} state={sessionState.state} />
+          <PredictionRequestForm
+            disabled={!effectiveSessionId || actions.runningAction !== null}
+            onPredict={async (payload) => {
+              await actions.predict(payload);
+            }}
+          />
           <SessionActionBar
             disabled={!effectiveSessionId}
             runningAction={actions.runningAction}
@@ -72,18 +78,17 @@ export function SessionsPage() {
               await actions.ingest(observations);
             }}
           />
-          <PredictionRequestForm
-            disabled={!effectiveSessionId || actions.runningAction !== null}
-            onPredict={async (payload) => {
-              await actions.predict(payload);
-            }}
-          />
         </div>
 
         <div className="workspace-column">
-          <SessionBackendPanel detail={sessionState.detail} />
-          <RecentObservationsTable state={sessionState.state} />
-          <SessionStateInspector detail={sessionState.detail} state={sessionState.state} />
+          <details className="panel advanced-section">
+            <summary>Operational details</summary>
+            <div className="advanced-content">
+              <SessionBackendPanel detail={sessionState.detail} />
+              <RecentObservationsTable state={sessionState.state} />
+              <SessionStateInspector detail={sessionState.detail} state={sessionState.state} />
+            </div>
+          </details>
           <section className="panel">
             <h3>Recent action status</h3>
             {sessionState.loading ? <p className="muted">Loading session details...</p> : null}
