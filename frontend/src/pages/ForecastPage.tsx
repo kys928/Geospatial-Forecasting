@@ -1,6 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { ForecastSidebar } from "../features/forecast/components/ForecastSidebar";
-import { ForecastAnalysisPanel } from "../features/forecast/components/ForecastAnalysisPanel";
 import { ForecastScenarioSummary } from "../features/forecast/components/ForecastScenarioSummary";
 import { AppShell } from "../app/AppShell";
 import { ForecastMap } from "../features/map/components/ForecastMap";
@@ -135,8 +134,6 @@ export function ForecastPage() {
   const [capabilities, setCapabilities] = useState<CapabilitiesResponse | null>(null);
   const [summary, setSummary] = useState<ForecastSummary | null>(null);
   const [geojson, setGeojson] = useState<GeoJsonFeatureCollection | null>(null);
-  const [explanationPayload, setExplanationPayload] =
-    useState<ForecastExplanation | null>(null);
   const [selected, setSelected] = useState<SelectedFeatureState | null>(null);
   const [statusText, setStatusText] = useState("Loading dashboard...");
   const [activeScenario, setActiveScenario] = useState<DemoScenario | null>(null);
@@ -232,7 +229,6 @@ export function ForecastPage() {
       if (hasStrongVisiblePlume(bundle.geojson)) {
         setSummary(bundle.summary);
         setGeojson(bundle.geojson);
-        setExplanationPayload(bundle.explanation);
         setSelected(null);
         setActiveScenario(scenario);
 
@@ -247,7 +243,6 @@ export function ForecastPage() {
     if (bestBundle && bestScenario && bestForecastId) {
       setSummary(bestBundle.summary);
       setGeojson(bestBundle.geojson);
-      setExplanationPayload(bestBundle.explanation);
       setSelected(null);
       setActiveScenario(bestScenario);
 
@@ -273,7 +268,7 @@ export function ForecastPage() {
   return (
     <AppShell
       title="Forecast workspace"
-      subtitle="Run scenarios and inspect plume map, summary, and explanation outputs."
+      subtitle="Run scenarios and inspect plume map and summary outputs."
       apiMode={apiMode}
       apiHealthy={apiHealthy}
       statusText={statusText}
@@ -282,7 +277,7 @@ export function ForecastPage() {
         { label: modelLabel }
       ]}
     >
-      <div className="main-layout">
+      <div className="main-layout" style={{ gridTemplateColumns: "250px 1fr" }}>
         <ForecastSidebar onRunForecast={handleRunForecast}>
           {activeScenario ? <ForecastScenarioSummary activeScenario={activeScenario} /> : null}
         </ForecastSidebar>
@@ -295,17 +290,6 @@ export function ForecastPage() {
           />
         </main>
 
-        <ForecastAnalysisPanel
-          selected={selected}
-          explanationPayload={explanationPayload}
-          explanationSource={
-            explanationPayload
-              ? explanationPayload.used_llm
-                ? "llm"
-                : "fallback"
-              : undefined
-          }
-        />
       </div>
     </AppShell>
   );

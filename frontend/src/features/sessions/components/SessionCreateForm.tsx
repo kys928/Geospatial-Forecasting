@@ -3,11 +3,13 @@ import type { CreateSessionRequest } from "../types/session.types";
 
 interface SessionCreateFormProps {
   onCreate: (payload: CreateSessionRequest) => Promise<void>;
+  heading?: string;
+  actionLabel?: string;
 }
 
 const DEFAULT_BACKEND_NAME = "convlstm_online";
 
-export function SessionCreateForm({ onCreate }: SessionCreateFormProps) {
+export function SessionCreateForm({ onCreate, heading = "Create session", actionLabel = "Create session" }: SessionCreateFormProps) {
   const [error, setError] = useState<string | null>(null);
 
   async function handleCreate() {
@@ -23,10 +25,10 @@ export function SessionCreateForm({ onCreate }: SessionCreateFormProps) {
 
   return (
     <section className="panel">
-      <h3>Create session</h3>
+      <h3>{heading}</h3>
       <p className="muted">Creates a new forecasting session using the default online backend.</p>
       {error ? <p className="muted">{error}</p> : null}
-      <button className="primary-button" onClick={() => void handleCreate()}>Create session</button>
+      <button className="primary-button" onClick={() => void handleCreate()}>{actionLabel}</button>
     </section>
   );
 }

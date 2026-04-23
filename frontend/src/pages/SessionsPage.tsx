@@ -9,13 +9,17 @@ import { SessionActionBar } from "../features/sessions/components/SessionActionB
 import { ObservationIngestPanel } from "../features/sessions/components/ObservationIngestPanel";
 import { PredictionRequestForm } from "../features/sessions/components/PredictionRequestForm";
 import { RecentObservationsTable } from "../features/sessions/components/RecentObservationsTable";
+import { SessionResultSummary } from "../features/sessions/components/SessionResultSummary";
 import { useSessions } from "../features/sessions/hooks/useSessions";
 import { useSessionState } from "../features/sessions/hooks/useSessionState";
 import { useSessionActions } from "../features/sessions/hooks/useSessionActions";
 
+type SessionWorkspaceMode = "basic" | "operator";
+
 export function SessionsPage() {
   const { sessions, loading, error, refresh, createSession } = useSessions();
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null);
+  const [mode, setMode] = useState<SessionWorkspaceMode>("basic");
 
   const effectiveSessionId = useMemo(() => selectedSessionId ?? sessions[0]?.session_id ?? null, [selectedSessionId, sessions]);
   const sessionState = useSessionState(effectiveSessionId);
@@ -23,23 +27,39 @@ export function SessionsPage() {
     await Promise.all([refresh(), sessionState.refresh()]);
   });
 
-  const lastActionType = actions.lastPrediction
-    ? "predict"
-    : actions.lastIngestResult
-      ? "ingest"
-      : actions.lastUpdateResult
-        ? "update"
-        : null;
-
-  const lastActionPayload = actions.lastPrediction ?? actions.lastIngestResult ?? actions.lastUpdateResult;
+  const showOperatorPanels = mode === "operator";
 
   return (
     <AppShell
       title="Sessions workspace"
-      subtitle="Create or select a session, refresh state when needed, then run predictions."
+      subtitle="Start a session, choose it, run prediction, and review the result summary."
       metaItems={sessionState.detail?.model_name ? [{ label: sessionState.detail.model_name }] : undefined}
     >
-      <div className="workspace-grid" style={{ gridTemplateColumns: "0.9fr 1.35fr 1fr" }}>
+      <section className="panel">
+        <div className="button-row">
+          <button
+            className={mode === "basic" ? "primary-button" : "secondary-button"}
+            type="button"
+            onClick={() => setMode("basic")}
+          >
+            Basic
+          </button>
+          <button
+            className={mode === "operator" ? "primary-button" : "secondary-button"}
+            type="button"
+            onClick={() => setMode("operator")}
+          >
+            Operator
+          </button>
+        </div>
+        <p className="muted" style={{ marginBottom: 0 }}>
+          {mode === "basic"
+            ? "Basic mode focuses on the core session workflow and hides technical controls."
+            : "Operator mode shows ingest, manual update, backend details, and raw state tools."}
+        </p>
+      </section>
+
+      <div className="workspace-grid" style={{ gridTemplateColumns: "0.95fr 1.3fr" }}>
         <div className="workspace-column">
           <SessionListPanel
             sessions={sessions}
@@ -49,6 +69,8 @@ export function SessionsPage() {
             loading={loading}
           />
           <SessionCreateForm
+            heading="Start session"
+            actionLabel="Start session"
             onCreate={async (payload) => {
               const created = await createSession(payload);
               setSelectedSessionId(created.session_id);
@@ -65,47 +87,56 @@ export function SessionsPage() {
               await actions.predict(payload);
             }}
           />
-          <SessionActionBar
-            disabled={!effectiveSessionId}
-            runningAction={actions.runningAction}
-            onUpdate={async () => {
-              await actions.update();
-            }}
+          <SessionResultSummary
+            loading={sessionState.loading}
+            error={actions.error ?? sessionState.error}
+            lastPrediction={actions.lastPrediction}
           />
-          <ObservationIngestPanel
-            disabled={!effectiveSessionId || actions.runningAction !== null}
-            onIngest={async (observations) => {
-              await actions.ingest(observations);
-            }}
-          />
-        </div>
-
-        <div className="workspace-column">
-          <details className="panel advanced-section">
-            <summary>Operational details</summary>
-            <div className="advanced-content">
-              <SessionBackendPanel detail={sessionState.detail} />
-              <RecentObservationsTable state={sessionState.state} />
-              <SessionStateInspector detail={sessionState.detail} state={sessionState.state} />
-            </div>
-          </details>
-          <section className="panel">
-            <h3>Recent action status</h3>
-            {sessionState.loading ? <p className="muted">Loading session details...</p> : null}
-            {sessionState.error ? <p className="muted">{sessionState.error}</p> : null}
-            {!lastActionType && !actions.error ? <p className="muted">No recent session action.</p> : null}
-            {lastActionType ? <p><strong>Last action:</strong> {lastActionType}</p> : null}
-            <p><strong>Result:</strong> {actions.error ? "Failure" : lastActionPayload ? "Success" : "Idle"}</p>
-            <p>{actions.error ?? "No action failures reported."}</p>
-            {lastActionPayload ? (
-              <details>
-                <summary>Technical details</summary>
-                <pre style={{ margin: 0, maxHeight: 240, overflow: "auto" }}>{JSON.stringify(lastActionPayload, null, 2)}</pre>
-              </details>
-            ) : null}
-          </section>
         </div>
       </div>
+
+      {showOperatorPanels ? (
+        <details className="panel advanced-section" open>
+          <summary>Operator controls</summary>
+          <div className="advanced-content workspace-grid" style={{ gridTemplateColumns: "1fr 1fr 1fr" }}>
+            <div className="workspace-column">
+              <SessionActionBar
+                disabled={!effectiveSessionId}
+                runningAction={actions.runningAction}
+                onUpdate={async () => {
+                  await actions.update();
+                }}
+              />
+              <ObservationIngestPanel
+                disabled={!effectiveSessionId || actions.runningAction !== null}
+                onIngest={async (observations) => {
+                  await actions.ingest(observations);
+                }}
+              />
+            </div>
+            <div className="workspace-column">
+              <SessionBackendPanel detail={sessionState.detail} />
+              <RecentObservationsTable state={sessionState.state} />
+            </div>
+            <div className="workspace-column">
+              <SessionStateInspector detail={sessionState.detail} state={sessionState.state} />
+              <section className="panel">
+                <h3>Technical action dump</h3>
+                {!actions.lastPrediction && !actions.lastIngestResult && !actions.lastUpdateResult && !actions.error ? (
+                  <p className="muted">No recent session action.</p>
+                ) : null}
+                <p><strong>Result:</strong> {actions.error ? "Failure" : actions.lastPrediction ?? actions.lastIngestResult ?? actions.lastUpdateResult ? "Success" : "Idle"}</p>
+                <p>{actions.error ?? "No action failures reported."}</p>
+                {actions.lastPrediction ?? actions.lastIngestResult ?? actions.lastUpdateResult ? (
+                  <pre style={{ margin: 0, maxHeight: 240, overflow: "auto" }}>
+                    {JSON.stringify(actions.lastPrediction ?? actions.lastIngestResult ?? actions.lastUpdateResult, null, 2)}
+                  </pre>
+                ) : null}
+              </section>
+            </div>
+          </div>
+        </details>
+      ) : null}
     </AppShell>
   );
 }
