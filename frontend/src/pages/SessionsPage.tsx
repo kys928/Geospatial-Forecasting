@@ -32,7 +32,7 @@ export function SessionsPage() {
   return (
     <AppShell
       title="Sessions workspace"
-      subtitle="Start a session, choose it, run prediction, and review the result summary."
+      subtitle="Start a session, choose it, run forecast, and review the result summary."
       metaItems={sessionState.detail?.model_name ? [{ label: sessionState.detail.model_name }] : undefined}
     >
       <section className="panel">

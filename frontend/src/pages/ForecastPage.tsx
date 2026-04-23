@@ -135,7 +135,7 @@ export function ForecastPage() {
   const [summary, setSummary] = useState<ForecastSummary | null>(null);
   const [geojson, setGeojson] = useState<GeoJsonFeatureCollection | null>(null);
   const [selected, setSelected] = useState<SelectedFeatureState | null>(null);
-  const [statusText, setStatusText] = useState("Loading dashboard...");
+  const [statusText, setStatusText] = useState("Loading demo workspace...");
   const [activeScenario, setActiveScenario] = useState<DemoScenario | null>(null);
 
   const latestRequestIdRef = useRef(0);
@@ -164,7 +164,7 @@ export function ForecastPage() {
         console.error(error);
         if (requestId !== latestRequestIdRef.current) return;
         setApiHealthy(false);
-        setStatusText("Failed to load forecast data");
+        setStatusText("Failed to load demo data");
       }
     }
 
@@ -183,8 +183,8 @@ export function ForecastPage() {
 
     setStatusText(
       reason === "initial"
-        ? "Loading initial forecast..."
-        : "Searching for a strong visible plume..."
+        ? "Loading initial demo scenario..."
+        : "Searching for a strong visible demo plume..."
     );
 
     let bestScenario: DemoScenario | null = null;
@@ -253,7 +253,7 @@ export function ForecastPage() {
       return;
     }
 
-    setStatusText("Forecast request failed");
+    setStatusText("Demo scenario request failed");
   }
 
   async function handleRunForecast() {
@@ -261,14 +261,14 @@ export function ForecastPage() {
       await runRandomForecast("manual");
     } catch (error) {
       console.error(error);
-      setStatusText("Forecast request failed");
+      setStatusText("Demo scenario request failed");
     }
   }
 
   return (
     <AppShell
-      title="Forecast workspace"
-      subtitle="Run scenarios and inspect plume map and summary outputs."
+      title="Demo workspace"
+      subtitle="Sandbox for random scenario visualization. Use Sessions for the primary forecast workflow."
       apiMode={apiMode}
       apiHealthy={apiHealthy}
       statusText={statusText}

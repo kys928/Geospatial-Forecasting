@@ -16,17 +16,17 @@ export function PredictionRequestForm({ disabled, onPredict }: PredictionRequest
       const payload = trimmed ? (JSON.parse(trimmed) as Record<string, unknown>) : {};
       await onPredict(payload);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Invalid prediction request payload");
+      setError(err instanceof Error ? err.message : "Invalid forecast request payload");
     }
   }
 
   return (
     <section className="panel">
-      <h3>Run prediction</h3>
+      <h3>Run forecast</h3>
       <p className="muted">Generate the latest forecast for the selected session.</p>
-      <button className="primary-button" disabled={disabled} onClick={() => void handlePredict()}>Run prediction</button>
+      <button className="primary-button" disabled={disabled} onClick={() => void handlePredict()}>Run forecast</button>
       <details className="advanced-section">
-        <summary>Advanced prediction options (JSON)</summary>
+        <summary>Advanced forecast options (JSON)</summary>
         <textarea
           rows={6}
           value={text}

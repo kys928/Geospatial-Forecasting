@@ -7,7 +7,7 @@ import { NotFoundPage } from "../pages/NotFoundPage";
 export function AppRoutes() {
   return (
     <Routes>
-      <Route path="/" element={<Navigate to="/forecast" replace />} />
+      <Route path="/" element={<Navigate to="/sessions" replace />} />
       <Route path="/forecast" element={<ForecastPage />} />
       <Route path="/sessions" element={<SessionsPage />} />
       <Route path="/ops" element={<OpsPage />} />

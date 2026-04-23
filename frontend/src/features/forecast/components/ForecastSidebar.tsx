@@ -18,7 +18,7 @@ export function ForecastSidebar({ children, onRunForecast }: ForecastSidebarProp
 
       <div className="sidebar-actions">
         <button className="primary-button" onClick={onRunForecast}>
-          Run Forecast
+          Run demo scenario
         </button>
       </div>
     </aside>
