@@ -143,21 +143,11 @@ export function SessionResultSummary({ lastPrediction, loading, error, selectedF
           </>
         ) : null}
 
-        {normalized?.uncertaintyNote ? (
-          <>
-            <div className="section-spacer" />
-            <h3>Uncertainty note</h3>
-            <p className="muted">{normalized.uncertaintyNote}</p>
-          </>
-        ) : null}
-
-        <div className="section-spacer" />
-
-        <h3>Inspect map</h3>
         {!selectedFeature ? (
-          <p className="muted">Go to the Map page and click the source marker or a plume band.</p>
+          <div className="section-spacer" />
         ) : (
           <div className="detail-section">
+            <div className="section-spacer" />
             <h3>{getFeatureTitle(selectedFeature)}</h3>
             {getFeatureDescription(selectedFeature) ? (
               <p className="muted">{getFeatureDescription(selectedFeature)}</p>
