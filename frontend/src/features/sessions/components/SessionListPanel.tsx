@@ -11,7 +11,7 @@ interface SessionListPanelProps {
 export function SessionListPanel({ sessions, selectedSessionId, onSelectSession, onRefresh, loading }: SessionListPanelProps) {
   return (
     <section className="panel">
-      <h3>Sessions</h3>
+      <h3>Choose session</h3>
       <button className="primary-button" onClick={onRefresh} style={{ marginBottom: 10 }}>
         {loading ? "Refreshing..." : "Refresh sessions"}
       </button>
