@@ -6,9 +6,7 @@ import { SessionStateRibbon } from "../features/sessions/components/SessionState
 import { SessionBackendPanel } from "../features/sessions/components/SessionBackendPanel";
 import { SessionStateInspector } from "../features/sessions/components/SessionStateInspector";
 import { SessionActionBar } from "../features/sessions/components/SessionActionBar";
-import { ObservationIngestPanel } from "../features/sessions/components/ObservationIngestPanel";
 import { PredictionRequestForm } from "../features/sessions/components/PredictionRequestForm";
-import { RecentObservationsTable } from "../features/sessions/components/RecentObservationsTable";
 import { SessionResultSummary } from "../features/sessions/components/SessionResultSummary";
 import { useSessions } from "../features/sessions/hooks/useSessions";
 import { useSessionState } from "../features/sessions/hooks/useSessionState";
@@ -110,9 +108,10 @@ export function SessionsPage() {
         </div>
 
         <div className="workspace-column">
-          <SessionStateRibbon detail={sessionState.detail} state={sessionState.state} />
+          {showOperatorPanels ? <SessionStateRibbon detail={sessionState.detail} state={sessionState.state} /> : null}
           <PredictionRequestForm
             disabled={!effectiveSessionId || actions.runningAction !== null}
+            showAdvancedOptions={showOperatorPanels}
             onPredict={async (payload) => {
               await actions.predict(payload);
               clearSelectedFeature();
@@ -140,32 +139,12 @@ export function SessionsPage() {
                   await actions.update();
                 }}
               />
-              <ObservationIngestPanel
-                disabled={!effectiveSessionId || actions.runningAction !== null}
-                onIngest={async (observations) => {
-                  await actions.ingest(observations);
-                }}
-              />
             </div>
             <div className="workspace-column">
               <SessionBackendPanel detail={sessionState.detail} />
-              <RecentObservationsTable state={sessionState.state} />
             </div>
             <div className="workspace-column">
               <SessionStateInspector detail={sessionState.detail} state={sessionState.state} />
-              <section className="panel">
-                <h3>Technical action dump</h3>
-                {!actions.lastPrediction && !actions.lastIngestResult && !actions.lastUpdateResult && !actions.error ? (
-                  <p className="muted">No recent session action.</p>
-                ) : null}
-                <p><strong>Result:</strong> {actions.error ? "Failure" : actions.lastPrediction ?? actions.lastIngestResult ?? actions.lastUpdateResult ? "Success" : "Idle"}</p>
-                <p>{actions.error ?? "No action failures reported."}</p>
-                {actions.lastPrediction ?? actions.lastIngestResult ?? actions.lastUpdateResult ? (
-                  <pre style={{ margin: 0, maxHeight: 240, overflow: "auto" }}>
-                    {JSON.stringify(actions.lastPrediction ?? actions.lastIngestResult ?? actions.lastUpdateResult, null, 2)}
-                  </pre>
-                ) : null}
-              </section>
             </div>
           </div>
         </details>
