@@ -170,6 +170,22 @@ VITE_API_BASE_URL=http://<pod-backend-url>
 If `VITE_API_BASE_URL` is unset, the frontend falls back to `http://localhost:8000` for local development.
 For remote pod usage, do not rely on browser `localhost` unless you are explicitly port-forwarding backend port `8000`.
 
+
+Frontend workspace routes now include functional operator-facing pages:
+- `/forecast`: existing forecast demo workflow (unchanged)
+- `/sessions`: session list/create/state/ingest/update/predict controls
+- `/ops`: operations status, retraining trigger, approval actions, jobs, and recent events
+- `/registry`: model registry inspection with activate/rollback controls
+- `/events`: ops event/audit inspection with basic filtering
+
+Ops read and write actions may require bearer-token auth depending on backend auth settings.
+By default, backend ops auth also requires auth for reads, so `VITE_OPS_API_TOKEN` may be needed to load ops pages as well as perform write actions.
+
+```bash
+# frontend/.env
+VITE_OPS_API_TOKEN=<token-with-ops-operator-access>
+```
+
 Hugging Face preload env (used when `--preload-models` is passed or `PLUME_PRELOAD_HF_MODELS=true`):
 - `PLUME_HF_LLM_REPO_ID` (required when preload enabled)
 - `PLUME_HF_LLM_REVISION` (optional)

@@ -1,9 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { TopNav } from "../components/navigation/TopNav";
 import { ForecastSidebar } from "../features/forecast/components/ForecastSidebar";
 import { ForecastAnalysisPanel } from "../features/forecast/components/ForecastAnalysisPanel";
-import { GlobalStatusStrip } from "../components/navigation/GlobalStatusStrip";
 import { ForecastScenarioSummary } from "../features/forecast/components/ForecastScenarioSummary";
+import { AppShell } from "../app/AppShell";
 import { ForecastMap } from "../features/map/components/ForecastMap";
 import { apiClient } from "../services/api/client";
 import {
@@ -272,14 +271,17 @@ export function ForecastPage() {
   }
 
   return (
-    <div className="app-shell">
-      <TopNav
-        apiMode={apiMode}
-        apiHealthy={apiHealthy}
-        modelLabel={modelLabel}
-        scenarioName={activeScenario?.label ?? "Scenario"}
-      />
-
+    <AppShell
+      title="Forecast workspace"
+      subtitle="Run scenarios and inspect plume map, summary, and explanation outputs."
+      apiMode={apiMode}
+      apiHealthy={apiHealthy}
+      statusText={statusText}
+      metaItems={[
+        { label: activeScenario?.label ?? "Scenario pending" },
+        { label: modelLabel }
+      ]}
+    >
       <div className="main-layout">
         <ForecastSidebar onRunForecast={handleRunForecast}>
           {activeScenario ? <ForecastScenarioSummary activeScenario={activeScenario} /> : null}
@@ -305,8 +307,6 @@ export function ForecastPage() {
           }
         />
       </div>
-
-      <GlobalStatusStrip statusText={statusText} />
-    </div>
+    </AppShell>
   );
 }
