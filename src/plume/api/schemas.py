@@ -39,12 +39,19 @@ class ServiceInfoResponse(BaseModel):
     version: str
     capabilities: list[str]
     artifact_store: str
+    persistence: dict[str, Any] | None = None
 
 
 class ReadyResponse(BaseModel):
     status: str
     checks: dict[str, str]
     details: dict[str, Any] = Field(default_factory=dict)
+
+
+class RuntimeStatusResponse(BaseModel):
+    forecast_store: dict[str, Any]
+    session_store: dict[str, Any]
+    model_runtime: dict[str, Any]
 
 
 class SessionCreateRequest(BaseModel):
