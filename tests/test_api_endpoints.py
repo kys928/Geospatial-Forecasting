@@ -147,6 +147,7 @@ def test_runtime_status_endpoint(monkeypatch, tmp_path):
     assert payload["forecast_store"]["durable"] is True
     assert payload["session_store"]["durable"] is False
     assert payload["model_runtime"]["online_default_backend"]
+    assert payload["model_runtime"]["online_default_backend"] != "mock_online"
     assert payload["model_runtime"]["fallback_backend"]
     assert payload["model_runtime"]["batch_output_space"] == "raw_physical"
     assert payload["model_runtime"]["convlstm_default_output_space"] == "demo_raw_physical"

@@ -12,11 +12,6 @@ from plume.openremote.sink import OpenRemoteResultSink
 
 
 class InMemoryOpenRemoteResultSink(OpenRemoteResultSink):
-    """
-    Demo-safe fake sink.
-    Stores published payloads in process memory for quick inspection.
-    """
-
     def __init__(self) -> None:
         self.assets: list[ORAssetPayload] = []
         self.attribute_writes: list[ORAttributeWrite] = []
@@ -26,7 +21,7 @@ class InMemoryOpenRemoteResultSink(OpenRemoteResultSink):
 
     async def upsert_asset(self, asset: ORAssetPayload) -> dict[str, Any]:
         self.assets.append(asset)
-        created_id = asset.id or f"fake-asset-{self._next_asset_id}"
+        created_id = asset.id or f"test-asset-{self._next_asset_id}"
         self._next_asset_id += 1
         return {"id": created_id}
 

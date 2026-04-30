@@ -414,7 +414,7 @@ def create_app() -> FastAPI:
         runtime_status = _runtime_status_payload()
         return {
             "model": ["gaussian_plume"],
-            "backends": ["convlstm_online", "gaussian_fallback", "mock_online"],
+            "backends": ["convlstm_online", "gaussian_fallback"],
             "exports": [
                 "summary",
                 "geojson",
@@ -476,7 +476,12 @@ def create_app() -> FastAPI:
             return response
 
         try:
-            publish_result = asyncio.run(publishing_service.publish_forecast_attributes(result))
+            publish_result = asyncio.run(
+                publishing_service.publish_forecast_attributes(
+                    result,
+                    geojson=export_service.to_geojson(result),
+                )
+            )
             status = "skipped" if publish_result.get("skipped") else "succeeded"
             response["publishing"] = {"enabled": True, "status": status, **publish_result}
         except Exception as exc:
