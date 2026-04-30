@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from functools import lru_cache
+import logging
 import os
 from pathlib import Path
 from typing import Any
@@ -20,6 +21,7 @@ from plume.state.in_memory import InMemoryStateStore
 from plume.utils.config import Config
 
 _STATE_STORE_SINGLETON: BaseStateStore = InMemoryStateStore()
+logger = logging.getLogger(__name__)
 
 
 def get_config(config_dir: str | None = None):
@@ -53,9 +55,9 @@ def get_explain_service(config_dir: str | None = None):
     try:
         api_config_path = Path(config.config_dir) / "api.yaml"
         llm_service = LLMService.from_yaml(api_config_path)
-        print("[deps] LLM service initialized successfully")
+        logger.info("[deps] LLM service initialized successfully")
     except Exception as e:
-        print(f"[deps] LLM service unavailable, falling back: {e}")
+        logger.warning("[deps] LLM service unavailable, falling back: %s", e)
         llm_service = None
 
     return ExplainService(llm_service=llm_service)
