@@ -8,6 +8,7 @@ from typing import Any
 
 from plume.openremote.fake_sink import InMemoryOpenRemoteResultSink
 from plume.openremote.publishing_service import OpenRemotePublishingService
+from plume.openremote.service_registration import OpenRemoteServiceRegistrationSettings
 from plume.openremote.sink import HttpOpenRemoteResultSink, OpenRemoteResultSink
 from plume.services.explain_service import ExplainService
 from plume.services.export_service import ExportService
@@ -152,3 +153,18 @@ def get_openremote_publishing_runtime(config_dir: str | None = None) -> dict[str
         geojson_base_url=str(settings.get("geojson_public_base_url") or "") or None,
     )
     return runtime
+
+
+def get_openremote_service_registration_settings() -> OpenRemoteServiceRegistrationSettings:
+    return OpenRemoteServiceRegistrationSettings(
+        enabled=_env_enabled("PLUME_OPENREMOTE_SERVICE_REGISTRATION_ENABLED", False),
+        manager_api_url=os.getenv("PLUME_OPENREMOTE_MANAGER_API_URL", ""),
+        service_id=os.getenv("PLUME_OPENREMOTE_SERVICE_ID", "geospatial-plume-forecast"),
+        label=os.getenv("PLUME_OPENREMOTE_SERVICE_LABEL", "Geospatial Plume Forecast"),
+        version=os.getenv("PLUME_OPENREMOTE_SERVICE_VERSION", "0.1.0"),
+        icon=os.getenv("PLUME_OPENREMOTE_SERVICE_ICON", "mdi-map-marker-radius"),
+        homepage_url=os.getenv("PLUME_OPENREMOTE_SERVICE_HOMEPAGE_URL", ""),
+        global_service=_env_enabled("PLUME_OPENREMOTE_SERVICE_GLOBAL", False),
+        heartbeat_interval_seconds=int(os.getenv("PLUME_OPENREMOTE_SERVICE_HEARTBEAT_SECONDS", "30")),
+        access_token=os.getenv("PLUME_OPENREMOTE_SERVICE_TOKEN"),
+    )

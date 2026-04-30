@@ -121,6 +121,27 @@ Use `GET /forecasts?limit=50` to list persisted forecast metadata (newest first)
 
 Current limitation: explanation generation requires an in-memory forecast result from the current process. If only persisted artifacts exist, explanation routes return HTTP `409 Conflict` with a persisted-only limitation message.
 
+
+### OpenRemote external service registration
+
+External service registration is **optional** and **disabled by default**. This lifecycle only registers this FastAPI/React service with OpenRemote and maintains heartbeat/deregistration; it does **not** publish plume assets.
+
+Environment variables:
+- `PLUME_OPENREMOTE_SERVICE_REGISTRATION_ENABLED` (default `false`)
+- `PLUME_OPENREMOTE_MANAGER_API_URL` (full Manager API base for target realm, e.g. `https://host/api/master`)
+- `PLUME_OPENREMOTE_SERVICE_ID` (default `geospatial-plume-forecast`)
+- `PLUME_OPENREMOTE_SERVICE_LABEL` (default `Geospatial Plume Forecast`)
+- `PLUME_OPENREMOTE_SERVICE_VERSION` (default `0.1.0`)
+- `PLUME_OPENREMOTE_SERVICE_ICON` (default `mdi-map-marker-radius`)
+- `PLUME_OPENREMOTE_SERVICE_HOMEPAGE_URL` (UI/frontend URL for Manager embedding)
+- `PLUME_OPENREMOTE_SERVICE_GLOBAL` (default `false`)
+- `PLUME_OPENREMOTE_SERVICE_HEARTBEAT_SECONDS` (default `30`)
+- `PLUME_OPENREMOTE_SERVICE_TOKEN` (bearer token for Service User with `write:services`)
+
+Notes:
+- Global service registration requires using the master realm API base and a super-user-capable service user.
+- Asset publishing remains a separate, provisional OpenRemote adapter concern.
+
 ### OpenRemote demo modes
 
 - **Disabled mode (safe default)**: no publish attempt.
