@@ -1,5 +1,4 @@
 from __future__ import annotations
-#w
 from dataclasses import asdict, is_dataclass
 from typing import Any, Iterable
 from urllib.parse import quote
@@ -9,7 +8,8 @@ from plume.openremote.builders import (
     build_hazard_source_asset_payload,
     build_sensor_asset_payload,
     build_sensor_observation_write,
-    build_zone_predicted_concentration_write, build_forecast_zone_asset_payload,
+    build_zone_predicted_concentration_write,
+    build_forecast_zone_asset_payload,
 )
 from plume.openremote.models import (
     AlertLevel,
@@ -31,7 +31,7 @@ class OpenRemotePublishingService:
     1. converts internal forecast results into OpenRemote-facing asset payloads
     2. publishes them through OpenRemoteResultSink
 
-    This is intentionally narrow and demo-friendly.
+    This is intentionally narrow and provisional.
     """
 
     def __init__(
@@ -177,7 +177,7 @@ class OpenRemotePublishingService:
             "forecast_run_id": forecast_run_id,
         }
 
-    async def publish_forecast_attributes(self, result: Any) -> dict[str, Any]:
+    async def publish_forecast_attributes(self, result: Any, *, geojson: dict[str, Any] | None = None) -> dict[str, Any]:
         if not self.forecast_asset_id:
             return {
                 "mode": "forecast_asset_attributes",
@@ -186,7 +186,7 @@ class OpenRemotePublishingService:
             }
 
         summary = self._extract_summary_payload(result)
-        geojson = self._build_footprint_geojson(result)
+        exported_geojson = geojson if geojson is not None else self._build_footprint_geojson(result)
         raster_metadata = self._extract_raster_metadata(result)
         execution_metadata = self._normalize_mapping(getattr(result, "execution_metadata", {}) or {})
         runtime = self._normalize_mapping(execution_metadata.get("runtime", {}) or {})
@@ -195,7 +195,7 @@ class OpenRemotePublishingService:
             forecast_id=str(result.forecast_id),
             issued_at=result.issued_at.isoformat(),
             summary=summary,
-            geojson=geojson,
+            geojson=exported_geojson,
             raster_metadata=raster_metadata,
             runtime=runtime,
             attribute_names=self.forecast_attribute_names,
@@ -366,10 +366,8 @@ class OpenRemotePublishingService:
 
     def _build_footprint_geojson(self, result: Any) -> dict[str, Any] | None:
         """
-        Demo-friendly placeholder:
-        build a tiny point footprint from source location if no real contour exists yet.
-
-        Replace later with a real threshold contour/polygon.
+        Fallback source-location geometry for legacy asset publishing.
+        Not used for forecastGeoJson attribute publishing when exported GeoJSON is supplied.
         """
         scenario = self._get_attr(result.forecast, "scenario")
         lat = self._get_attr(scenario, "latitude", None)

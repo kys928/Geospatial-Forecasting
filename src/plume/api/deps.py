@@ -6,7 +6,6 @@ import os
 from pathlib import Path
 from typing import Any
 
-from plume.openremote.fake_sink import InMemoryOpenRemoteResultSink
 from plume.openremote.publishing_service import OpenRemotePublishingService
 from plume.openremote.service_registration import OpenRemoteServiceRegistrationSettings
 from plume.openremote.sink import HttpOpenRemoteResultSink, OpenRemoteResultSink
@@ -162,9 +161,7 @@ def get_openremote_publishing_runtime(config_dir: str | None = None) -> dict[str
     if not enabled or sink_mode == "disabled":
         return runtime
 
-    if sink_mode == "fake":
-        sink: OpenRemoteResultSink = InMemoryOpenRemoteResultSink()
-    elif sink_mode == "http":
+    if sink_mode == "http":
         base_url = str(settings.get("base_url", "")).strip()
         access_token = settings.get("access_token")
         if not base_url:

@@ -103,7 +103,7 @@ def test_create_session_defaults_to_convlstm_online():
     assert response.json()["backend_name"] == "convlstm_online"
 
 
-def test_capabilities_lists_convlstm_first_and_mock_legacy():
+def test_capabilities_lists_only_production_facing_backends():
     app = create_app()
     client = TestClient(app)
 
@@ -113,7 +113,7 @@ def test_capabilities_lists_convlstm_first_and_mock_legacy():
     backends = response.json()["backends"]
     assert backends[0] == "convlstm_online"
     assert "gaussian_fallback" in backends
-    assert "mock_online" in backends
+    assert "mock_online" not in backends
 
 
 def test_online_predict_endpoint_with_convlstm_shape_flows_to_summary(monkeypatch):

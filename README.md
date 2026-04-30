@@ -93,7 +93,7 @@ Backend/session behavior is configured in `configs/backend.yaml`:
 OpenRemote publishing behavior is configured in `configs/openremote.yaml` (or env overrides):
 
 - `enabled`
-- `sink_mode` (`disabled`, `fake`, `http`)
+- `sink_mode` (`disabled`, `http`)
 - `base_url`
 - `realm`
 - `site_asset_id`
@@ -148,11 +148,12 @@ Notes:
 - Forecast publishing remains optional and disabled by default.
 - `PLUME_OPENREMOTE_FORECAST_ASSET_ID` is required to publish forecast attributes to a target asset.
 
-### OpenRemote demo modes
+### OpenRemote publishing modes
 
 - **Disabled mode (safe default)**: no publish attempt.
-- **Fake mode (recommended for demos)**: publishes forecast attributes to an in-memory sink with no network dependency.
-- **HTTP mode (provisional)**: uses real HTTP calls; endpoint shapes can vary by deployment. If token/base URL/asset ID is missing or request fails, forecast creation still succeeds and response reports `skipped` or `failed`.
+- **HTTP mode (provisional)**: uses real HTTP calls; endpoint shapes can vary by deployment. If token/base URL/asset ID is missing or request fails, forecast creation still succeeds and the response reports `skipped` or `failed`.
+
+Tests use isolated test doubles and do not require a live OpenRemote instance.
 
 Forecast attribute mapping currently targets:
 - `forecastId`
