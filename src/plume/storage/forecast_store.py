@@ -1,0 +1,19 @@
+from __future__ import annotations
+
+from typing import Protocol
+
+from plume.services.forecast_service import ForecastRunResult
+
+
+class ForecastArtifactStore(Protocol):
+    def save(self, result: ForecastRunResult) -> dict[str, object]: ...
+
+    def get_summary(self, forecast_id: str) -> dict[str, object] | None: ...
+
+    def get_geojson(self, forecast_id: str) -> dict[str, object] | None: ...
+
+    def get_raster_metadata(self, forecast_id: str) -> dict[str, object] | None: ...
+
+    def get_metadata(self, forecast_id: str) -> dict[str, object] | None: ...
+
+    def exists(self, forecast_id: str) -> bool: ...
