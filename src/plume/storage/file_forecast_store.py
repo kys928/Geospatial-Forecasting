@@ -14,6 +14,14 @@ from plume.services.forecast_service import ForecastRunResult, ForecastService
 logger = logging.getLogger(__name__)
 
 
+class ForecastArtifactReadError(Exception):
+    def __init__(self, *, artifact: str, path: Path, reason: str):
+        super().__init__(f"artifact '{artifact}' at '{path}' could not be decoded: {reason}")
+        self.artifact = artifact
+        self.path = path
+        self.reason = reason
+
+
 class FileForecastStore:
     def __init__(
         self,
@@ -29,10 +37,13 @@ class FileForecastStore:
     def _forecast_dir(self, forecast_id: str) -> Path:
         return self.artifact_root / "forecasts" / forecast_id
 
-    def _read_json(self, path: Path) -> dict[str, object] | None:
+    def _read_json(self, path: Path, *, artifact: str) -> dict[str, object] | None:
         if not path.exists():
             return None
-        return json.loads(path.read_text(encoding="utf-8"))
+        try:
+            return json.loads(path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError) as exc:
+            raise ForecastArtifactReadError(artifact=artifact, path=path, reason=str(exc)) from exc
 
     def _write_json(self, path: Path, payload: dict[str, object]) -> None:
         path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
@@ -115,7 +126,7 @@ class FileForecastStore:
                 continue
             metadata_path = folder / "metadata.json"
             try:
-                metadata = self._read_json(metadata_path)
+                metadata = self._read_json(metadata_path, artifact="metadata")
                 if metadata is None:
                     continue
                 metadata_rows.append(metadata)
@@ -132,16 +143,16 @@ class FileForecastStore:
         return metadata_rows[:limit]
 
     def get_summary(self, forecast_id: str) -> dict[str, object] | None:
-        return self._read_json(self._forecast_dir(forecast_id) / "summary.json")
+        return self._read_json(self._forecast_dir(forecast_id) / "summary.json", artifact="summary")
 
     def get_geojson(self, forecast_id: str) -> dict[str, object] | None:
-        return self._read_json(self._forecast_dir(forecast_id) / "geojson.json")
+        return self._read_json(self._forecast_dir(forecast_id) / "geojson.json", artifact="geojson")
 
     def get_raster_metadata(self, forecast_id: str) -> dict[str, object] | None:
-        return self._read_json(self._forecast_dir(forecast_id) / "raster_metadata.json")
+        return self._read_json(self._forecast_dir(forecast_id) / "raster_metadata.json", artifact="raster_metadata")
 
     def get_metadata(self, forecast_id: str) -> dict[str, object] | None:
-        return self._read_json(self._forecast_dir(forecast_id) / "metadata.json")
+        return self._read_json(self._forecast_dir(forecast_id) / "metadata.json", artifact="metadata")
 
     def exists(self, forecast_id: str) -> bool:
         return (self._forecast_dir(forecast_id) / "metadata.json").exists()

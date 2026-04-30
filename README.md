@@ -134,9 +134,13 @@ Use Python 3.11.
 python -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip
-pip install -r requirements.txt
+pip install -e .
+# for tests/dev extras
 pip install -e ".[test]"
 ```
+
+`requirements.txt` is kept as a compatibility/convenience mirror for environments that still use
+`pip install -r requirements.txt`; editable install via `pyproject.toml` is the recommended path.
 
 ## Run local script paths
 
@@ -193,9 +197,7 @@ For remote pod usage, do not rely on browser `localhost` unless you are explicit
 Frontend workspace routes now include functional operator-facing pages:
 - `/forecast`: existing forecast demo workflow (unchanged)
 - `/sessions`: session list/create/state/ingest/update/predict controls
-- `/ops`: operations status, retraining trigger, approval actions, jobs, and recent events
-- `/registry`: model registry inspection with activate/rollback controls
-- `/events`: ops event/audit inspection with basic filtering
+- `/ops`: operations workspace with status, retraining, registry, and event/audit panels
 
 Ops read and write actions may require bearer-token auth depending on backend auth settings.
 By default, backend ops auth also requires auth for reads, so `VITE_OPS_API_TOKEN` may be needed to load ops pages as well as perform write actions.

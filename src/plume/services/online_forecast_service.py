@@ -159,6 +159,7 @@ class OnlineForecastService:
                 "backend_name": session.backend_name,
                 "primary_backend_name": session.backend_name,
                 "effective_backend_name": execution_backend_name,
+                "output_space": str(session.runtime_metadata.get("output_space", "unknown")),
                 "fallback_used": bool(fallback_metadata.get("fallback_used", False)),
                 "fallback_backend_name": fallback_metadata.get("fallback_backend_name"),
                 "fallback_reason": fallback_metadata.get("fallback_reason"),

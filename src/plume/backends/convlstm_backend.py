@@ -65,6 +65,7 @@ class ConvLSTMBackend(BaseBackend):
         self.model_registry_path = self.backend_config.get("model_registry_path")
         self.model_version: str | None = None
         self.model_source = "random_init"
+        self.output_space = "unknown"
         self.load_metadata: dict[str, object] = {
             "device": self.device,
             "init_mode": self.init_mode,
@@ -103,16 +104,27 @@ class ConvLSTMBackend(BaseBackend):
                     "previous_active_model_id": active.get("previous_active_model_id"),
                 },
             }
+            record = active.get("record")
+            if isinstance(record, dict):
+                value = record.get("output_space")
+                if isinstance(value, str) and value.strip():
+                    self.output_space = value.strip()
         if checkpoint is not None and str(checkpoint).strip():
             metadata = self.model.load_checkpoint(str(Path(checkpoint)), strict=self.checkpoint_strict)
+            checkpoint_output_space = metadata.get("output_space")
+            if isinstance(checkpoint_output_space, str) and checkpoint_output_space.strip():
+                self.output_space = checkpoint_output_space.strip()
             if self.model_source != "registry_active":
                 self.model_source = "checkpoint"
                 self.model_version = str(metadata.get("model_version") or "unknown")
+            if self.output_space == "unknown":
+                self.output_space = "unknown"
             self.load_metadata = {
                 **self.load_metadata,
                 "load_status": "loaded",
                 "model_source": self.model_source,
                 "model_version": self.model_version,
+                "output_space": self.output_space,
                 "checkpoint_path": str(Path(checkpoint)),
                 "checkpoint_metadata": metadata,
             }
@@ -125,11 +137,13 @@ class ConvLSTMBackend(BaseBackend):
 
         self.model_source = "random_init"
         self.model_version = f"random_seed_{self.backend_config.get('convlstm_random_seed', 7)}"
+        self.output_space = "demo_raw_physical"
         self.load_metadata = {
             **self.load_metadata,
             "load_status": "random_init",
             "model_source": self.model_source,
             "model_version": self.model_version,
+            "output_space": self.output_space,
         }
 
     def create_session(self, *, model_name: str | None = None, metadata: dict[str, object] | None = None) -> BackendSession:
@@ -150,6 +164,7 @@ class ConvLSTMBackend(BaseBackend):
                 "model_source": self.model_source,
                 "model_version": self.model_version,
                 "model_load": self.load_metadata,
+                "output_space": self.output_space,
                 "input_mode": self.input_mode,
                 "backend_limitations": (
                     "ConvLSTM runs inference with current state; "
@@ -170,6 +185,7 @@ class ConvLSTMBackend(BaseBackend):
                 "model_source": self.model_source,
                 "model_version": self.model_version,
                 "model_load": self.load_metadata,
+                "output_space": self.output_space,
                 "sequence_length": self.sequence_length,
                 "expected_input_shape": (self.sequence_length, self.input_channels, 0, 0),
                 "inference_input_mode": self.input_mode,
