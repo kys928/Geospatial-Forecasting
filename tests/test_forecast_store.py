@@ -21,6 +21,7 @@ def test_file_forecast_store_writes_expected_files(tmp_path):
     assert (forecast_dir / "metadata.json").exists()
     assert metadata["forecast_id"] == result.forecast_id
     assert metadata["artifact_schema_version"] == "forecast_artifact_v1"
+    assert metadata["runtime"]["model_family"] == "gaussian_plume"
 
 
 def test_file_forecast_store_survives_new_instance(tmp_path):
