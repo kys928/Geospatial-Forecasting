@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { eventsClient } from "../api/eventsClient";
+import { opsClient } from "../../ops/api/opsClient";
+import type { OpsEventsResponse } from "../types/event.types";
 import type { EventRecord } from "../types/event.types";
 
 export function useEvents() {
@@ -13,7 +14,7 @@ export function useEvents() {
     setLoading(true);
     setError(null);
     try {
-      const response = await eventsClient.getEvents(200);
+      const response = await (opsClient.getEvents(200) as Promise<OpsEventsResponse>);
       setEvents(response.events);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unable to load events");

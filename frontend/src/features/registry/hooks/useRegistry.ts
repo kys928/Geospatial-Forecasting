@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { registryClient } from "../api/registryClient";
+import { opsClient } from "../../ops/api/opsClient";
 import type { OpsRegistryResponse } from "../types/registry.types";
 
 export function useRegistry() {
@@ -11,7 +11,7 @@ export function useRegistry() {
     setLoading(true);
     setError(null);
     try {
-      setRegistry(await registryClient.getRegistry());
+      setRegistry(await opsClient.getRegistry());
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unable to load registry");
     } finally {
