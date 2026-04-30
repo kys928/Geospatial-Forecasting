@@ -66,6 +66,7 @@ Existing batch endpoints remain:
 - `GET /health`
 - `GET /capabilities`
 - `POST /forecast`
+- `GET /forecasts?limit=50`
 - `GET /forecast/{forecast_id}`
 - `GET /forecast/{forecast_id}/summary`
 - `GET /forecast/{forecast_id}/geojson`
@@ -101,6 +102,24 @@ OpenRemote publishing behavior is configured in `configs/openremote.yaml` (or en
 - `access_token_env_var` (name of env var containing token)
 
 `POST /forecast` always stores the forecast locally first, then publishes if enabled. A `publishing` field in the response reports `disabled`, `succeeded`, or `failed`.
+
+### Persisted forecast artifacts
+
+Forecast artifacts are persisted on disk at:
+
+- default root: `artifacts/`
+- forecast folders: `artifacts/forecasts/<forecast_id>/`
+- files per forecast: `summary.json`, `geojson.json`, `raster_metadata.json`, `metadata.json`
+
+Override the artifact root with:
+
+```bash
+export PLUME_ARTIFACT_DIR=/path/to/artifacts
+```
+
+Use `GET /forecasts?limit=50` to list persisted forecast metadata (newest first).
+
+Current limitation: explanation generation requires an in-memory forecast result from the current process. If only persisted artifacts exist, explanation routes return HTTP `409 Conflict` with a persisted-only limitation message.
 
 ### OpenRemote demo modes
 

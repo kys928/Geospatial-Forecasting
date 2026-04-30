@@ -20,7 +20,7 @@ from plume.api.deps import (
     get_openremote_publishing_runtime,
     get_online_forecast_service,
 )
-from plume.api.errors import conflict, not_found
+from plume.api.errors import bad_request, conflict, not_found
 from plume.api.ops_schemas import (
     ActivateModelRequest,
     ActivationResponse,
@@ -293,15 +293,29 @@ def create_app() -> FastAPI:
 
     @app.get("/ready")
     def ready():
+        checks: dict[str, str] = {"config": "ok", "artifact_dir": "ok", "forecast_store": "ok"}
         try:
             forecast_service.config.load_base()
+        except Exception as exc:
+            checks["config"] = "error"
+            return {"status": "degraded", "checks": checks, "error": str(exc)}
+
+        probe = forecast_store.artifact_root / ".ready_probe.tmp"
+        try:
             forecast_store.artifact_root.mkdir(parents=True, exist_ok=True)
-            probe = forecast_store.artifact_root / ".ready_probe"
             probe.write_text("ok", encoding="utf-8")
             probe.unlink(missing_ok=True)
         except Exception as exc:
-            return {"status": "not_ready", "ready": False, "error": str(exc)}
-        return {"status": "ready", "ready": True, "artifact_store": "file", "artifact_root": str(forecast_store.artifact_root)}
+            checks["artifact_dir"] = "error"
+            checks["forecast_store"] = "error"
+            return {"status": "degraded", "checks": checks, "error": str(exc)}
+        return {"status": "ready", "checks": checks}
+
+    @app.get("/forecasts")
+    def list_forecasts(limit: int = 50):
+        if limit <= 0:
+            raise bad_request("invalid_limit", "Query parameter 'limit' must be greater than 0", {"limit": limit})
+        return {"forecasts": forecast_store.list_metadata(limit=limit)}
 
     @app.get("/capabilities")
     def capabilities():
@@ -327,7 +341,10 @@ def create_app() -> FastAPI:
             scenario=scenario,
             run_name=payload.get("run_name"),
         )
-        artifact_metadata = forecast_store.save(result)
+        try:
+            artifact_metadata = forecast_store.save(result)
+        except FileExistsError as exc:
+            raise conflict("forecast_artifact_exists", str(exc), {"forecast_id": result.forecast_id}) from exc
         logger.info(
             "forecast.saved",
             extra={"forecast_id": result.forecast_id, "artifact_dir": artifact_metadata.get("artifact_dir")},

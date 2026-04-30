@@ -121,7 +121,43 @@ def test_ready_endpoint(monkeypatch, tmp_path):
 
     response = client.get("/ready")
     assert response.status_code == 200
-    assert response.json()["ready"] is True
+    payload = response.json()
+    assert payload["status"] == "ready"
+    assert payload["checks"] == {
+        "config": "ok",
+        "artifact_dir": "ok",
+        "forecast_store": "ok",
+    }
+
+
+def test_api_forecasts_listing(monkeypatch, tmp_path):
+    monkeypatch.setenv("PLUME_ARTIFACT_DIR", str(tmp_path))
+    app = create_app()
+    client = TestClient(app)
+
+    first = client.post("/forecast", json={"run_name": "list-1"}).json()["forecast_id"]
+    second = client.post("/forecast", json={"run_name": "list-2"}).json()["forecast_id"]
+
+    response = client.get("/forecasts?limit=10")
+    assert response.status_code == 200
+    payload = response.json()
+    assert [item["forecast_id"] for item in payload["forecasts"]][:2] == [second, first]
+
+
+def test_api_forecasts_listing_ignores_malformed_folder(monkeypatch, tmp_path):
+    monkeypatch.setenv("PLUME_ARTIFACT_DIR", str(tmp_path))
+    app = create_app()
+    client = TestClient(app)
+    valid_id = client.post("/forecast", json={"run_name": "list-valid"}).json()["forecast_id"]
+
+    malformed = tmp_path / "forecasts" / "broken"
+    malformed.mkdir(parents=True)
+    (malformed / "metadata.json").write_text("{bad-json", encoding="utf-8")
+
+    response = client.get("/forecasts?limit=10")
+    assert response.status_code == 200
+    ids = [item["forecast_id"] for item in response.json()["forecasts"]]
+    assert valid_id in ids
 
 
 def test_api_cors_allows_extra_origin_from_env(monkeypatch):
