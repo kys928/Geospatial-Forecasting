@@ -120,6 +120,12 @@ def test_service_info_endpoint():
     assert payload["artifact_store"] == "file"
     assert payload["persistence"]["forecast_store_durable"] is True
     assert payload["persistence"]["session_store_durable"] is False
+    assert payload["openremote_service_registration"] == {
+        "enabled": False,
+        "registered": False,
+        "service_id": "geospatial-plume-forecast",
+        "instance_id": None,
+    }
 
 
 def test_runtime_status_endpoint(monkeypatch, tmp_path):
@@ -136,6 +142,8 @@ def test_runtime_status_endpoint(monkeypatch, tmp_path):
     assert payload["model_runtime"]["fallback_backend"]
     assert payload["model_runtime"]["batch_output_space"] == "raw_physical"
     assert payload["model_runtime"]["convlstm_default_output_space"] == "demo_raw_physical"
+    assert payload["openremote_service_registration"]["enabled"] is False
+    assert payload["openremote_service_registration"]["registered"] is False
 
 
 def test_ready_endpoint(monkeypatch, tmp_path):

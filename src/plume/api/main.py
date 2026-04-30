@@ -19,6 +19,7 @@ from plume.api.deps import (
     get_forecast_store,
     get_openremote_publishing_runtime,
     get_online_forecast_service,
+    get_openremote_service_registration_settings,
 )
 from plume.api.errors import bad_request, conflict, not_found
 from plume.api.ops_schemas import (
@@ -46,6 +47,7 @@ from plume.api.schemas import (
     SessionPredictionRequest,
 )
 
+from plume.openremote.service_registration import OpenRemoteServiceRegistrar
 from plume.services.convlstm_operations import (
     ModelRegistry,
     OperationalEventLog,
@@ -281,10 +283,14 @@ def create_app() -> FastAPI:
     backend_config = forecast_service.config.load_backend()
     retraining_policy = _load_retraining_policy(forecast_service)
     app.state.openremote_publishing_runtime = get_openremote_publishing_runtime()
+    app.state.openremote_service_registrar = OpenRemoteServiceRegistrar(
+        get_openremote_service_registration_settings()
+    )
 
     logger = logging.getLogger(__name__)
 
     def _runtime_status_payload() -> dict[str, object]:
+        openremote_service_registration = app.state.openremote_service_registrar.status()
         return {
             "forecast_store": {
                 "type": "file",
@@ -306,6 +312,7 @@ def create_app() -> FastAPI:
                 "fallback_backend": str(backend_config.get("fallback_backend", "gaussian_fallback")),
                 "convlstm_default_output_space": "demo_raw_physical",
             },
+            "openremote_service_registration": openremote_service_registration,
         }
 
     @app.get("/health")
@@ -331,6 +338,12 @@ def create_app() -> FastAPI:
                 "forecast_store_durable": runtime_status["forecast_store"]["durable"],
                 "session_store_durable": runtime_status["session_store"]["durable"],
                 "session_restart_behavior": runtime_status["session_store"]["restart_behavior"],
+            },
+            "openremote_service_registration": {
+                "enabled": app.state.openremote_service_registrar.settings.enabled,
+                "registered": app.state.openremote_service_registrar.registered,
+                "service_id": app.state.openremote_service_registrar.settings.service_id,
+                "instance_id": app.state.openremote_service_registrar.instance_id,
             },
         }
 
@@ -807,6 +820,19 @@ def create_app() -> FastAPI:
             return rollback_to_previous_model(registry=ModelRegistry(_ops_paths()["registry"]))
         except Exception as exc:
             raise HTTPException(status_code=409, detail=f"Unable to rollback model: {exc}") from exc
+
+
+    @app.on_event("startup")
+    async def _startup_openremote_service_registration() -> None:
+        registrar = app.state.openremote_service_registrar
+        await registrar.register()
+        registrar.start_background_heartbeat()
+
+    @app.on_event("shutdown")
+    async def _shutdown_openremote_service_registration() -> None:
+        registrar = app.state.openremote_service_registrar
+        await registrar.stop_background_heartbeat()
+        await registrar.deregister()
 
     return app
 
