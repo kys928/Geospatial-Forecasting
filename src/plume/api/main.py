@@ -34,6 +34,17 @@ from plume.api.ops_schemas import (
     RetrainingTriggerResponse,
     RollbackResponse,
 )
+from plume.api.schemas import (
+    ForecastCreateRequest,
+    ForecastCreateResponse,
+    ForecastListResponse,
+    ObservationIngestRequest,
+    ReadyResponse,
+    ServiceInfoResponse,
+    SessionCreateRequest,
+    SessionPredictionRequest,
+)
+
 from plume.services.convlstm_operations import (
     ModelRegistry,
     OperationalEventLog,
@@ -275,7 +286,7 @@ def create_app() -> FastAPI:
     def health():
         return {"status": "ok"}
 
-    @app.get("/service/info")
+    @app.get("/service/info", response_model=ServiceInfoResponse)
     def service_info():
         return {
             "service_id": os.getenv("PLUME_SERVICE_ID", "geospatial-plume-forecast"),
@@ -291,14 +302,14 @@ def create_app() -> FastAPI:
             "artifact_store": "file",
         }
 
-    @app.get("/ready")
+    @app.get("/ready", response_model=ReadyResponse)
     def ready():
         checks: dict[str, str] = {"config": "ok", "artifact_dir": "ok", "forecast_store": "ok"}
         try:
             forecast_service.config.load_base()
         except Exception as exc:
             checks["config"] = "error"
-            return {"status": "degraded", "checks": checks, "error": str(exc)}
+            return {"status": "degraded", "checks": checks, "details": {"error": str(exc)}}
 
         probe = forecast_store.artifact_root / ".ready_probe.tmp"
         try:
@@ -308,10 +319,10 @@ def create_app() -> FastAPI:
         except Exception as exc:
             checks["artifact_dir"] = "error"
             checks["forecast_store"] = "error"
-            return {"status": "degraded", "checks": checks, "error": str(exc)}
+            return {"status": "degraded", "checks": checks, "details": {"error": str(exc)}}
         return {"status": "ready", "checks": checks}
 
-    @app.get("/forecasts")
+    @app.get("/forecasts", response_model=ForecastListResponse)
     def list_forecasts(limit: int = 50):
         if limit <= 0:
             raise bad_request("invalid_limit", "Query parameter 'limit' must be greater than 0", {"limit": limit})
@@ -331,9 +342,9 @@ def create_app() -> FastAPI:
             ],
         }
 
-    @app.post("/forecast")
-    def create_forecast(payload: dict | None = None):
-        payload = payload or {}
+    @app.post("/forecast", response_model=ForecastCreateResponse)
+    def create_forecast(payload: ForecastCreateRequest | None = None):
+        payload = (payload.model_dump(exclude_none=True) if payload is not None else {})
 
         scenario = _build_scenario_from_payload(forecast_service, payload)
 
@@ -440,8 +451,8 @@ def create_app() -> FastAPI:
         )
 
     @app.post("/sessions")
-    def create_session(payload: dict | None = None):
-        payload = payload or {}
+    def create_session(payload: SessionCreateRequest | None = None):
+        payload = (payload.model_dump(exclude_none=True) if payload is not None else {})
         backend_name = payload.get("backend_name") or backend_config.get("default_backend", "convlstm_online")
         session = online_forecast_service.create_session(
             backend_name=str(backend_name),
@@ -471,8 +482,9 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
 
     @app.post("/sessions/{session_id}/observations")
-    def ingest_observations(session_id: str, payload: dict):
-        observations_payload = payload.get("observations", [])
+    def ingest_observations(session_id: str, payload: ObservationIngestRequest):
+        payload_dict = payload.model_dump()
+        observations_payload = payload_dict.get("observations", [])
         try:
             batch = online_forecast_service.normalize_observation_batch(session_id, observations_payload)
             state = online_forecast_service.ingest_observations(batch)
@@ -521,9 +533,12 @@ def create_app() -> FastAPI:
         }
 
     @app.post("/sessions/{session_id}/predict")
-    def predict_session(session_id: str, payload: dict | None = None):
+    def predict_session(session_id: str, payload: SessionPredictionRequest | None = None):
         try:
-            request = online_forecast_service.build_prediction_request(session_id=session_id, payload=payload)
+            request = online_forecast_service.build_prediction_request(
+                session_id=session_id,
+                payload=(payload.model_dump(exclude_none=True) if payload is not None else None),
+            )
             result = online_forecast_service.predict(request)
         except KeyError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
