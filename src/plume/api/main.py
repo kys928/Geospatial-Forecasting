@@ -4,6 +4,7 @@ import asyncio
 from dataclasses import dataclass
 from dataclasses import replace
 import json
+import logging
 import os
 from pathlib import Path
 
@@ -15,9 +16,11 @@ from plume.api.deps import (
     get_explain_service,
     get_export_service,
     get_forecast_service,
+    get_forecast_store,
     get_openremote_publishing_runtime,
     get_online_forecast_service,
 )
+from plume.api.errors import conflict, not_found
 from plume.api.ops_schemas import (
     ActivateModelRequest,
     ActivationResponse,
@@ -261,15 +264,44 @@ def create_app() -> FastAPI:
     online_forecast_service = get_online_forecast_service()
     explain_service = get_explain_service()
     export_service = get_export_service()
+    forecast_store = get_forecast_store()
     backend_config = forecast_service.config.load_backend()
     retraining_policy = _load_retraining_policy(forecast_service)
     app.state.openremote_publishing_runtime = get_openremote_publishing_runtime()
 
-    store: dict[str, object] = {}
+    logger = logging.getLogger(__name__)
 
     @app.get("/health")
     def health():
         return {"status": "ok"}
+
+    @app.get("/service/info")
+    def service_info():
+        return {
+            "service_id": os.getenv("PLUME_SERVICE_ID", "geospatial-plume-forecast"),
+            "label": os.getenv("PLUME_SERVICE_LABEL", "Geospatial Plume Forecast"),
+            "version": "0.1.0",
+            "capabilities": [
+                "batch_forecast",
+                "session_forecast",
+                "geojson_export",
+                "raster_metadata",
+                "summary_statistics",
+            ],
+            "artifact_store": "file",
+        }
+
+    @app.get("/ready")
+    def ready():
+        try:
+            forecast_service.config.load_base()
+            forecast_store.artifact_root.mkdir(parents=True, exist_ok=True)
+            probe = forecast_store.artifact_root / ".ready_probe"
+            probe.write_text("ok", encoding="utf-8")
+            probe.unlink(missing_ok=True)
+        except Exception as exc:
+            return {"status": "not_ready", "ready": False, "error": str(exc)}
+        return {"status": "ready", "ready": True, "artifact_store": "file", "artifact_root": str(forecast_store.artifact_root)}
 
     @app.get("/capabilities")
     def capabilities():
@@ -295,11 +327,19 @@ def create_app() -> FastAPI:
             scenario=scenario,
             run_name=payload.get("run_name"),
         )
-        store[result.forecast_id] = result
+        artifact_metadata = forecast_store.save(result)
+        logger.info(
+            "forecast.saved",
+            extra={"forecast_id": result.forecast_id, "artifact_dir": artifact_metadata.get("artifact_dir")},
+        )
         response = {
             "forecast_id": result.forecast_id,
             "issued_at": result.issued_at.isoformat(),
+            "model": result.model_name,
+            "model_version": result.model_version,
+            "artifacts": artifact_metadata,
         }
+        logger.info("forecast.created", extra={"forecast_id": result.forecast_id})
         publishing_runtime = getattr(app.state, "openremote_publishing_runtime", None) or {}
         if not publishing_runtime.get("enabled", False):
             response["publishing"] = {"enabled": False, "status": "disabled"}
@@ -333,31 +373,39 @@ def create_app() -> FastAPI:
 
     @app.get("/forecast/{forecast_id}")
     def get_forecast(forecast_id: str):
-        result = store.get(forecast_id)
-        if result is None:
-            raise HTTPException(status_code=404, detail="Forecast not found")
-        return export_service.to_summary_json(result)
+        summary = forecast_store.get_summary(forecast_id)
+        if summary is None:
+            logger.info("forecast.missing", extra={"forecast_id": forecast_id})
+            raise not_found("forecast_not_found", "Forecast not found", {"forecast_id": forecast_id})
+        logger.info("forecast.loaded", extra={"forecast_id": forecast_id})
+        return summary
 
     @app.get("/forecast/{forecast_id}/summary")
     def get_forecast_summary(forecast_id: str):
-        result = store.get(forecast_id)
-        if result is None:
-            raise HTTPException(status_code=404, detail="Forecast not found")
-        return forecast_service.summarize_forecast(result)
+        summary = forecast_store.get_summary(forecast_id)
+        if summary is None:
+            logger.info("forecast.missing", extra={"forecast_id": forecast_id})
+            raise not_found("forecast_not_found", "Forecast not found", {"forecast_id": forecast_id})
+        logger.info("forecast.loaded", extra={"forecast_id": forecast_id})
+        return summary
 
     @app.get("/forecast/{forecast_id}/geojson")
     def get_forecast_geojson(forecast_id: str):
-        result = store.get(forecast_id)
-        if result is None:
-            raise HTTPException(status_code=404, detail="Forecast not found")
-        return export_service.to_geojson(result)
+        geojson = forecast_store.get_geojson(forecast_id)
+        if geojson is None:
+            logger.info("forecast.missing", extra={"forecast_id": forecast_id})
+            raise not_found("forecast_not_found", "Forecast not found", {"forecast_id": forecast_id})
+        logger.info("forecast.loaded", extra={"forecast_id": forecast_id})
+        return geojson
 
     @app.get("/forecast/{forecast_id}/raster-metadata")
     def get_forecast_raster_metadata(forecast_id: str):
-        result = store.get(forecast_id)
-        if result is None:
-            raise HTTPException(status_code=404, detail="Forecast not found")
-        return export_service.to_raster_metadata(result).__dict__
+        raster_metadata = forecast_store.get_raster_metadata(forecast_id)
+        if raster_metadata is None:
+            logger.info("forecast.missing", extra={"forecast_id": forecast_id})
+            raise not_found("forecast_not_found", "Forecast not found", {"forecast_id": forecast_id})
+        logger.info("forecast.loaded", extra={"forecast_id": forecast_id})
+        return raster_metadata
 
     @app.get("/forecast/{forecast_id}/explanation")
     def get_forecast_explanation(
@@ -365,38 +413,14 @@ def create_app() -> FastAPI:
         threshold: float = 1e-5,
         use_llm: bool = True,
     ):
-        result = store.get(forecast_id)
-        if result is None:
-            raise HTTPException(status_code=404, detail="Forecast not found")
-
-        explanation_result = explain_service.explain(
-            result,
-            threshold=threshold,
-            use_llm=use_llm,
+        if not forecast_store.exists(forecast_id):
+            logger.info("forecast.missing", extra={"forecast_id": forecast_id})
+            raise not_found("forecast_not_found", "Forecast not found", {"forecast_id": forecast_id})
+        raise conflict(
+            "forecast_explanation_requires_live_result",
+            "Explanation requires a live in-memory forecast result; persisted artifact reconstruction is not implemented.",
+            {"forecast_id": forecast_id},
         )
-
-        return {
-            "forecast_id": result.forecast_id,
-            "issued_at": result.issued_at.isoformat(),
-            "model": result.model_name,
-            "used_llm": explanation_result.used_llm,
-            "summary": {
-                "source_latitude": explanation_result.summary.source_latitude,
-                "source_longitude": explanation_result.summary.source_longitude,
-                "grid_rows": explanation_result.summary.grid_rows,
-                "grid_columns": explanation_result.summary.grid_columns,
-                "projection": explanation_result.summary.projection,
-                "max_concentration": explanation_result.summary.max_concentration,
-                "mean_concentration": explanation_result.summary.mean_concentration,
-                "affected_cells_above_threshold": explanation_result.summary.affected_cells_above_threshold,
-                "affected_area_m2": explanation_result.summary.affected_area_m2,
-                "affected_area_hectares": explanation_result.summary.affected_area_hectares,
-                "dominant_spread_direction": explanation_result.summary.dominant_spread_direction,
-                "threshold_used": explanation_result.summary.threshold_used,
-                "note": explanation_result.summary.note,
-            },
-            "explanation": explanation_result.explanation,
-        }
 
     @app.post("/sessions")
     def create_session(payload: dict | None = None):

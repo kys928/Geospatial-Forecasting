@@ -76,6 +76,52 @@ def test_api_404_missing_forecast_id():
     response = client.get("/forecast/does-not-exist")
 
     assert response.status_code == 404
+    assert response.json()["detail"]["code"] == "forecast_not_found"
+
+
+def test_api_forecast_artifacts_persisted(monkeypatch, tmp_path):
+    monkeypatch.setenv("PLUME_ARTIFACT_DIR", str(tmp_path))
+    app = create_app()
+    client = TestClient(app)
+
+    create_response = client.post("/forecast", json={"run_name": "api-persist"})
+    assert create_response.status_code == 200
+    payload = create_response.json()
+    forecast_id = payload["forecast_id"]
+
+    assert (tmp_path / "forecasts" / forecast_id / "summary.json").exists()
+
+
+def test_api_forecast_summary_reads_persisted(monkeypatch, tmp_path):
+    monkeypatch.setenv("PLUME_ARTIFACT_DIR", str(tmp_path))
+    app = create_app()
+    client = TestClient(app)
+
+    forecast_id = client.post("/forecast", json={"run_name": "api-summary-persist"}).json()["forecast_id"]
+    response = client.get(f"/forecast/{forecast_id}/summary")
+    assert response.status_code == 200
+    assert response.json()["forecast_id"] == forecast_id
+
+
+def test_service_info_endpoint():
+    app = create_app()
+    client = TestClient(app)
+
+    response = client.get("/service/info")
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["service_id"] == "geospatial-plume-forecast"
+    assert payload["artifact_store"] == "file"
+
+
+def test_ready_endpoint(monkeypatch, tmp_path):
+    monkeypatch.setenv("PLUME_ARTIFACT_DIR", str(tmp_path))
+    app = create_app()
+    client = TestClient(app)
+
+    response = client.get("/ready")
+    assert response.status_code == 200
+    assert response.json()["ready"] is True
 
 
 def test_api_cors_allows_extra_origin_from_env(monkeypatch):

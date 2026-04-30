@@ -14,6 +14,7 @@ from plume.services.forecast_service import ForecastService
 from plume.services.llm_service import LLMService
 from plume.services.observation_service import ObservationService
 from plume.services.online_forecast_service import OnlineForecastService
+from plume.storage.file_forecast_store import FileForecastStore
 from plume.state.base import BaseStateStore
 from plume.state.in_memory import InMemoryStateStore
 from plume.utils.config import Config
@@ -62,6 +63,15 @@ def get_explain_service(config_dir: str | None = None):
 
 def get_export_service():
     return ExportService()
+
+
+def get_forecast_store(config_dir: str | None = None) -> FileForecastStore:
+    artifact_root = Path(os.getenv("PLUME_ARTIFACT_DIR", "artifacts"))
+    return FileForecastStore(
+        artifact_root=artifact_root,
+        forecast_service=get_forecast_service(config_dir=config_dir),
+        export_service=get_export_service(),
+    )
 
 
 def _env_enabled(name: str, default: bool) -> bool:
