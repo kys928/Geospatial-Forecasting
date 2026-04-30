@@ -113,6 +113,22 @@ def test_service_info_endpoint():
     payload = response.json()
     assert payload["service_id"] == "geospatial-plume-forecast"
     assert payload["artifact_store"] == "file"
+    assert payload["persistence"]["forecast_store_durable"] is True
+    assert payload["persistence"]["session_store_durable"] is False
+
+
+def test_runtime_status_endpoint(monkeypatch, tmp_path):
+    monkeypatch.setenv("PLUME_ARTIFACT_DIR", str(tmp_path))
+    app = create_app()
+    client = TestClient(app)
+
+    response = client.get("/runtime/status")
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["forecast_store"]["durable"] is True
+    assert payload["session_store"]["durable"] is False
+    assert payload["model_runtime"]["online_default_backend"]
+    assert payload["model_runtime"]["fallback_backend"]
 
 
 def test_ready_endpoint(monkeypatch, tmp_path):

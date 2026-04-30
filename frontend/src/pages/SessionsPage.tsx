@@ -85,6 +85,10 @@ export function SessionsPage() {
             ? "Basic mode focuses on the core session workflow and hides technical controls."
             : "Operator mode shows ingest, manual update, backend details, and raw state tools."}
         </p>
+        <p className="muted" style={{ marginBottom: 0.25, marginTop: 8, fontSize: "0.9rem" }}>
+          Sessions are runtime state only and may be lost after a backend restart. Persisted forecast artifacts remain
+          recoverable on the Map page.
+        </p>
       </section>
 
       <div className="workspace-grid" style={{ gridTemplateColumns: "0.95fr 1.3fr" }}>

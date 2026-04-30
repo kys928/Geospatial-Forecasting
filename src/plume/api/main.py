@@ -40,6 +40,7 @@ from plume.api.schemas import (
     ForecastListResponse,
     ObservationIngestRequest,
     ReadyResponse,
+    RuntimeStatusResponse,
     ServiceInfoResponse,
     SessionCreateRequest,
     SessionPredictionRequest,
@@ -282,12 +283,35 @@ def create_app() -> FastAPI:
 
     logger = logging.getLogger(__name__)
 
+    def _runtime_status_payload() -> dict[str, object]:
+        return {
+            "forecast_store": {
+                "type": "file",
+                "durable": True,
+                "artifact_root": str(forecast_store.artifact_root),
+                "listing_supported": True,
+            },
+            "session_store": {
+                "type": str(backend_config.get("state_store", "in_memory")),
+                "durable": False,
+                "restart_behavior": (
+                    "sessions are lost on backend restart; persisted forecast artifacts remain available"
+                ),
+            },
+            "model_runtime": {
+                "batch_default": "gaussian_plume",
+                "online_default_backend": str(backend_config.get("default_backend", "convlstm_online")),
+                "fallback_backend": str(backend_config.get("fallback_backend", "gaussian_fallback")),
+            },
+        }
+
     @app.get("/health")
     def health():
         return {"status": "ok"}
 
     @app.get("/service/info", response_model=ServiceInfoResponse)
     def service_info():
+        runtime_status = _runtime_status_payload()
         return {
             "service_id": os.getenv("PLUME_SERVICE_ID", "geospatial-plume-forecast"),
             "label": os.getenv("PLUME_SERVICE_LABEL", "Geospatial Plume Forecast"),
@@ -300,6 +324,11 @@ def create_app() -> FastAPI:
                 "summary_statistics",
             ],
             "artifact_store": "file",
+            "persistence": {
+                "forecast_store_durable": runtime_status["forecast_store"]["durable"],
+                "session_store_durable": runtime_status["session_store"]["durable"],
+                "session_restart_behavior": runtime_status["session_store"]["restart_behavior"],
+            },
         }
 
     @app.get("/ready", response_model=ReadyResponse)
@@ -330,6 +359,7 @@ def create_app() -> FastAPI:
 
     @app.get("/capabilities")
     def capabilities():
+        runtime_status = _runtime_status_payload()
         return {
             "model": ["gaussian_plume"],
             "backends": ["convlstm_online", "gaussian_fallback", "mock_online"],
@@ -340,7 +370,16 @@ def create_app() -> FastAPI:
                 "openremote",
                 "explanation",
             ],
+            "persistence": {
+                "forecast_store_durable": runtime_status["forecast_store"]["durable"],
+                "session_store_durable": runtime_status["session_store"]["durable"],
+            },
+            "model_runtime": runtime_status["model_runtime"],
         }
+
+    @app.get("/runtime/status", response_model=RuntimeStatusResponse)
+    def runtime_status():
+        return _runtime_status_payload()
 
     @app.post("/forecast", response_model=ForecastCreateResponse)
     def create_forecast(payload: ForecastCreateRequest | None = None):
