@@ -12,7 +12,16 @@ import { usePersistedForecasts } from "../features/forecast/hooks/usePersistedFo
 import { useSessionForecastView } from "../features/sessions/context/SessionForecastViewContext";
 
 export function ForecastPage() {
-  const { activeSessionId, latestForecastBundle, selectedFeature, setSelectedFeature, setLatestForecastBundle, clearSelectedFeature } = useSessionForecastView();
+  const {
+    activeSessionId,
+    latestForecastBundle,
+    forecastViewSource,
+    activePersistedForecastId,
+    selectedFeature,
+    setSelectedFeature,
+    setPersistedForecastBundle,
+    clearSelectedFeature
+  } = useSessionForecastView();
   const { forecasts, loading, error, refresh } = usePersistedForecasts(50);
   const [loadingForecastId, setLoadingForecastId] = useState<string | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -22,16 +31,16 @@ export function ForecastPage() {
     if (loadError) {
       return `Could not load persisted artifacts: ${loadError}`;
     }
-    if (activeSessionId) {
+    if (forecastViewSource === "persisted" && activePersistedForecastId) {
+      return `Showing persisted forecast artifact ${activePersistedForecastId.slice(0, 8)}`;
+    }
+    if (forecastViewSource === "session" && activeSessionId) {
       return latestForecastBundle
         ? `Showing latest forecast map for session ${activeSessionId}`
         : "No forecast artifacts loaded for the active session yet";
     }
-    if (latestForecastBundle) {
-      return "Showing persisted forecast artifacts on the map";
-    }
     return "Select and run a session forecast in Sessions, or load a persisted forecast below";
-  }, [activeSessionId, latestForecastBundle, loadError]);
+  }, [activePersistedForecastId, activeSessionId, forecastViewSource, latestForecastBundle, loadError]);
 
   const handleLoadPersistedForecast = async (forecastId: string) => {
     setLoadingForecastId(forecastId);
@@ -42,7 +51,7 @@ export function ForecastPage() {
         getForecastGeoJson(forecastId),
         getForecastRasterMetadata(forecastId)
       ]);
-      setLatestForecastBundle(activeSessionId, {
+      setPersistedForecastBundle(forecastId, {
         summary,
         geojson: geojson as unknown as Record<string, unknown>,
         rasterMetadata: rasterMetadata as unknown as Record<string, unknown>,

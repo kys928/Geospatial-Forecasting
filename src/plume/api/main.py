@@ -3,10 +3,10 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass
 from dataclasses import replace
-import json
 import logging
 import os
 from pathlib import Path
+import tempfile
 
 from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -62,6 +62,7 @@ from plume.services.convlstm_operations import (
     submit_retraining_job,
     summarize_operational_status,
 )
+from plume.storage.file_forecast_store import ForecastArtifactReadError
 
 
 def _build_scenario_from_payload(forecast_service, payload: dict | None):
@@ -300,8 +301,10 @@ def create_app() -> FastAPI:
             },
             "model_runtime": {
                 "batch_default": "gaussian_plume",
+                "batch_output_space": "raw_physical",
                 "online_default_backend": str(backend_config.get("default_backend", "convlstm_online")),
                 "fallback_backend": str(backend_config.get("fallback_backend", "gaussian_fallback")),
+                "convlstm_default_output_space": "demo_raw_physical",
             },
         }
 
@@ -340,22 +343,46 @@ def create_app() -> FastAPI:
             checks["config"] = "error"
             return {"status": "degraded", "checks": checks, "details": {"error": str(exc)}}
 
-        probe = forecast_store.artifact_root / ".ready_probe.tmp"
+        probe_path: Path | None = None
         try:
             forecast_store.artifact_root.mkdir(parents=True, exist_ok=True)
-            probe.write_text("ok", encoding="utf-8")
-            probe.unlink(missing_ok=True)
+            with tempfile.NamedTemporaryFile(
+                mode="w",
+                encoding="utf-8",
+                dir=forecast_store.artifact_root,
+                prefix=".ready_probe.",
+                suffix=".tmp",
+                delete=False,
+            ) as probe_file:
+                probe_file.write("ok")
+                probe_path = Path(probe_file.name)
         except Exception as exc:
             checks["artifact_dir"] = "error"
             checks["forecast_store"] = "error"
             return {"status": "degraded", "checks": checks, "details": {"error": str(exc)}}
+        finally:
+            if probe_path is not None:
+                probe_path.unlink(missing_ok=True)
         return {"status": "ready", "checks": checks}
 
     @app.get("/forecasts", response_model=ForecastListResponse)
     def list_forecasts(limit: int = 50):
         if limit <= 0:
             raise bad_request("invalid_limit", "Query parameter 'limit' must be greater than 0", {"limit": limit})
+        if limit > 500:
+            raise bad_request(
+                "invalid_limit",
+                "Query parameter 'limit' must be less than or equal to 500",
+                {"limit": limit, "max_limit": 500},
+            )
         return {"forecasts": forecast_store.list_metadata(limit=limit)}
+
+    def _artifact_corrupt_error(forecast_id: str, artifact: str) -> HTTPException:
+        return bad_request(
+            "forecast_artifact_corrupt",
+            "Forecast artifact exists but could not be decoded",
+            {"forecast_id": forecast_id, "artifact": artifact},
+        )
 
     @app.get("/capabilities")
     def capabilities():
@@ -441,7 +468,10 @@ def create_app() -> FastAPI:
 
     @app.get("/forecast/{forecast_id}")
     def get_forecast(forecast_id: str):
-        summary = forecast_store.get_summary(forecast_id)
+        try:
+            summary = forecast_store.get_summary(forecast_id)
+        except ForecastArtifactReadError as exc:
+            raise _artifact_corrupt_error(forecast_id, exc.artifact) from exc
         if summary is None:
             logger.info("forecast.missing", extra={"forecast_id": forecast_id})
             raise not_found("forecast_not_found", "Forecast not found", {"forecast_id": forecast_id})
@@ -450,7 +480,10 @@ def create_app() -> FastAPI:
 
     @app.get("/forecast/{forecast_id}/summary")
     def get_forecast_summary(forecast_id: str):
-        summary = forecast_store.get_summary(forecast_id)
+        try:
+            summary = forecast_store.get_summary(forecast_id)
+        except ForecastArtifactReadError as exc:
+            raise _artifact_corrupt_error(forecast_id, exc.artifact) from exc
         if summary is None:
             logger.info("forecast.missing", extra={"forecast_id": forecast_id})
             raise not_found("forecast_not_found", "Forecast not found", {"forecast_id": forecast_id})
@@ -459,7 +492,10 @@ def create_app() -> FastAPI:
 
     @app.get("/forecast/{forecast_id}/geojson")
     def get_forecast_geojson(forecast_id: str):
-        geojson = forecast_store.get_geojson(forecast_id)
+        try:
+            geojson = forecast_store.get_geojson(forecast_id)
+        except ForecastArtifactReadError as exc:
+            raise _artifact_corrupt_error(forecast_id, exc.artifact) from exc
         if geojson is None:
             logger.info("forecast.missing", extra={"forecast_id": forecast_id})
             raise not_found("forecast_not_found", "Forecast not found", {"forecast_id": forecast_id})
@@ -468,7 +504,10 @@ def create_app() -> FastAPI:
 
     @app.get("/forecast/{forecast_id}/raster-metadata")
     def get_forecast_raster_metadata(forecast_id: str):
-        raster_metadata = forecast_store.get_raster_metadata(forecast_id)
+        try:
+            raster_metadata = forecast_store.get_raster_metadata(forecast_id)
+        except ForecastArtifactReadError as exc:
+            raise _artifact_corrupt_error(forecast_id, exc.artifact) from exc
         if raster_metadata is None:
             logger.info("forecast.missing", extra={"forecast_id": forecast_id})
             raise not_found("forecast_not_found", "Forecast not found", {"forecast_id": forecast_id})
@@ -481,7 +520,11 @@ def create_app() -> FastAPI:
         threshold: float = 1e-5,
         use_llm: bool = True,
     ):
-        if not forecast_store.exists(forecast_id):
+        try:
+            metadata = forecast_store.get_metadata(forecast_id)
+        except ForecastArtifactReadError as exc:
+            raise _artifact_corrupt_error(forecast_id, exc.artifact) from exc
+        if metadata is None:
             logger.info("forecast.missing", extra={"forecast_id": forecast_id})
             raise not_found("forecast_not_found", "Forecast not found", {"forecast_id": forecast_id})
         raise conflict(
