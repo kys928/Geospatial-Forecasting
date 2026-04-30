@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from dataclasses import replace
@@ -434,7 +433,7 @@ def create_app() -> FastAPI:
         return _runtime_status_payload()
 
     @app.post("/forecast", response_model=ForecastCreateResponse)
-    def create_forecast(payload: ForecastCreateRequest | None = None):
+    async def create_forecast(payload: ForecastCreateRequest | None = None):
         payload = (payload.model_dump(exclude_none=True) if payload is not None else {})
 
         scenario = _build_scenario_from_payload(forecast_service, payload)
@@ -476,11 +475,9 @@ def create_app() -> FastAPI:
             return response
 
         try:
-            publish_result = asyncio.run(
-                publishing_service.publish_forecast_attributes(
-                    result,
-                    geojson=export_service.to_geojson(result),
-                )
+            publish_result = await publishing_service.publish_forecast_attributes(
+                result,
+                geojson=export_service.to_geojson(result),
             )
             status = "skipped" if publish_result.get("skipped") else "succeeded"
             response["publishing"] = {"enabled": True, "status": status, **publish_result}
