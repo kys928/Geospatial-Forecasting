@@ -61,6 +61,31 @@ export interface ForecastCreateResponse {
   issued_at: string;
 }
 
+export interface ForecastArtifactMetadata {
+  forecast_id: string;
+  issued_at: string;
+  model?: string | null;
+  available_artifacts?: string[];
+  runtime?: {
+    model_family?: string | null;
+    model_source?: string | null;
+    prediction_trust?: string | null;
+    path?: string | null;
+    [key: string]: unknown;
+  } | null;
+  [key: string]: unknown;
+}
+
+export interface ForecastListResponse {
+  forecasts: ForecastArtifactMetadata[];
+}
+
+export interface ForecastArtifactBundle {
+  summary: Record<string, unknown>;
+  geojson: Record<string, unknown>;
+  rasterMetadata: Record<string, unknown>;
+}
+
 export interface ForecastSummary {
   forecast_id: string;
   issued_at: string;
