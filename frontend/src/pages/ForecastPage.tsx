@@ -68,9 +68,9 @@ export function ForecastPage() {
   return (
     <AppShell
       title="Map workspace"
-      subtitle="Interactive forecast map for the active session."
+      subtitle="Interactive map for session forecasts and persisted forecast artifacts."
       statusText={statusText}
-      metaItems={[{ label: activeSessionId ? `Session ${activeSessionId}` : "No active session" }]}
+      metaItems={[{ label: forecastViewSource === "persisted" && activePersistedForecastId ? `Persisted ${activePersistedForecastId.slice(0, 8)}` : forecastViewSource === "session" && activeSessionId ? `Session ${activeSessionId}` : "No active forecast" }]}
     >
       <main className="map-column">
         <RecentForecastsPanel
