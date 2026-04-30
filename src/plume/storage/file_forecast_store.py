@@ -78,6 +78,11 @@ class FileForecastStore:
             try:
                 json.dumps(result.execution_metadata)
                 metadata["execution_metadata"] = result.execution_metadata
+                runtime = result.execution_metadata.get("runtime")
+                if isinstance(runtime, dict):
+                    metadata["runtime"] = runtime
+                else:
+                    metadata["runtime"] = result.execution_metadata
             except TypeError:
                 logger.warning("forecast.execution_metadata_not_serializable", extra={"forecast_id": result.forecast_id})
         if "summary_statistics" in summary:

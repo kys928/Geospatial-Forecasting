@@ -9,6 +9,7 @@ from plume.inference.engine import InferenceEngine
 from plume.inference.postprocessor import ForecastPostprocessor
 from plume.models.gaussian_plume import GaussianPlume
 from plume.schemas.forecast import Forecast
+from plume.services.runtime_metadata import build_batch_runtime_metadata
 from plume.utils.config import Config
 
 
@@ -69,6 +70,7 @@ class ForecastService:
 
         forecast = engine.run_inference(scenario, grid_spec)
         summary_statistics = ForecastPostprocessor(inference).compute_summary_statistics(forecast)
+        execution_runtime = build_batch_runtime_metadata(model_version=None)
 
         return ForecastRunResult(
             forecast_id=str(uuid4()),
@@ -81,7 +83,8 @@ class ForecastService:
                 "run_name": run_name or base.run_name,
                 "validate_inputs": inference.validate_inputs,
                 "inference_mode": inference.mode,
-                "path": "batch",
+                **execution_runtime,
+                "runtime": execution_runtime,
             },
         )
 

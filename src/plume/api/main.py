@@ -366,6 +366,7 @@ def create_app() -> FastAPI:
             "model": result.model_name,
             "model_version": result.model_version,
             "artifacts": artifact_metadata,
+            "runtime": artifact_metadata.get("runtime"),
         }
         logger.info("forecast.created", extra={"forecast_id": result.forecast_id})
         publishing_runtime = getattr(app.state, "openremote_publishing_runtime", None) or {}

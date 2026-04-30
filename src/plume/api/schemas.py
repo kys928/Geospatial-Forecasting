@@ -25,6 +25,7 @@ class ForecastCreateResponse(BaseModel):
     model: str
     model_version: str | None = None
     artifacts: dict[str, Any]
+    runtime: dict[str, Any] | None = None
     publishing: dict[str, Any] | None = None
 
 

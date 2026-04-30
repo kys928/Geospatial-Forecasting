@@ -21,6 +21,7 @@ def test_api_forecast_create_and_retrieve():
 
     create_response = client.post("/forecast", json={"run_name": "api-test"})
     assert create_response.status_code == 200
+    assert create_response.json()["runtime"]["path"] == "batch"
 
     forecast_id = create_response.json()["forecast_id"]
 
@@ -142,6 +143,7 @@ def test_api_forecasts_listing(monkeypatch, tmp_path):
     assert response.status_code == 200
     payload = response.json()
     assert [item["forecast_id"] for item in payload["forecasts"]][:2] == [second, first]
+    assert payload["forecasts"][0]["runtime"]["model_family"] == "gaussian_plume"
 
 
 def test_api_forecasts_listing_ignores_malformed_folder(monkeypatch, tmp_path):
