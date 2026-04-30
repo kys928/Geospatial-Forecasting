@@ -12,7 +12,6 @@ export function OpsPage() {
     <AppShell
       title="Ops workspace"
       subtitle="Operational status, retraining controls, registry, and event/audit panels."
-      statusText="Ready"
       metaItems={[{ label: "Ops" }]}
     >
       <OpsTabs selected={tab} onSelect={setTab} />

@@ -1,7 +1,6 @@
 import { useOpsStatus } from "../hooks/useOpsStatus";
 import { useOpsAvailability } from "../hooks/useOpsAvailability";
 import { useOpsJobs } from "../hooks/useOpsJobs";
-import { useEvents } from "../../events/hooks/useEvents";
 import { OpsWarningsPanel } from "./OpsWarningsPanel";
 import { OpsControlTower } from "./OpsControlTower";
 import { OpsEventsPanel } from "./OpsEventsPanel";
@@ -10,7 +9,6 @@ export function OpsOverviewTab() {
   const opsStatus = useOpsStatus();
   const availability = useOpsAvailability();
   const jobs = useOpsJobs();
-  const eventsState = useEvents();
 
   return (
     <>
@@ -24,7 +22,6 @@ export function OpsOverviewTab() {
             loading={opsStatus.loading}
             onRefreshStatus={() => void opsStatus.refresh()}
             onRefreshJobs={() => void jobs.refresh()}
-            onRefreshEvents={() => void eventsState.refresh()}
           />
         </div>
         <div className="workspace-column">
