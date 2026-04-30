@@ -7,6 +7,14 @@ from fastapi.testclient import TestClient
 from plume.api.main import create_app
 
 
+
+
+def test_create_app_avoids_on_event_deprecation_warning(recwarn):
+    create_app()
+    deprecations = [w for w in recwarn if issubclass(w.category, DeprecationWarning)]
+    assert not any("on_event is deprecated" in str(w.message) for w in deprecations)
+
+
 def test_api_health_endpoint():
     app = create_app()
     client = TestClient(app)

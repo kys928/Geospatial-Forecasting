@@ -100,6 +100,9 @@ OpenRemote publishing behavior is configured in `configs/openremote.yaml` (or en
 - `parent_asset_id`
 - `geojson_public_base_url`
 - `access_token_env_var` (name of env var containing token)
+- `forecast_asset_id` (required for attribute publishing target)
+- `forecast_attribute_mode` (`single_asset_attributes`)
+- forecast attribute names (`forecastSummary`, `forecastGeoJson`, `forecastRasterMetadata`, `forecastRuntime`, `forecastRiskLevel`, `forecastIssuedAt`, `forecastId`)
 
 `POST /forecast` always stores the forecast locally first, then publishes if enabled. A `publishing` field in the response reports `disabled`, `succeeded`, or `failed`.
 
@@ -140,13 +143,25 @@ Environment variables:
 
 Notes:
 - Global service registration requires using the master realm API base and a super-user-capable service user.
-- Asset publishing remains a separate, provisional OpenRemote adapter concern.
+- Service registration lifecycle is implemented in the FastAPI lifespan startup/shutdown flow.
+- A provisional forecast asset/attribute contract is implemented in `src/plume/openremote/forecast_asset_contract.py` and used by forecast publishing.
+- Forecast publishing remains optional and disabled by default.
+- `PLUME_OPENREMOTE_FORECAST_ASSET_ID` is required to publish forecast attributes to a target asset.
 
 ### OpenRemote demo modes
 
 - **Disabled mode (safe default)**: no publish attempt.
-- **Fake mode (recommended for demos)**: publishes to in-memory sink with no network dependency.
-- **HTTP mode (live)**: uses real HTTP calls; if token/base URL is missing or request fails, forecast creation still succeeds and response reports publish failure.
+- **Fake mode (recommended for demos)**: publishes forecast attributes to an in-memory sink with no network dependency.
+- **HTTP mode (provisional)**: uses real HTTP calls; endpoint shapes can vary by deployment. If token/base URL/asset ID is missing or request fails, forecast creation still succeeds and response reports `skipped` or `failed`.
+
+Forecast attribute mapping currently targets:
+- `forecastId`
+- `forecastIssuedAt`
+- `forecastSummary`
+- `forecastGeoJson`
+- `forecastRasterMetadata`
+- `forecastRuntime`
+- `forecastRiskLevel`
 
 ## Installation
 Use Python 3.11.

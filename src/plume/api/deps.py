@@ -101,6 +101,42 @@ def load_openremote_settings(config_dir: str | None = None) -> dict[str, object]
         "PLUME_OPENREMOTE_GEOJSON_PUBLIC_BASE_URL",
         str(settings.get("geojson_public_base_url") or ""),
     )
+    settings["forecast_asset_id"] = os.getenv(
+        "PLUME_OPENREMOTE_FORECAST_ASSET_ID",
+        str(settings.get("forecast_asset_id") or ""),
+    )
+    settings["forecast_attribute_mode"] = os.getenv(
+        "PLUME_OPENREMOTE_FORECAST_ATTRIBUTE_MODE",
+        str(settings.get("forecast_attribute_mode") or "single_asset_attributes"),
+    )
+    settings["forecast_summary_attribute"] = os.getenv(
+        "PLUME_OPENREMOTE_FORECAST_SUMMARY_ATTRIBUTE",
+        str(settings.get("forecast_summary_attribute") or "forecastSummary"),
+    )
+    settings["forecast_geojson_attribute"] = os.getenv(
+        "PLUME_OPENREMOTE_FORECAST_GEOJSON_ATTRIBUTE",
+        str(settings.get("forecast_geojson_attribute") or "forecastGeoJson"),
+    )
+    settings["forecast_raster_metadata_attribute"] = os.getenv(
+        "PLUME_OPENREMOTE_FORECAST_RASTER_METADATA_ATTRIBUTE",
+        str(settings.get("forecast_raster_metadata_attribute") or "forecastRasterMetadata"),
+    )
+    settings["forecast_runtime_attribute"] = os.getenv(
+        "PLUME_OPENREMOTE_FORECAST_RUNTIME_ATTRIBUTE",
+        str(settings.get("forecast_runtime_attribute") or "forecastRuntime"),
+    )
+    settings["forecast_risk_level_attribute"] = os.getenv(
+        "PLUME_OPENREMOTE_FORECAST_RISK_LEVEL_ATTRIBUTE",
+        str(settings.get("forecast_risk_level_attribute") or "forecastRiskLevel"),
+    )
+    settings["forecast_issued_at_attribute"] = os.getenv(
+        "PLUME_OPENREMOTE_FORECAST_ISSUED_AT_ATTRIBUTE",
+        str(settings.get("forecast_issued_at_attribute") or "forecastIssuedAt"),
+    )
+    settings["forecast_id_attribute"] = os.getenv(
+        "PLUME_OPENREMOTE_FORECAST_ID_ATTRIBUTE",
+        str(settings.get("forecast_id_attribute") or "forecastId"),
+    )
 
     token_env_var = os.getenv(
         "PLUME_OPENREMOTE_ACCESS_TOKEN_ENV_VAR",
@@ -151,6 +187,17 @@ def get_openremote_publishing_runtime(config_dir: str | None = None) -> dict[str
         default_site_asset_id=str(settings.get("site_asset_id") or "") or None,
         default_site_parent_id=str(settings.get("parent_asset_id") or "") or None,
         geojson_base_url=str(settings.get("geojson_public_base_url") or "") or None,
+        forecast_asset_id=str(settings.get("forecast_asset_id") or "") or None,
+        forecast_attribute_mode=str(settings.get("forecast_attribute_mode") or "single_asset_attributes"),
+        forecast_attribute_names={
+            "summary": str(settings.get("forecast_summary_attribute") or "forecastSummary"),
+            "geojson": str(settings.get("forecast_geojson_attribute") or "forecastGeoJson"),
+            "raster_metadata": str(settings.get("forecast_raster_metadata_attribute") or "forecastRasterMetadata"),
+            "runtime": str(settings.get("forecast_runtime_attribute") or "forecastRuntime"),
+            "risk_level": str(settings.get("forecast_risk_level_attribute") or "forecastRiskLevel"),
+            "issued_at": str(settings.get("forecast_issued_at_attribute") or "forecastIssuedAt"),
+            "forecast_id": str(settings.get("forecast_id_attribute") or "forecastId"),
+        },
     )
     return runtime
 
