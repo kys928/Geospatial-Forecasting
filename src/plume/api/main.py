@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from dataclasses import replace
 import logging
@@ -263,7 +264,21 @@ def _pending_candidate_from_registry(registry_payload: dict[str, object]) -> dic
 
 
 def create_app() -> FastAPI:
-    app = FastAPI(title="Geospatial Forecasting API", version="0.1.0")
+    registrar = OpenRemoteServiceRegistrar(get_openremote_service_registration_settings())
+
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):
+        app.state.openremote_service_registrar = registrar
+        await registrar.register()
+        registrar.start_background_heartbeat()
+        try:
+            yield
+        finally:
+            await registrar.stop_background_heartbeat()
+            await registrar.deregister()
+
+    app = FastAPI(title="Geospatial Forecasting API", version="0.1.0", lifespan=lifespan)
+    app.state.openremote_service_registrar = registrar
     cors_allow_origins, cors_allow_origin_regex = _cors_settings()
 
     app.add_middleware(
@@ -283,9 +298,6 @@ def create_app() -> FastAPI:
     backend_config = forecast_service.config.load_backend()
     retraining_policy = _load_retraining_policy(forecast_service)
     app.state.openremote_publishing_runtime = get_openremote_publishing_runtime()
-    app.state.openremote_service_registrar = OpenRemoteServiceRegistrar(
-        get_openremote_service_registration_settings()
-    )
 
     logger = logging.getLogger(__name__)
 
@@ -464,17 +476,14 @@ def create_app() -> FastAPI:
             return response
 
         try:
-            publish_result = asyncio.run(publishing_service.publish_forecast_result(result))
-            response["publishing"] = {
-                "enabled": True,
-                "status": "succeeded",
-                "source_asset_id": publish_result.get("source_asset_id"),
-                "forecast_asset_id": publish_result.get("forecast_asset_id"),
-            }
+            publish_result = asyncio.run(publishing_service.publish_forecast_attributes(result))
+            status = "skipped" if publish_result.get("skipped") else "succeeded"
+            response["publishing"] = {"enabled": True, "status": status, **publish_result}
         except Exception as exc:
             response["publishing"] = {
                 "enabled": True,
                 "status": "failed",
+                "mode": "forecast_asset_attributes",
                 "error": str(exc),
             }
         return response
@@ -822,17 +831,7 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=409, detail=f"Unable to rollback model: {exc}") from exc
 
 
-    @app.on_event("startup")
-    async def _startup_openremote_service_registration() -> None:
-        registrar = app.state.openremote_service_registrar
-        await registrar.register()
-        registrar.start_background_heartbeat()
 
-    @app.on_event("shutdown")
-    async def _shutdown_openremote_service_registration() -> None:
-        registrar = app.state.openremote_service_registrar
-        await registrar.stop_background_heartbeat()
-        await registrar.deregister()
 
     return app
 

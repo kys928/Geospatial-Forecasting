@@ -22,6 +22,7 @@ from plume.openremote.models import (
     SensorAssetModel,
 )
 from plume.openremote.sink import OpenRemoteResultSink
+from plume.openremote.forecast_asset_contract import build_forecast_attribute_payloads
 
 
 class OpenRemotePublishingService:
@@ -45,6 +46,9 @@ class OpenRemotePublishingService:
         sensor_asset_parent_id: str | None = None,
         zone_asset_parent_id: str | None = None,
         geojson_base_url: str | None = None,
+        forecast_asset_id: str | None = None,
+        forecast_attribute_names: dict[str, str] | None = None,
+        forecast_attribute_mode: str = "single_asset_attributes",
     ) -> None:
         self.sink = sink
         self.realm = realm
@@ -55,6 +59,9 @@ class OpenRemotePublishingService:
         self.sensor_asset_parent_id = sensor_asset_parent_id
         self.zone_asset_parent_id = zone_asset_parent_id
         self.geojson_base_url = geojson_base_url.rstrip("/") if geojson_base_url else None
+        self.forecast_asset_id = forecast_asset_id
+        self.forecast_attribute_names = forecast_attribute_names or {}
+        self.forecast_attribute_mode = forecast_attribute_mode
 
     # ----------------------------
     # Public API
@@ -170,6 +177,41 @@ class OpenRemotePublishingService:
             "forecast_run_id": forecast_run_id,
         }
 
+    async def publish_forecast_attributes(self, result: Any) -> dict[str, Any]:
+        if not self.forecast_asset_id:
+            return {
+                "mode": "forecast_asset_attributes",
+                "skipped": True,
+                "reason": "OpenRemote forecast_asset_id is not configured",
+            }
+
+        summary = self._extract_summary_payload(result)
+        geojson = self._build_footprint_geojson(result)
+        raster_metadata = self._extract_raster_metadata(result)
+        execution_metadata = self._normalize_mapping(getattr(result, "execution_metadata", {}) or {})
+        runtime = self._normalize_mapping(execution_metadata.get("runtime", {}) or {})
+
+        payloads = build_forecast_attribute_payloads(
+            forecast_id=str(result.forecast_id),
+            issued_at=result.issued_at.isoformat(),
+            summary=summary,
+            geojson=geojson,
+            raster_metadata=raster_metadata,
+            runtime=runtime,
+            attribute_names=self.forecast_attribute_names,
+        )
+        published_attributes: list[str] = []
+        for name, value in payloads.items():
+            await self.sink.publish_attribute(asset_id=self.forecast_asset_id, attribute_name=name, value=value)
+            published_attributes.append(name)
+
+        return {
+            "mode": "forecast_asset_attributes",
+            "forecast_asset_id": self.forecast_asset_id,
+            "published_attributes": published_attributes,
+            "skipped": False,
+        }
+
     async def upsert_sensor_asset(
         self,
         *,
@@ -275,6 +317,17 @@ class OpenRemotePublishingService:
             return dict(raw.__dict__)
 
         return {}
+
+    def _extract_summary_payload(self, result: Any) -> dict[str, Any]:
+        summary_stats = self._extract_summary_stats(result)
+        payload: dict[str, Any] = {
+            "forecast_id": getattr(result, "forecast_id", None),
+            "issued_at": getattr(getattr(result, "issued_at", None), "isoformat", lambda: None)(),
+            "model": getattr(result, "model_name", None),
+            "model_version": getattr(result, "model_version", None),
+            "summary_statistics": summary_stats,
+        }
+        return {k: v for k, v in payload.items() if v is not None}
 
     def _extract_horizon_seconds(self, result: Any) -> int | None:
         execution_metadata = self._normalize_mapping(getattr(result, "execution_metadata", {}) or {})

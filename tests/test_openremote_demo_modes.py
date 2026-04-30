@@ -53,6 +53,7 @@ def test_api_forecast_disabled_mode_is_safe(monkeypatch):
 def test_api_forecast_fake_mode_captures_payloads(monkeypatch):
     monkeypatch.setenv("PLUME_OPENREMOTE_ENABLED", "true")
     monkeypatch.setenv("PLUME_OPENREMOTE_SINK_MODE", "fake")
+    monkeypatch.setenv("PLUME_OPENREMOTE_FORECAST_ASSET_ID", "fake-forecast-asset")
 
     app = create_app()
     client = TestClient(app)
@@ -61,9 +62,44 @@ def test_api_forecast_fake_mode_captures_payloads(monkeypatch):
     assert create_response.status_code == 200
     payload = create_response.json()
     assert payload["publishing"]["status"] == "succeeded"
+    assert payload["publishing"]["mode"] == "forecast_asset_attributes"
+    assert payload["publishing"]["forecast_asset_id"] == "fake-forecast-asset"
+    assert "forecastSummary" in payload["publishing"]["published_attributes"]
 
     runtime = app.state.openremote_publishing_runtime
     sink = runtime["service"].sink
     assert isinstance(sink, InMemoryOpenRemoteResultSink)
-    assert len(sink.assets) == 2
-    assert len(sink.snapshot()["assets"]) == 2
+    assert len(sink.attribute_writes) >= 6
+    assert len(sink.snapshot()["attribute_writes"]) >= 6
+
+
+def test_api_forecast_enabled_without_forecast_asset_id_is_skipped(monkeypatch):
+    monkeypatch.setenv("PLUME_OPENREMOTE_ENABLED", "true")
+    monkeypatch.setenv("PLUME_OPENREMOTE_SINK_MODE", "fake")
+    monkeypatch.delenv("PLUME_OPENREMOTE_FORECAST_ASSET_ID", raising=False)
+
+    app = create_app()
+    client = TestClient(app)
+    response = client.post("/forecast", json={"run_name": "demo-skip"})
+    assert response.status_code == 200
+    publishing = response.json()["publishing"]
+    assert publishing["status"] == "skipped"
+    assert "forecast_asset_id is not configured" in publishing["reason"]
+
+
+def test_api_forecast_publish_failure_is_tolerated(monkeypatch):
+    monkeypatch.setenv("PLUME_OPENREMOTE_ENABLED", "true")
+    monkeypatch.setenv("PLUME_OPENREMOTE_SINK_MODE", "fake")
+    monkeypatch.setenv("PLUME_OPENREMOTE_FORECAST_ASSET_ID", "fake-asset")
+    app = create_app()
+    app.state.openremote_publishing_runtime["service"].sink.publish_attribute = _failing_publish_attribute  # type: ignore[attr-defined]
+    client = TestClient(app)
+    response = client.post("/forecast", json={"run_name": "demo-fail"})
+    assert response.status_code == 200
+    publishing = response.json()["publishing"]
+    assert publishing["status"] == "failed"
+    assert publishing["error"]
+
+
+async def _failing_publish_attribute(*, asset_id: str, attribute_name: str, value: object):
+    raise RuntimeError("simulated publish failure")
