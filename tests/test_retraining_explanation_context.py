@@ -46,6 +46,8 @@ def test_latest_retraining_failed_has_boundaries_and_instructions():
     assert len(context["system_boundaries"]) >= 2
     assert "Do not invent metrics." in context["llm_instructions"]
 
+    assert any("existing operational state" in item.lower() for item in context["llm_instructions"])
+
 
 def test_unknown_action_code_gets_safe_fallback():
     context = build_retraining_explanation_context(
