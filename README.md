@@ -158,6 +158,14 @@ Forecast attribute mapping currently targets:
 - `forecastRuntime`
 - `forecastRiskLevel`
 
+### OpenRemote DB/schema note
+
+- OpenRemote uses PostgreSQL internally for Manager storage.
+- This project does **not** copy or mirror the OpenRemote database.
+- Integration should continue through OpenRemote APIs/service registration/attribute publishing only.
+- If local durable sessions are implemented, they should use this app's own CSV/JSON contract.
+- See `docs/openremote_schema_mapping.md` for mapping notes and the proposed local CSV session-store contract.
+
 ## Installation
 Use Python 3.11.
 
