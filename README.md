@@ -30,7 +30,8 @@ Current deployment shape is a **modular monolith + worker boundary**:
 ### Runtime/session workflows
 - Runtime client boundary (`ForecastRuntimeClient`) and local implementation (`LocalForecastRuntimeClient`)
 - Session/state schemas (`BackendSession`, `BackendState`, observation/prediction/update schemas)
-- In-memory session store (`InMemoryStateStore`) with process-lifetime behavior
+- Default in-memory session store (`InMemoryStateStore`) with process-lifetime behavior
+- Optional local CSV session store (`CsvStateStore`) for app-owned session metadata/state recovery
 - Online orchestration (`OnlineForecastService`) for session create/ingest/update/predict
 - ConvLSTM online backend with Gaussian fallback path
 
@@ -274,7 +275,7 @@ Retraining worker boundary:
 
 - No separate deployed inference HTTP service (runtime boundary is internal today).
 - No broker/queue infrastructure (worker uses shared stores and local dispatch).
-- No durable session store (sessions are runtime-only/in-memory).
+- Durable sessions are opt-in via CSV (`state_store: csv` or `PLUME_STATE_STORE=csv`) and remain local app-owned persistence only.
 - No persisted explanation artifacts for persisted-only forecasts.
 - No automatic OpenRemote asset creation/discovery workflow.
 - No live OpenRemote validation in this repo.
@@ -318,7 +319,7 @@ pytest
 ## Current limitations
 - ConvLSTM online path currently runs inference with random/untrained demo weights unless trained weights are wired in
 - Online backend does not implement gradient-based online training
-- State store is process-local in-memory only
+- State store defaults to process-local in-memory; CSV persistence is opt-in for local recovery and not intended for high-concurrency production use.
 - Ops auth is token-based and limited to `/ops/*`; no full identity provider integration
 - OpenRemote adapter is a **provisional generic payload translation** only (not validated contract, not live integration)
 - OpenRemote HTTP endpoint shapes can vary by deployed OpenRemote version; timestamped/predicted routes may need minor path adjustments for a target instance

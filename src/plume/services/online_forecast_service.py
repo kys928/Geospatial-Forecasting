@@ -167,12 +167,22 @@ class OnlineForecastService:
             },
         )
         self._latest_forecast_by_session[request.session_id] = result
+        artifact_dir = None
+        execution_output_dir = result.execution_metadata.get("output_dir")
+        if isinstance(execution_output_dir, str) and execution_output_dir:
+            artifact_dir = execution_output_dir
+        self.state_store.save_latest_forecast_linkage(request.session_id, result.forecast_id, artifact_dir)
         return result
 
     def get_latest_forecast_result(self, session_id: str) -> ForecastRunResult:
         self.get_session(session_id)
         result = self._latest_forecast_by_session.get(session_id)
         if result is None:
+            linkage = self.state_store.get_latest_forecast_linkage(session_id)
+            if linkage is not None:
+                raise ValueError(
+                    "Latest forecast exists as persisted linkage only; full forecast result is not recoverable after restart"
+                )
             raise ValueError(f"No forecast result found for session: {session_id}")
         return result
 

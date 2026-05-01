@@ -34,3 +34,9 @@ class InMemoryStateStore(BaseStateStore):
     def delete_session(self, session_id: str) -> None:
         self._sessions.pop(session_id, None)
         self._states.pop(session_id, None)
+
+    def save_latest_forecast_linkage(self, session_id: str, forecast_id: str, artifact_dir: str | None) -> None:
+        return None
+
+    def get_latest_forecast_linkage(self, session_id: str) -> dict[str, str] | None:
+        return None

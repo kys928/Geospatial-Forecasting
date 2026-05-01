@@ -21,10 +21,11 @@ from plume.services.observation_service import ObservationService
 from plume.services.online_forecast_service import OnlineForecastService
 from plume.storage.file_forecast_store import FileForecastStore
 from plume.state.base import BaseStateStore
+from plume.state.csv_store import CsvStateStore
 from plume.state.in_memory import InMemoryStateStore
 from plume.utils.config import Config
 
-_STATE_STORE_SINGLETON: BaseStateStore = InMemoryStateStore()
+_STATE_STORE_SINGLETON: BaseStateStore | None = None
 logger = logging.getLogger(__name__)
 
 
@@ -37,6 +38,17 @@ def get_forecast_service(config_dir: str | None = None):
 
 
 def get_state_store() -> BaseStateStore:
+    global _STATE_STORE_SINGLETON
+    if _STATE_STORE_SINGLETON is not None:
+        return _STATE_STORE_SINGLETON
+
+    backend_config = get_config().load_backend()
+    state_store_type = str(os.getenv("PLUME_STATE_STORE", backend_config.get("state_store", "in_memory"))).strip().lower()
+    if state_store_type == "csv":
+        store_dir = os.getenv("PLUME_SESSION_STORE_DIR", "artifacts/session_store")
+        _STATE_STORE_SINGLETON = CsvStateStore(store_dir=store_dir)
+    else:
+        _STATE_STORE_SINGLETON = InMemoryStateStore()
     return _STATE_STORE_SINGLETON
 
 
