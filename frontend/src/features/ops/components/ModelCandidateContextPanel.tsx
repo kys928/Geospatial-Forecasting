@@ -73,12 +73,12 @@ export function ModelCandidateContextPanel() {
   return (
     <section className="panel">
       <h3>Model candidate context</h3>
-      <p className="muted">Read-only context only. This panel does not approve, reject, activate, or roll back models.</p>
+      <p className="muted">Read-only context. This panel does not approve, reject, activate, or roll back models.</p>
       <div className="button-row">
-        <button className="secondary-button" onClick={() => void refresh()} disabled={loading}>{loading ? "Refreshing..." : "Refresh context"}</button>
+        <button className="secondary-button" onClick={() => void refresh()} disabled={loading}>{loading ? "Refreshing..." : "Refresh"}</button>
       </div>
 
-      {loading ? <p className="muted">Loading candidate context...</p> : null}
+      {loading ? <p className="muted">Loading candidate context…</p> : null}
       {error ? <p role="alert">{error}</p> : null}
       {!loading && !error && !context ? <p className="muted">Candidate context is currently unavailable.</p> : null}
 
@@ -110,7 +110,7 @@ export function ModelCandidateContextPanel() {
             )
           ) : null}
 
-          <h4 style={{ marginTop: 16 }}>Safe user actions</h4>
+          <h4 style={{ marginTop: 16 }}>Suggested safe actions</h4>
           {safeUserActions.length > 0 ? (
             <div style={{ display: "grid", gap: 8 }}>
               {safeUserActions.map((action, index) => (
