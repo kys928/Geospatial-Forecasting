@@ -253,6 +253,12 @@ Hugging Face preload env (used when `--preload-models` is passed or `PLUME_PRELO
 
 Ops retraining triggers now queue jobs and return immediately. A local worker process executes queued jobs.
 
+Retraining worker boundary:
+- API submits retraining jobs and reports status.
+- Worker claims queued jobs and owns execution (training + candidate registration).
+- Job store, model registry, and ops event log are the shared boundary.
+- This remains a single-repo deployment with an optional worker process (not a brokered microservice split).
+
 - API trigger endpoint: `POST /ops/retraining/trigger`
 - Auto-dispatch on trigger: enabled by default via `PLUME_OPS_AUTO_DISPATCH_WORKER=true`
 - Manual worker entrypoint:

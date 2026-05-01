@@ -230,7 +230,13 @@ def register_ops_routes(app: FastAPI, *, forecast_service, dispatch_worker=dispa
                 output_dir=payload.output_dir,
             )
             if _should_auto_dispatch_worker():
-                dispatch_worker(jobs_path=paths["jobs"], config_dir=Path(forecast_service.config.config_dir))
+                dispatch_worker(
+                    jobs_path=paths["jobs"],
+                    registry_path=paths["registry"],
+                    state_path=paths["state"],
+                    events_path=paths["events"],
+                    config_dir=Path(forecast_service.config.config_dir),
+                )
             return {"submitted": True, "policy_check": policy_check, "job": job}
         except HTTPException:
             raise
