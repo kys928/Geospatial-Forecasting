@@ -51,6 +51,9 @@ def test_run_execution_worker_delegates_to_unified_runner(monkeypatch):
                         "once": True,
                         "forecast_jobs_path": "f.json",
                         "artifact_root": "artifacts",
+                        "loop": True,
+                        "interval_seconds": 1.5,
+                        "max_iterations": 4,
                         "retraining_jobs_path": None,
                         "registry_path": None,
                         "state_path": "state.json",
@@ -75,6 +78,7 @@ def test_run_execution_worker_delegates_to_unified_runner(monkeypatch):
         "--kind",
         "all",
         "--once",
+        "--loop",
         "--forecast-jobs-path",
         "f.json",
         "--artifact-root",
@@ -83,6 +87,10 @@ def test_run_execution_worker_delegates_to_unified_runner(monkeypatch):
         "state.json",
         "--config-dir",
         "configs",
+        "--interval-seconds",
+        "1.5",
+        "--max-iterations",
+        "4",
     ]
 
 

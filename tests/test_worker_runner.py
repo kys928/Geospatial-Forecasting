@@ -52,6 +52,42 @@ def test_runner_all_calls_both(monkeypatch, capsys):
     }
 
 
+def test_runner_loop_max_iterations_forecast(monkeypatch, capsys):
+    calls = []
+    monkeypatch.setattr(run, "_run_forecast", lambda _args: calls.append("forecast") or {"status": "idle"})
+    monkeypatch.setattr(run.time, "sleep", lambda _seconds: None)
+
+    assert run.main(["--kind", "forecast", "--loop", "--max-iterations", "2", "--interval-seconds", "0"]) == 0
+
+    out_lines = [json.loads(line) for line in capsys.readouterr().out.strip().splitlines()]
+    assert calls == ["forecast", "forecast"]
+    assert [line["iteration"] for line in out_lines] == [1, 2]
+
+
+def test_runner_loop_all_calls_both_each_iteration(monkeypatch):
+    calls = []
+    monkeypatch.setattr(run, "_run_forecast", lambda _args: calls.append("forecast") or {"status": "idle"})
+    monkeypatch.setattr(run, "_run_retraining", lambda _args: calls.append("retraining") or {"status": "idle"})
+    monkeypatch.setattr(run.time, "sleep", lambda _seconds: None)
+
+    assert run.main(["--kind", "all", "--loop", "--max-iterations", "2", "--interval-seconds", "0"]) == 0
+    assert calls == ["forecast", "retraining", "forecast", "retraining"]
+
+
+def test_runner_loop_keyboard_interrupt_stops_cleanly(monkeypatch, capsys):
+    monkeypatch.setattr(run, "_run_forecast", lambda _args: {"status": "idle"})
+
+    def _boom(_seconds: float) -> None:
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(run.time, "sleep", _boom)
+
+    assert run.main(["--kind", "forecast", "--loop", "--interval-seconds", "0"]) == 0
+    lines = [json.loads(line) for line in capsys.readouterr().out.strip().splitlines()]
+    assert lines[-1]["reason"] == "keyboard_interrupt"
+    assert lines[-1]["iterations"] == 1
+
+
 def test_worker_runner_import_does_not_require_fastapi(monkeypatch):
     monkeypatch.setitem(sys.modules, "fastapi", None)
     mod = importlib.import_module("plume.workers.run")
