@@ -20,9 +20,9 @@ def _session_response(session) -> dict[str, object]:
     }
 
 
-def _get_latest_session_forecast_result(online_forecast_service, session_id: str):
+def _get_latest_session_forecast_result(runtime_client, session_id: str):
     try:
-        return online_forecast_service.get_latest_forecast_result(session_id)
+        return runtime_client.get_latest_session_forecast_result(session_id)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ValueError as exc:
@@ -32,7 +32,7 @@ def _get_latest_session_forecast_result(online_forecast_service, session_id: str
 def register_session_routes(
     app: FastAPI,
     *,
-    online_forecast_service,
+    runtime_client,
     forecast_service,
     export_service,
     explain_service,
@@ -42,22 +42,18 @@ def register_session_routes(
     def create_session(payload: SessionCreateRequest | None = None):
         payload = (payload.model_dump(exclude_none=True) if payload is not None else {})
         backend_name = payload.get("backend_name") or backend_config.get("default_backend", "convlstm_online")
-        session = online_forecast_service.create_session(
-            backend_name=str(backend_name),
-            model_name=payload.get("model_name"),
-            metadata=payload.get("metadata") or {},
-        )
+        session = runtime_client.create_session(payload)
         return _session_response(session)
 
     @app.get("/sessions")
     def list_sessions():
-        sessions = online_forecast_service.list_sessions()
+        sessions = runtime_client.list_sessions()
         return [_session_response(session) for session in sessions]
 
     @app.get("/sessions/{session_id}")
     def get_session(session_id: str):
         try:
-            session = online_forecast_service.get_session(session_id)
+            session = runtime_client.get_session(session_id)
         except KeyError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         return _session_response(session)
@@ -65,7 +61,7 @@ def register_session_routes(
     @app.get("/sessions/{session_id}/state")
     def get_session_state(session_id: str):
         try:
-            return online_forecast_service.get_state_summary(session_id)
+            return runtime_client.get_session_state(session_id)
         except KeyError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
 
@@ -74,8 +70,8 @@ def register_session_routes(
         payload_dict = payload.model_dump()
         observations_payload = payload_dict.get("observations", [])
         try:
-            batch = online_forecast_service.normalize_observation_batch(session_id, observations_payload)
-            state = online_forecast_service.ingest_observations(batch)
+            ingest_result = runtime_client.ingest_observations(session_id, payload_dict)
+            state = ingest_result["state"]
         except KeyError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         except (TypeError, ValueError) as exc:
@@ -83,7 +79,7 @@ def register_session_routes(
 
         update_result = None
         if bool(backend_config.get("auto_update_on_ingest", True)):
-            update_result = online_forecast_service.update_session(session_id)
+            update_result = ingest_result["auto_update_result"]
 
         return {
             "session_id": state.session_id,
@@ -104,7 +100,7 @@ def register_session_routes(
     @app.post("/sessions/{session_id}/update")
     def update_session(session_id: str):
         try:
-            result = online_forecast_service.update_session(session_id)
+            result = runtime_client.update_session(session_id)
         except KeyError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
 
@@ -123,11 +119,10 @@ def register_session_routes(
     @app.post("/sessions/{session_id}/predict")
     def predict_session(session_id: str, payload: SessionPredictionRequest | None = None):
         try:
-            request = online_forecast_service.build_prediction_request(
+            result = runtime_client.predict_session(
                 session_id=session_id,
                 payload=(payload.model_dump(exclude_none=True) if payload is not None else None),
             )
-            result = online_forecast_service.predict(request)
         except KeyError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         except (TypeError, ValueError) as exc:
@@ -137,22 +132,22 @@ def register_session_routes(
 
     @app.get("/sessions/{session_id}/forecast/latest/summary")
     def get_session_latest_forecast_summary(session_id: str):
-        result = _get_latest_session_forecast_result(online_forecast_service, session_id)
+        result = _get_latest_session_forecast_result(runtime_client, session_id)
         return forecast_service.summarize_forecast(result)
 
     @app.get("/sessions/{session_id}/forecast/latest/geojson")
     def get_session_latest_forecast_geojson(session_id: str):
-        result = _get_latest_session_forecast_result(online_forecast_service, session_id)
+        result = _get_latest_session_forecast_result(runtime_client, session_id)
         return export_service.to_geojson(result)
 
     @app.get("/sessions/{session_id}/forecast/latest/raster-metadata")
     def get_session_latest_forecast_raster_metadata(session_id: str):
-        result = _get_latest_session_forecast_result(online_forecast_service, session_id)
+        result = _get_latest_session_forecast_result(runtime_client, session_id)
         return export_service.to_raster_metadata(result).__dict__
 
     @app.get("/sessions/{session_id}/forecast/latest/explanation")
     def get_session_latest_forecast_explanation(session_id: str, threshold: float = 1e-5, use_llm: bool = True):
-        result = _get_latest_session_forecast_result(online_forecast_service, session_id)
+        result = _get_latest_session_forecast_result(runtime_client, session_id)
         explanation_result = explain_service.explain(result, threshold=threshold, use_llm=use_llm)
         return {
             "forecast_id": result.forecast_id,

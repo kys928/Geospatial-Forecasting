@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from dataclasses import replace
 import logging
 
 from fastapi import FastAPI, HTTPException
@@ -9,30 +8,6 @@ from plume.api.errors import bad_request, conflict, not_found
 from plume.api.schemas import ForecastCreateRequest, ForecastCreateResponse, ForecastListResponse
 from plume.storage.file_forecast_store import ForecastArtifactReadError
 
-
-def _build_scenario_from_payload(forecast_service, payload: dict | None):
-    payload = payload or {}
-    default_scenario = forecast_service.config.load_scenario()
-    latitude = float(payload.get("latitude", default_scenario.latitude))
-    longitude = float(payload.get("longitude", default_scenario.longitude))
-    emissions_rate = float(payload.get("emissions_rate", default_scenario.emissions_rate))
-    start = payload.get("start", default_scenario.start)
-    end = payload.get("end", default_scenario.end)
-    pollution_type = payload.get("pollution_type", default_scenario.pollution_type)
-    duration = float(payload.get("duration", default_scenario.duration))
-    release_height = float(payload.get("release_height", default_scenario.release_height))
-    return replace(
-        default_scenario,
-        source=(latitude, longitude),
-        latitude=latitude,
-        longitude=longitude,
-        emissions_rate=emissions_rate,
-        start=start,
-        end=end,
-        pollution_type=pollution_type,
-        duration=duration,
-        release_height=release_height,
-    )
 
 
 def _artifact_corrupt_error(forecast_id: str, artifact: str) -> HTTPException:
@@ -43,7 +18,7 @@ def _artifact_corrupt_error(forecast_id: str, artifact: str) -> HTTPException:
     )
 
 
-def register_forecast_routes(app: FastAPI, *, forecast_service, forecast_store, export_service) -> None:
+def register_forecast_routes(app: FastAPI, *, runtime_client, forecast_store, export_service) -> None:
     logger = logging.getLogger(__name__)
 
     @app.get("/forecasts", response_model=ForecastListResponse)
@@ -61,8 +36,7 @@ def register_forecast_routes(app: FastAPI, *, forecast_service, forecast_store, 
     @app.post("/forecast", response_model=ForecastCreateResponse)
     async def create_forecast(payload: ForecastCreateRequest | None = None):
         payload = (payload.model_dump(exclude_none=True) if payload is not None else {})
-        scenario = _build_scenario_from_payload(forecast_service, payload)
-        result = forecast_service.run_forecast(scenario=scenario, run_name=payload.get("run_name"))
+        result = runtime_client.run_batch_forecast(payload)
         try:
             artifact_metadata = forecast_store.save(result)
         except FileExistsError as exc:

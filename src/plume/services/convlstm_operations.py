@@ -9,7 +9,6 @@ import os
 from pathlib import Path
 import subprocess
 import sys
-import time
 from typing import Callable
 import uuid
 
@@ -1175,29 +1174,6 @@ def dispatch_retraining_worker(
     ]
     return subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
 
-
-def run_retraining_worker_loop(
-    *,
-    job_store: RetrainingJobStore,
-    config_dir: str | Path | None = None,
-    once: bool = False,
-    poll_interval_seconds: float = 1.0,
-) -> int:
-    processed = 0
-    while True:
-        completed = process_next_queued_retraining_job(
-            job_store=job_store,
-            worker_pid=os.getpid(),
-            train_fn=lambda job: run_local_retraining_job(job, config_dir=config_dir),
-        )
-        if completed is None:
-            if once:
-                return processed
-            time.sleep(max(0.1, poll_interval_seconds))
-            continue
-        processed += 1
-        if once:
-            return processed
 
 
 @dataclass
