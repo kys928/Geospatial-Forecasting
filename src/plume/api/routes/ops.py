@@ -15,6 +15,7 @@ from plume.api.ops_schemas import (
     OpsEventsResponse,
     OpsJobsResponse,
     OpsRegistryResponse,
+    ModelCandidateContextResponse,
     OpsStatusResponse,
     RetrainingExplanationContextResponse,
     RetrainingRecommendationResponse,
@@ -39,6 +40,7 @@ from plume.services.convlstm_operations import (
     summarize_operational_status,
 )
 
+from plume.services.model_candidate_context import build_model_candidate_context
 from plume.services.retraining_explanation_context import build_retraining_explanation_context
 from plume.services.retraining_recommendation import build_retraining_recommendation
 
@@ -243,6 +245,16 @@ def register_ops_routes(app: FastAPI, *, forecast_service, dispatch_worker=dispa
             return _build_retraining_recommendation_for_ops()
         except Exception as exc:
             raise HTTPException(status_code=400, detail=f"Unable to build retraining recommendation: {exc}") from exc
+
+    @app.get("/ops/models/candidate/context", response_model=ModelCandidateContextResponse)
+    def get_model_candidate_context(_role: str = Depends(_require_ops_read_access)):
+        paths = _ops_paths()
+        try:
+            registry_payload = ModelRegistry(paths["registry"]).load()
+            recent_events = _load_recent_events(paths["events"], limit=25)
+            return build_model_candidate_context(registry_payload=registry_payload, recent_events=recent_events)
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=f"Unable to build model candidate context: {exc}") from exc
 
     @app.get("/ops/retraining/recommendation/context", response_model=RetrainingExplanationContextResponse)
     def get_retraining_recommendation_context(_role: str = Depends(_require_ops_read_access)):

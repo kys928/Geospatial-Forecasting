@@ -151,6 +151,41 @@ def test_ops_read_endpoints(monkeypatch, tmp_path: Path):
 
 
 
+
+
+def test_ops_model_candidate_context_endpoint(monkeypatch, tmp_path: Path):
+    for key, value in _seed_ops_files(tmp_path).items():
+        monkeypatch.setenv(key, value)
+    monkeypatch.setenv("PLUME_OPS_AUTH_ENABLED", "true")
+    monkeypatch.setenv("PLUME_OPS_API_TOKEN", "operator-token")
+    monkeypatch.setenv("PLUME_OPS_READONLY_TOKEN", "readonly-token")
+    monkeypatch.setenv("PLUME_OPS_REQUIRE_AUTH_FOR_READ", "true")
+    client = TestClient(create_app())
+
+    before = client.get("/ops/registry", headers=_auth_header("readonly-token")).json()
+    response = client.get("/ops/models/candidate/context", headers=_auth_header("readonly-token"))
+    after = client.get("/ops/registry", headers=_auth_header("readonly-token")).json()
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["topic"] == "model_candidate_review"
+    assert "decision_state" in body
+    assert isinstance(body["safe_user_actions"], list)
+    assert before == after
+
+
+def test_ops_model_candidate_context_requires_read_access(monkeypatch, tmp_path: Path):
+    for key, value in _seed_ops_files(tmp_path).items():
+        monkeypatch.setenv(key, value)
+    monkeypatch.setenv("PLUME_OPS_AUTH_ENABLED", "true")
+    monkeypatch.setenv("PLUME_OPS_API_TOKEN", "operator-token")
+    monkeypatch.setenv("PLUME_OPS_READONLY_TOKEN", "readonly-token")
+    monkeypatch.setenv("PLUME_OPS_REQUIRE_AUTH_FOR_READ", "true")
+    client = TestClient(create_app())
+
+    unauth = client.get("/ops/models/candidate/context")
+    assert unauth.status_code == 401
+
 def test_ops_approve_reject_activate_rollback_and_errors(monkeypatch, tmp_path: Path):
     for key, value in _seed_ops_files(tmp_path).items():
         monkeypatch.setenv(key, value)
