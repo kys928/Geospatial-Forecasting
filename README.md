@@ -326,6 +326,8 @@ See `docs/api-contract.md` for response examples.
 pytest
 ```
 
+Pull requests to `main` run backend `pytest -q` and frontend `npm run build` in GitHub Actions CI.
+
 ## Current limitations
 - ConvLSTM online path currently runs inference with random/untrained demo weights unless trained weights are wired in
 - Online backend does not implement gradient-based online training
