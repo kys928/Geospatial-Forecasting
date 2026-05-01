@@ -100,5 +100,6 @@ Notes:
 ## Ops recommendation explanation context
 
 - The Ops recommendation API includes `GET /ops/retraining/recommendation/context` for LLM-ready structured context.
+- Ops also exposes `GET /ops/models/candidate/context` for deterministic candidate-vs-active review context used by UI/LLM explanation layers; it does not approve/promote models automatically.
 - This context is deterministic, derived from current operational recommendation state, and does not call an LLM.
 - It is intended for future explanation layers and Training/Ops UX surfaces.

@@ -63,6 +63,18 @@ class RetrainingExplanationContextResponse(BaseModel):
     llm_instructions: list[str]
 
 
+
+
+class ModelCandidateContextResponse(BaseModel):
+    topic: str
+    active_model: dict[str, Any] | None = None
+    candidate_model: dict[str, Any] | None = None
+    decision_state: str
+    comparison: dict[str, Any]
+    safe_user_actions: list[dict[str, str]]
+    system_boundaries: list[str]
+    llm_instructions: list[str]
+
 class RetrainingTriggerRequest(BaseModel):
     manual_override: bool = Field(default=False)
     dataset_snapshot_ref: str | None = Field(default=None)
