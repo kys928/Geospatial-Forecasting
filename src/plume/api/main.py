@@ -113,7 +113,6 @@ def create_app() -> FastAPI:
         forecast_service=forecast_service,
         export_service=export_service,
         explain_service=explain_service,
-        backend_config=backend_config,
     )
     register_ops_routes(app, forecast_service=forecast_service, dispatch_worker=dispatch_retraining_worker)
 

@@ -2,9 +2,11 @@ from __future__ import annotations
 
 from dataclasses import replace
 
-from plume.runtime.client import ForecastRuntimeClient
+from plume.runtime.client import ForecastRuntimeClient, RuntimeObservationIngestResult
 from plume.services.forecast_service import ForecastRunResult, ForecastService
 from plume.services.online_forecast_service import OnlineForecastService
+from plume.schemas.backend_session import BackendSession
+from plume.schemas.update_result import UpdateResult
 
 
 class LocalForecastRuntimeClient(ForecastRuntimeClient):
@@ -44,7 +46,7 @@ class LocalForecastRuntimeClient(ForecastRuntimeClient):
         )
         return self._forecast_service.run_forecast(scenario=scenario, run_name=payload.get("run_name"))
 
-    def create_session(self, payload: dict | None) -> object:
+    def create_session(self, payload: dict | None) -> BackendSession:
         payload = payload or {}
         backend_name = payload.get("backend_name") or self._backend_config.get("default_backend", "convlstm_online")
         return self._online_forecast_service.create_session(
@@ -53,16 +55,16 @@ class LocalForecastRuntimeClient(ForecastRuntimeClient):
             metadata=payload.get("metadata") or {},
         )
 
-    def list_sessions(self) -> list[object]:
+    def list_sessions(self) -> list[BackendSession]:
         return self._online_forecast_service.list_sessions()
 
-    def get_session(self, session_id: str) -> object:
+    def get_session(self, session_id: str) -> BackendSession:
         return self._online_forecast_service.get_session(session_id)
 
     def get_session_state(self, session_id: str) -> dict[str, object]:
         return self._online_forecast_service.get_state_summary(session_id)
 
-    def ingest_observations(self, session_id: str, payload_dict: dict[str, object]) -> object:
+    def ingest_observations(self, session_id: str, payload_dict: dict[str, object]) -> RuntimeObservationIngestResult:
         observations_payload = payload_dict.get("observations", [])
         batch = self._online_forecast_service.normalize_observation_batch(session_id, observations_payload)
         state = self._online_forecast_service.ingest_observations(batch)
@@ -71,9 +73,9 @@ class LocalForecastRuntimeClient(ForecastRuntimeClient):
         if bool(self._backend_config.get("auto_update_on_ingest", True)):
             update_result = self._online_forecast_service.update_session(session_id)
 
-        return {"state": state, "auto_update_result": update_result}
+        return RuntimeObservationIngestResult(state=state, auto_update_result=update_result)
 
-    def update_session(self, session_id: str) -> object:
+    def update_session(self, session_id: str) -> UpdateResult:
         return self._online_forecast_service.update_session(session_id)
 
     def predict_session(self, session_id: str, payload: dict | None) -> ForecastRunResult:

@@ -42,7 +42,23 @@ def test_online_session_lifecycle_endpoints():
         json={"observations": [_observation_payload()]},
     )
     assert ingest_response.status_code == 200
-    assert ingest_response.json()["observation_count"] >= 1
+    ingest_json = ingest_response.json()
+    assert ingest_json["observation_count"] >= 1
+    assert set(ingest_json.keys()) == {
+        "session_id",
+        "observation_count",
+        "state_version",
+        "last_update_time",
+        "auto_update_result",
+    }
+    assert ingest_json["auto_update_result"] is not None
+    assert set(ingest_json["auto_update_result"].keys()) == {
+        "success",
+        "updated_at",
+        "state_version",
+        "message",
+        "changed",
+    }
 
     update_response = client.post(f"/sessions/{session_id}/update")
     assert update_response.status_code == 200
