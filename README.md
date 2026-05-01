@@ -8,21 +8,16 @@ Geospatial Forecasting is an early proof-of-concept Python project for airborne 
 
 This is **not** a production atmospheric dispersion platform, and real online learning is **not** implemented yet.
 
-## Architecture direction (current)
+## Current architecture
 
-The architecture is centered on backend runtime behavior and session lifecycle:
+Current deployment shape is a **modular monolith + worker boundary**:
 
-- `src/plume/backends`: runtime backend interface + implementations
-  - `convlstm_online` backend as the primary online runtime path
-  - `gaussian_fallback` backend wrapping Gaussian plume as fallback
-  - `mock_online` retained as legacy/dev scaffolding
-- `src/plume/state`: state-store abstraction and in-memory implementation
-- `src/plume/services/online_forecast_service.py`: session, ingest, update, predict orchestration
-- `src/plume/services/observation_service.py`: observation validation/normalization boundary
-- `src/plume/services/forecast_service.py`: batch one-off forecasting service (legacy path preserved)
-- `src/plume/api`: thin FastAPI routes for both batch and online session APIs
-
-Gaussian plume remains available as the baseline batch model and online fallback path.
+- **Control/API layer (`src/plume/api`)**: one FastAPI app exposing batch, sessions, service/runtime status, and ops routes.
+- **Runtime boundary (`src/plume/runtime`)**: `ForecastRuntimeClient` protocol with `LocalForecastRuntimeClient` implementation. Local runtime delegates to existing `ForecastService` (batch) and `OnlineForecastService` (session workflows).
+- **Forecast artifact boundary**: batch forecast artifacts are durably written to `artifacts/forecasts/<forecast_id>/...` and can be listed/retrieved by API.
+- **Retraining worker boundary (`src/plume/workers/retraining_worker.py`)**: API submits jobs; a dedicated worker process claims/executes jobs. Shared boundary is job store + model registry + operational state + event log.
+- **OpenRemote boundary (`src/plume/openremote`)**: optional service registration lifecycle and optional forecast attribute publishing; both are disabled by default.
+- **Frontend workspaces (`frontend/src/pages`)**: React pages for Map/Forecast (`/forecast`), Sessions (`/sessions`), and Ops (`/ops`).
 
 ## What is implemented now
 
@@ -32,14 +27,12 @@ Gaussian plume remains available as the baseline batch model and online fallback
 - Gaussian plume concentration grid generation
 - Forecast summary statistics (`max_concentration`, `mean_concentration`)
 
-### Online backend skeleton
-- Backend abstraction (`BaseBackend`)
+### Runtime/session workflows
+- Runtime client boundary (`ForecastRuntimeClient`) and local implementation (`LocalForecastRuntimeClient`)
 - Session/state schemas (`BackendSession`, `BackendState`, observation/prediction/update schemas)
-- In-memory state store (`InMemoryStateStore`), process-lifetime singleton in API wiring
-- `ConvLSTMBackend` primary online path (random/untrained demo weights currently)
-- `GaussianFallbackBackend` wrapping existing Gaussian logic
-- `MockOnlineBackend` retained for legacy/dev testing
-- Online service orchestration (`OnlineForecastService`)
+- In-memory session store (`InMemoryStateStore`) with process-lifetime behavior
+- Online orchestration (`OnlineForecastService`) for session create/ingest/update/predict
+- ConvLSTM online backend with Gaussian fallback path
 
 ### Session lifecycle semantics
 Session statuses are explicit and lightweight:
@@ -71,6 +64,7 @@ Existing batch endpoints remain:
 - `GET /forecast/{forecast_id}/summary`
 - `GET /forecast/{forecast_id}/geojson`
 - `GET /forecast/{forecast_id}/raster-metadata`
+- `POST /ops/retraining/trigger` (submits retraining jobs)
 
 Online endpoints:
 - `POST /sessions`
@@ -258,6 +252,32 @@ Retraining worker boundary:
 - Worker claims queued jobs and owns execution (training + candidate registration).
 - Job store, model registry, and ops event log are the shared boundary.
 - This remains a single-repo deployment with an optional worker process (not a brokered microservice split).
+
+## OpenRemote status (honest current state)
+
+- External service registration exists and is **disabled by default**.
+- Forecast attribute publishing exists and is **disabled by default**.
+- Runtime sink modes are `disabled` or `http`; fake sink usage is test-only.
+- `forecastGeoJson` publishing uses exported forecast GeoJSON payloads from the forecast result.
+- HTTP mode is still provisional until validated against the target OpenRemote deployment.
+- This repository does **not** claim a live-validated OpenRemote contract yet.
+
+## Not implemented yet (important limits)
+
+- No separate deployed inference HTTP service (runtime boundary is internal today).
+- No broker/queue infrastructure (worker uses shared stores and local dispatch).
+- No durable session store (sessions are runtime-only/in-memory).
+- No persisted explanation artifacts for persisted-only forecasts.
+- No automatic OpenRemote asset creation/discovery workflow.
+- No live OpenRemote validation in this repo.
+- ConvLSTM should not be treated as a proven production default unless a real trained checkpoint/registry model is configured.
+
+## Service-boundary roadmap (concise)
+
+- **Current**: single FastAPI control/runtime service with modular boundaries + dedicated retraining worker boundary.
+- **Inference direction**: `ForecastRuntimeClient` is the seam for future optional remote inference service integration.
+- **Training direction**: worker already owns retraining execution boundary.
+- **Not claimed**: this is not yet two independently deployed services.
 
 - API trigger endpoint: `POST /ops/retraining/trigger`
 - Auto-dispatch on trigger: enabled by default via `PLUME_OPS_AUTO_DISPATCH_WORKER=true`
