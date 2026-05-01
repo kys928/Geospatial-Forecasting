@@ -16,6 +16,7 @@ from plume.services.explain_service import ExplainService
 from plume.services.export_service import ExportService
 from plume.services.forecast_service import ForecastService
 from plume.services.llm_service import LLMService
+from plume.runtime.local_client import LocalForecastRuntimeClient
 from plume.services.observation_service import ObservationService
 from plume.services.online_forecast_service import OnlineForecastService
 from plume.storage.file_forecast_store import FileForecastStore
@@ -51,6 +52,15 @@ def get_online_forecast_service(config_dir: str | None = None) -> OnlineForecast
         observation_service=get_observation_service(),
     )
 
+
+
+def get_forecast_runtime_client(config_dir: str | None = None) -> LocalForecastRuntimeClient:
+    forecast_service = get_forecast_service(config_dir=config_dir)
+    return LocalForecastRuntimeClient(
+        forecast_service=forecast_service,
+        online_forecast_service=get_online_forecast_service(config_dir=config_dir),
+        backend_config=forecast_service.config.load_backend(),
+    )
 
 def get_explain_service(config_dir: str | None = None):
     config = get_config(config_dir=config_dir)

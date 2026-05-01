@@ -10,6 +10,7 @@ from plume.api.deps import (
     get_explain_service,
     get_export_service,
     get_forecast_service,
+    get_forecast_runtime_client,
     get_forecast_store,
     get_online_forecast_service,
     get_openremote_publishing_runtime,
@@ -70,6 +71,7 @@ def create_app() -> FastAPI:
 
     forecast_service = get_forecast_service()
     online_forecast_service = get_online_forecast_service()
+    runtime_client = get_forecast_runtime_client()
     explain_service = get_explain_service()
     export_service = get_export_service()
     forecast_store = get_forecast_store()
@@ -106,10 +108,10 @@ def create_app() -> FastAPI:
         forecast_store=forecast_store,
         runtime_status_payload=_runtime_status_payload,
     )
-    register_forecast_routes(app, forecast_service=forecast_service, forecast_store=forecast_store, export_service=export_service)
+    register_forecast_routes(app, runtime_client=runtime_client, forecast_store=forecast_store, export_service=export_service)
     register_session_routes(
         app,
-        online_forecast_service=online_forecast_service,
+        runtime_client=runtime_client,
         forecast_service=forecast_service,
         export_service=export_service,
         explain_service=explain_service,

@@ -264,13 +264,12 @@ Retraining worker boundary:
 - Manual worker entrypoint:
 
 ```bash
-PYTHONPATH=src python scripts/run_retraining_worker.py --once
+PYTHONPATH=src python scripts/run_retraining_worker.py
 ```
 
 Useful worker flags:
 - `--jobs-path <path>`: override retraining job store location
 - `--config-dir <path>`: override config directory containing `convlstm_training.yaml`
-- `--poll-interval <seconds>`: poll cadence in loop mode
 
 Ops metadata persistence can use a single SQLite file by setting:
 
