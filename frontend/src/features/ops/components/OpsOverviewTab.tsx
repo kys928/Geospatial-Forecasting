@@ -13,25 +13,23 @@ export function OpsOverviewTab() {
   const jobs = useOpsJobs();
 
   return (
-    <>
-      <div className="workspace-grid" style={{ gridTemplateColumns: "1fr 1fr 1fr" }}>
-        <div className="workspace-column">
-          <OpsWarningsPanel latestWarningOrError={opsStatus.status?.latest_warning_or_error ?? null} latestFailureReason={opsStatus.status?.last_retraining_job_failure_reason ?? null} />
-        </div>
-        <div className="workspace-column">
-          <OpsControlTower
-            status={opsStatus.status}
-            loading={opsStatus.loading}
-            onRefreshStatus={() => void opsStatus.refresh()}
-            onRefreshJobs={() => void jobs.refresh()}
-          />
-        </div>
-        <div className="workspace-column">
-          <OpsEventsPanel enabled={Boolean(availability.opsAvailable)} />
-          <RetrainingRecommendationPanel />
-          <ModelCandidateContextPanel />
-        </div>
+    <div className="workspace-grid" style={{ gridTemplateColumns: "1fr 1fr 1fr" }}>
+      <div className="workspace-column">
+        <OpsWarningsPanel latestWarningOrError={opsStatus.status?.latest_warning_or_error ?? null} latestFailureReason={opsStatus.status?.last_retraining_job_failure_reason ?? null} />
       </div>
-    </>
+      <div className="workspace-column">
+        <OpsControlTower
+          status={opsStatus.status}
+          loading={opsStatus.loading}
+          onRefreshStatus={() => void opsStatus.refresh()}
+          onRefreshJobs={() => void jobs.refresh()}
+        />
+      </div>
+      <div className="workspace-column" style={{ display: "grid", gap: 12 }}>
+        <RetrainingRecommendationPanel />
+        <ModelCandidateContextPanel />
+        <OpsEventsPanel enabled={Boolean(availability.opsAvailable)} />
+      </div>
+    </div>
   );
 }

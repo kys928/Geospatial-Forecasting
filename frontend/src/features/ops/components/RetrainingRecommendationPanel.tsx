@@ -25,12 +25,12 @@ export function RetrainingRecommendationPanel() {
   return (
     <section className="panel">
       <h3>Retraining recommendation</h3>
-      <p className="muted">Read-only guidance only. This panel does not start retraining or change any active model.</p>
+      <p className="muted">Read-only guidance. Viewing this panel does not start retraining or change the active model.</p>
       <div className="button-row">
-        <button className="secondary-button" onClick={() => void refresh()} disabled={loading}>{loading ? "Refreshing..." : "Refresh recommendation"}</button>
+        <button className="secondary-button" onClick={() => void refresh()} disabled={loading}>{loading ? "Refreshing..." : "Refresh"}</button>
       </div>
 
-      {loading ? <p className="muted">Loading retraining recommendation...</p> : null}
+      {loading ? <p className="muted">Loading recommendation context…</p> : null}
       {error ? <p role="alert">{error}</p> : null}
 
       {!loading && !error && !recommendation ? <p className="muted">No recommendation is currently available.</p> : null}
@@ -45,7 +45,7 @@ export function RetrainingRecommendationPanel() {
             <div className="detail-list-row"><dt>Reason</dt><dd>{recommendation.reason ?? "n/a"}</dd></div>
           </dl>
 
-          <h4 style={{ marginTop: 16 }}>Safe user actions</h4>
+          <h4 style={{ marginTop: 16 }}>Suggested safe actions</h4>
           {context?.safe_user_actions && context.safe_user_actions.length > 0 ? (
             <div style={{ display: "grid", gap: 8 }}>
               {context.safe_user_actions.map((action, index) => (
