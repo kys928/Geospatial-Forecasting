@@ -401,3 +401,37 @@ def test_api_forecast_explanation_corrupt_artifact_returns_stable_error(monkeypa
     detail = response.json()["detail"]
     assert detail["code"] == "forecast_artifact_corrupt"
     assert detail["details"]["artifact"] == "explanation"
+
+def test_api_forecast_jobs_create_list_get(monkeypatch, tmp_path):
+    monkeypatch.setenv("PLUME_ARTIFACT_DIR", str(tmp_path / "artifacts"))
+    monkeypatch.setenv("PLUME_FORECAST_JOBS_PATH", str(tmp_path / "forecast_jobs.json"))
+    app = create_app()
+    client = TestClient(app)
+
+    create = client.post("/forecast/jobs", json={"run_name": "queued-job"})
+    assert create.status_code == 200
+    job = create.json()
+    assert job["status"] == "queued"
+    assert not (tmp_path / "artifacts" / "forecasts").exists()
+
+    listed = client.get("/forecast/jobs?limit=10")
+    assert listed.status_code == 200
+    assert listed.json()["jobs"][0]["job_id"] == job["job_id"]
+
+    fetched = client.get(f"/forecast/jobs/{job['job_id']}")
+    assert fetched.status_code == 200
+    assert fetched.json()["job_id"] == job["job_id"]
+
+
+def test_api_forecast_jobs_limit_and_missing(monkeypatch, tmp_path):
+    monkeypatch.setenv("PLUME_FORECAST_JOBS_PATH", str(tmp_path / "forecast_jobs.json"))
+    app = create_app()
+    client = TestClient(app)
+
+    bad_limit = client.get("/forecast/jobs?limit=0")
+    assert bad_limit.status_code == 400
+    assert bad_limit.json()["detail"]["code"] == "invalid_limit"
+
+    missing = client.get("/forecast/jobs/missing-job")
+    assert missing.status_code == 404
+    assert missing.json()["detail"]["code"] == "forecast_job_not_found"

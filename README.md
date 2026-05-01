@@ -67,6 +67,23 @@ Existing batch endpoints remain:
 - `GET /forecast/{forecast_id}/raster-metadata`
 - `POST /ops/retraining/trigger` (submits retraining jobs)
 
+
+### Async batch forecast jobs
+
+`POST /forecast` remains synchronous and executes forecast creation inline.
+
+For asynchronous control/execution separation, use:
+- `POST /forecast/jobs` to enqueue a batch forecast request
+- `GET /forecast/jobs` and `GET /forecast/jobs/{job_id}` to track status
+
+A forecast worker process claims queued jobs and executes normal batch forecast logic, then writes standard durable forecast artifacts under the configured artifact root. This boundary prepares future decoupling without introducing a broker, a second HTTP service, or model behavior changes.
+
+Run one worker cycle locally:
+
+```bash
+python scripts/run_forecast_worker.py
+```
+
 Online endpoints:
 - `POST /sessions`
 - `GET /sessions`
