@@ -51,6 +51,18 @@ class RetrainingRecommendationResponse(BaseModel):
     recommended_actions: list[str]
 
 
+
+
+class RetrainingExplanationContextResponse(BaseModel):
+    topic: str
+    summary_seed: str
+    recommendation: dict[str, Any]
+    evidence: dict[str, Any]
+    safe_user_actions: list[dict[str, str]]
+    system_boundaries: list[str]
+    llm_instructions: list[str]
+
+
 class RetrainingTriggerRequest(BaseModel):
     manual_override: bool = Field(default=False)
     dataset_snapshot_ref: str | None = Field(default=None)

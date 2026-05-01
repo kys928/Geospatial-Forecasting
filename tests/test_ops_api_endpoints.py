@@ -139,6 +139,17 @@ def test_ops_read_endpoints(monkeypatch, tmp_path: Path):
     assert "candidate_pending_manual_approval" in event_types
     assert "retraining_ready" in event_types
 
+    recommendation = client.get("/ops/retraining/recommendation", headers=_auth_header("readonly-token"))
+    assert recommendation.status_code == 200
+
+    context = client.get("/ops/retraining/recommendation/context", headers=_auth_header("readonly-token"))
+    assert context.status_code == 200
+    context_body = context.json()
+    assert context_body["topic"] == "retraining_recommendation"
+    assert context_body["recommendation"]["reason"] == recommendation.json()["reason"]
+    assert isinstance(context_body["safe_user_actions"], list)
+
+
 
 def test_ops_approve_reject_activate_rollback_and_errors(monkeypatch, tmp_path: Path):
     for key, value in _seed_ops_files(tmp_path).items():
@@ -243,6 +254,9 @@ def test_ops_auth_rbac_enforced(monkeypatch, tmp_path: Path):
     unauth_read = client.get("/ops/status")
     assert unauth_read.status_code == 401
 
+    unauth_context = client.get("/ops/retraining/recommendation/context")
+    assert unauth_context.status_code == 401
+
     unauth_write = client.post("/ops/candidates/cand-pending/approve", json={"actor": "op-auth"})
     assert unauth_write.status_code == 401
 
@@ -289,6 +303,23 @@ def test_ops_reads_can_be_public_when_configured(monkeypatch, tmp_path: Path):
     assert write_still_guarded.status_code == 401
 
 
+
+
+def test_retraining_context_endpoint_does_not_submit_jobs(monkeypatch, tmp_path: Path):
+    for key, value in _seed_ops_files(tmp_path).items():
+        monkeypatch.setenv(key, value)
+    monkeypatch.setenv("PLUME_OPS_AUTH_ENABLED", "true")
+    monkeypatch.setenv("PLUME_OPS_API_TOKEN", "operator-token")
+    monkeypatch.setenv("PLUME_OPS_READONLY_TOKEN", "readonly-token")
+    monkeypatch.setenv("PLUME_OPS_REQUIRE_AUTH_FOR_READ", "true")
+    client = TestClient(create_app())
+
+    before = client.get("/ops/jobs", headers=_auth_header("readonly-token"))
+    context = client.get("/ops/retraining/recommendation/context", headers=_auth_header("readonly-token"))
+    after = client.get("/ops/jobs", headers=_auth_header("readonly-token"))
+
+    assert context.status_code == 200
+    assert before.json()["jobs"] == after.json()["jobs"]
 def test_ops_endpoints_support_sqlite_metadata_store(monkeypatch, tmp_path: Path):
     db_path = tmp_path / "ops.sqlite3"
     for key in ("PLUME_OPS_STATE_PATH", "PLUME_OPS_REGISTRY_PATH", "PLUME_OPS_JOBS_PATH", "PLUME_OPS_EVENTS_PATH"):
