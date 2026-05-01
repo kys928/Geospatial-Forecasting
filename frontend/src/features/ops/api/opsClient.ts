@@ -6,6 +6,7 @@ import type {
   CandidateDecisionRequest,
   OpsEventsResponse,
   OpsJobsResponse,
+  ModelCandidateContext,
   OpsStatusResponse,
   RetrainingExplanationContext,
   RetrainingRecommendation,
@@ -49,6 +50,10 @@ export const opsClient = {
 
   getRetrainingRecommendationContext(): Promise<RetrainingExplanationContext> {
     return httpGet<RetrainingExplanationContext>("/ops/retraining/recommendation/context", opsHeaders());
+  },
+
+  getModelCandidateContext(): Promise<ModelCandidateContext> {
+    return httpGet<ModelCandidateContext>("/ops/models/candidate/context", opsHeaders());
   },
 
   triggerRetraining(payload: RetrainingTriggerRequest): Promise<RetrainingTriggerResponse> {
