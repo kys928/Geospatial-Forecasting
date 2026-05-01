@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import time
 from pathlib import Path
 
 from plume.forecast_jobs.store import resolve_forecast_jobs_path
@@ -12,6 +13,13 @@ def _resolve_path(explicit: str | None, env_name: str, default: Path) -> Path:
     return Path(explicit) if explicit else Path(os.getenv(env_name, str(default)))
 
 
+def _env_flag(name: str, default: bool) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Run queued plume worker jobs.")
     parser.add_argument("--kind", choices=("forecast", "retraining", "all"), required=True)
@@ -19,6 +27,24 @@ def _build_parser() -> argparse.ArgumentParser:
         "--once",
         action="store_true",
         help="Retained for compatibility; worker runner is one-shot by default.",
+    )
+    parser.add_argument(
+        "--loop",
+        action="store_true",
+        default=_env_flag("PLUME_WORKER_LOOP", False),
+        help="Continuously execute one-shot worker runs.",
+    )
+    parser.add_argument(
+        "--interval-seconds",
+        type=float,
+        default=float(os.getenv("PLUME_WORKER_INTERVAL_SECONDS", "5.0")),
+        help="Sleep interval between loop iterations.",
+    )
+    parser.add_argument(
+        "--max-iterations",
+        type=int,
+        default=None,
+        help="Stop loop after N iterations.",
     )
 
     parser.add_argument("--forecast-jobs-path", default=None, help="Path to forecast jobs store")
@@ -56,20 +82,46 @@ def _run_retraining(args: argparse.Namespace) -> dict[str, object]:
     )
 
 
+def _run_selected(args: argparse.Namespace) -> dict[str, object]:
+    if args.kind == "forecast":
+        return _run_forecast(args)
+    if args.kind == "retraining":
+        return _run_retraining(args)
+    return {
+        "forecast": _run_forecast(args),
+        "retraining": _run_retraining(args),
+    }
+
+
 def main(argv: list[str] | None = None) -> int:
     args = _build_parser().parse_args(argv)
 
-    if args.kind == "forecast":
-        result = _run_forecast(args)
-    elif args.kind == "retraining":
-        result = _run_retraining(args)
-    else:
-        result = {
-            "forecast": _run_forecast(args),
-            "retraining": _run_retraining(args),
-        }
+    if not args.loop:
+        print(json.dumps(_run_selected(args), sort_keys=True))
+        return 0
 
-    print(json.dumps(result, sort_keys=True))
+    if args.max_iterations is not None and args.max_iterations <= 0:
+        raise ValueError("--max-iterations must be positive when provided")
+    if args.interval_seconds < 0:
+        raise ValueError("--interval-seconds must be non-negative")
+
+    iteration = 0
+    try:
+        while True:
+            iteration += 1
+            result = _run_selected(args)
+            print(
+                json.dumps(
+                    {"mode": "loop", "kind": args.kind, "iteration": iteration, "result": result},
+                    sort_keys=True,
+                )
+            )
+            if args.max_iterations is not None and iteration >= args.max_iterations:
+                break
+            time.sleep(args.interval_seconds)
+    except KeyboardInterrupt:
+        print(json.dumps({"mode": "loop", "kind": args.kind, "status": "stopped", "reason": "keyboard_interrupt", "iterations": iteration}, sort_keys=True))
+
     return 0
 
 

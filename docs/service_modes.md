@@ -5,7 +5,7 @@
 This project currently runs as a **modular monolith with an optional worker process**:
 
 - A control/API process (FastAPI) for request handling, job submission, and artifact/status serving.
-- A worker process for one-shot queued job execution.
+- A worker process for queued job execution (one-shot by default, optional local loop mode).
 
 This keeps one codebase and one repository while making control-vs-execution boundaries explicit.
 
@@ -93,5 +93,6 @@ Notes:
 - This is still one repository with two local process modes, not a fully split microservice deployment.
 - No broker or SQL database is required for this shape.
 - Shared state is coordinated through configured local artifact/job/state files.
-- Worker execution is one-shot by default. For repeated processing, run the worker repeatedly or use external process supervision later.
+- Worker execution is one-shot by default.
+- Optional local supervision loop: add `--loop` (and optionally `--interval-seconds` / `--max-iterations`) to the unified worker command.
 - Existing specific scripts (`scripts/run_forecast_worker.py` and `scripts/run_retraining_worker.py`) remain available.

@@ -93,6 +93,7 @@ python -m plume.workers.run --kind all
 ```
 
 See `docs/service_modes.md` for service mode guidance.
+See `docs/optional_features_audit.md` for a compact optional/provisional feature audit.
 
 Online endpoints:
 - `POST /sessions`
