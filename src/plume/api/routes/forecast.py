@@ -8,6 +8,7 @@ from fastapi import FastAPI, HTTPException
 from plume.api.errors import bad_request, conflict, not_found
 from plume.api.explanation_payloads import build_explanation_payload
 from plume.api.schemas import ForecastCreateRequest, ForecastCreateResponse, ForecastListResponse
+from plume.forecast_jobs.store import ForecastJobStore, resolve_forecast_jobs_path
 from plume.storage.file_forecast_store import ForecastArtifactReadError
 
 
@@ -101,6 +102,34 @@ def register_forecast_routes(app: FastAPI, *, runtime_client, forecast_store, ex
                 "error": str(exc),
             }
         return response
+
+
+    @app.post("/forecast/jobs")
+    def create_forecast_job(payload: ForecastCreateRequest | None = None):
+        request_payload = payload.model_dump(exclude_none=True) if payload is not None else {}
+        store = ForecastJobStore(resolve_forecast_jobs_path())
+        return store.create_job(request_payload)
+
+    @app.get("/forecast/jobs")
+    def list_forecast_jobs(limit: int = 50):
+        if limit <= 0:
+            raise bad_request("invalid_limit", "Query parameter 'limit' must be greater than 0", {"limit": limit})
+        if limit > 500:
+            raise bad_request(
+                "invalid_limit",
+                "Query parameter 'limit' must be less than or equal to 500",
+                {"limit": limit, "max_limit": 500},
+            )
+        store = ForecastJobStore(resolve_forecast_jobs_path())
+        return {"jobs": store.list_jobs(limit=limit)}
+
+    @app.get("/forecast/jobs/{job_id}")
+    def get_forecast_job(job_id: str):
+        store = ForecastJobStore(resolve_forecast_jobs_path())
+        job = store.get_job(job_id)
+        if job is None:
+            raise not_found("forecast_job_not_found", "Forecast job not found", {"job_id": job_id})
+        return job
 
     @app.get("/forecast/{forecast_id}")
     def get_forecast(forecast_id: str):
