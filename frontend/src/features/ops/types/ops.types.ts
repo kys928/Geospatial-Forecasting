@@ -109,3 +109,16 @@ export interface RetrainingExplanationContext {
   system_boundaries?: string[];
   llm_instructions?: string[];
 }
+
+export interface ModelCandidateContext {
+  topic?: string;
+  active_model?: Record<string, unknown> | null;
+  candidate_model?: Record<string, unknown> | null;
+  decision_state?: string;
+  comparison?: Record<string, unknown>;
+  safe_user_actions?: SafeUserAction[];
+  system_boundaries?: string[];
+  llm_instructions?: string[];
+  recent_events?: Array<Record<string, unknown>>;
+  [key: string]: unknown;
+}

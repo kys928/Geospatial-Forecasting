@@ -5,6 +5,7 @@ import { OpsWarningsPanel } from "./OpsWarningsPanel";
 import { OpsControlTower } from "./OpsControlTower";
 import { OpsEventsPanel } from "./OpsEventsPanel";
 import { RetrainingRecommendationPanel } from "./RetrainingRecommendationPanel";
+import { ModelCandidateContextPanel } from "./ModelCandidateContextPanel";
 
 export function OpsOverviewTab() {
   const opsStatus = useOpsStatus();
@@ -28,6 +29,7 @@ export function OpsOverviewTab() {
         <div className="workspace-column">
           <OpsEventsPanel enabled={Boolean(availability.opsAvailable)} />
           <RetrainingRecommendationPanel />
+          <ModelCandidateContextPanel />
         </div>
       </div>
     </>
