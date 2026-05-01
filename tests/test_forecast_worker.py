@@ -1,4 +1,6 @@
 from pathlib import Path
+import importlib
+import sys
 
 from plume.forecast_jobs.store import ForecastJobStore
 from plume.workers.forecast_worker import run_forecast_worker_once
@@ -43,7 +45,10 @@ def test_forecast_worker_failure_marks_job_failed(tmp_path, monkeypatch):
         def run_batch_forecast(self, payload):
             raise RuntimeError("forced failure")
 
-    monkeypatch.setattr("plume.workers.forecast_worker.get_forecast_runtime_client", lambda config_dir=None: _FailingRuntime())
+    monkeypatch.setattr(
+        "plume.workers.forecast_worker.get_worker_forecast_runtime_client",
+        lambda config_dir=None: _FailingRuntime(),
+    )
     result = run_forecast_worker_once(
         jobs_path=jobs_path,
         artifact_root=tmp_path / "artifacts",
@@ -54,3 +59,10 @@ def test_forecast_worker_failure_marks_job_failed(tmp_path, monkeypatch):
     assert result["status"] == "failed"
     job = store.get_job(created["job_id"])
     assert job is not None and job["status"] == "failed"
+
+
+def test_forecast_worker_import_does_not_import_api_deps():
+    sys.modules.pop("plume.workers.forecast_worker", None)
+    sys.modules.pop("plume.api.deps", None)
+    importlib.import_module("plume.workers.forecast_worker")
+    assert "plume.api.deps" not in sys.modules

@@ -4,10 +4,13 @@ import argparse
 import os
 from pathlib import Path
 
-from plume.api.deps import get_explain_service, get_export_service, get_forecast_runtime_client, get_forecast_service
+from plume.workers.deps import (
+    get_worker_explain_service,
+    get_worker_forecast_runtime_client,
+    get_worker_forecast_store,
+)
 from plume.api.explanation_payloads import build_explanation_payload
 from plume.forecast_jobs.store import ForecastJobStore
-from plume.storage.file_forecast_store import FileForecastStore
 
 
 def _env_flag(name: str, *, default: bool) -> bool:
@@ -36,13 +39,9 @@ def run_forecast_worker_once(
         completed = job_store.mark_failed(job_id, "Invalid request_payload in forecast job")
         return {"claimed": True, "status": "failed", "job": completed}
 
-    runtime_client = get_forecast_runtime_client(config_dir=str(config_dir))
-    forecast_store = FileForecastStore(
-        artifact_root=artifact_root,
-        forecast_service=get_forecast_service(config_dir=str(config_dir)),
-        export_service=get_export_service(),
-    )
-    explain_service = get_explain_service(config_dir=str(config_dir))
+    runtime_client = get_worker_forecast_runtime_client(config_dir=str(config_dir))
+    forecast_store = get_worker_forecast_store(artifact_root=artifact_root, config_dir=str(config_dir))
+    explain_service = get_worker_explain_service(config_dir=str(config_dir))
 
     try:
         result = runtime_client.run_batch_forecast(payload)

@@ -35,6 +35,7 @@ python -m plume.workers.run --kind all
 Notes:
 - `--once` is accepted for compatibility, but one-shot behavior is already the default.
 - `--kind all` runs forecast once, then retraining once.
+- Forecast worker dependencies are composed in `plume.workers.deps` (service/runtime/storage), not via API route dependency wiring.
 
 ## Shared boundaries
 
