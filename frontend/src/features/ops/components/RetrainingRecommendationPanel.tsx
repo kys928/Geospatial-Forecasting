@@ -25,9 +25,9 @@ export function RetrainingRecommendationPanel() {
   return (
     <section className="panel">
       <h3>Retraining recommendation</h3>
-      <p className="muted">Review recommendation context before manually triggering retraining.</p>
+      <p className="muted">Read-only guidance only. This panel does not start retraining or change any active model.</p>
       <div className="button-row">
-        <button className="secondary-button" onClick={() => void refresh()}>{loading ? "Refreshing..." : "Refresh recommendation"}</button>
+        <button className="secondary-button" onClick={() => void refresh()} disabled={loading}>{loading ? "Refreshing..." : "Refresh recommendation"}</button>
       </div>
 
       {loading ? <p className="muted">Loading retraining recommendation...</p> : null}
@@ -38,6 +38,7 @@ export function RetrainingRecommendationPanel() {
       {!loading && !error && recommendation ? (
         <>
           {context?.summary_seed ? <p>{context.summary_seed}</p> : null}
+          <p className="muted" style={{ marginTop: 8 }}>Recommendation status only; no retraining job has been created.</p>
           <p className="badge" style={{ display: "inline-block", borderRadius: 8 }}>{statusLabel}</p>
           <dl className="detail-list" style={{ marginTop: 12 }}>
             <div className="detail-list-row"><dt>Severity</dt><dd>{recommendation.severity ?? "n/a"}</dd></div>
