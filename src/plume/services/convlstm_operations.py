@@ -1152,11 +1152,27 @@ def dispatch_retraining_worker(
     *,
     jobs_path: str | Path,
     config_dir: str | Path | None = None,
+    registry_path: str | Path | None = None,
+    state_path: str | Path | None = None,
+    events_path: str | Path | None = None,
 ) -> subprocess.Popen[bytes]:
-    script_path = Path(__file__).resolve().parents[3] / "scripts" / "run_retraining_worker.py"
-    cmd = [sys.executable, str(script_path), "--jobs-path", str(jobs_path), "--once"]
-    if config_dir is not None:
-        cmd.extend(["--config-dir", str(config_dir)])
+    root = Path(os.getenv("PLUME_OPS_DIR", "artifacts/convlstm_ops"))
+    resolved_config = Path(config_dir) if config_dir is not None else Path("configs")
+    cmd = [
+        sys.executable,
+        "-m",
+        "plume.workers.retraining_worker",
+        "--jobs-path",
+        str(jobs_path),
+        "--registry-path",
+        str(registry_path or Path(os.getenv("PLUME_OPS_REGISTRY_PATH", str(root / "model_registry.json")))),
+        "--state-path",
+        str(state_path or Path(os.getenv("PLUME_OPS_STATE_PATH", str(root / "operational_state.json")))),
+        "--events-path",
+        str(events_path or Path(os.getenv("PLUME_OPS_EVENTS_PATH", str(root / "ops_events.jsonl")))),
+        "--config-dir",
+        str(resolved_config),
+    ]
     return subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
 
 

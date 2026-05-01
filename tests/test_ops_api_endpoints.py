@@ -215,8 +215,8 @@ def test_ops_retraining_trigger_dispatches_worker(monkeypatch, tmp_path: Path):
     monkeypatch.setenv("PLUME_OPS_AUTO_DISPATCH_WORKER", "true")
     called: list[dict[str, str]] = []
 
-    def _fake_dispatch(*, jobs_path, config_dir):
-        called.append({"jobs_path": str(jobs_path), "config_dir": str(config_dir)})
+    def _fake_dispatch(**kwargs):
+        called.append({key: str(value) for key, value in kwargs.items()})
         return None
 
     monkeypatch.setattr("plume.api.main.dispatch_retraining_worker", _fake_dispatch)
