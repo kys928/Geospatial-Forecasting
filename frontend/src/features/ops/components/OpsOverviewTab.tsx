@@ -4,8 +4,6 @@ import { useOpsJobs } from "../hooks/useOpsJobs";
 import { OpsWarningsPanel } from "./OpsWarningsPanel";
 import { OpsControlTower } from "./OpsControlTower";
 import { OpsEventsPanel } from "./OpsEventsPanel";
-import { RetrainingRecommendationPanel } from "./RetrainingRecommendationPanel";
-import { ModelCandidateContextPanel } from "./ModelCandidateContextPanel";
 
 export function OpsOverviewTab() {
   const opsStatus = useOpsStatus();
@@ -26,8 +24,6 @@ export function OpsOverviewTab() {
         />
       </div>
       <div className="workspace-column" style={{ display: "grid", gap: 12 }}>
-        <RetrainingRecommendationPanel />
-        <ModelCandidateContextPanel />
         <OpsEventsPanel enabled={Boolean(availability.opsAvailable)} />
       </div>
     </div>
