@@ -35,8 +35,7 @@ def register_session_routes(
     runtime_client,
     forecast_service,
     export_service,
-    explain_service,
-    backend_config,
+    explain_service
 ) -> None:
     @app.post("/sessions")
     def create_session(payload: SessionCreateRequest | None = None):
@@ -70,15 +69,13 @@ def register_session_routes(
         observations_payload = payload_dict.get("observations", [])
         try:
             ingest_result = runtime_client.ingest_observations(session_id, payload_dict)
-            state = ingest_result["state"]
+            state = ingest_result.state
         except KeyError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         except (TypeError, ValueError) as exc:
             raise HTTPException(status_code=400, detail=f"Invalid observation payload: {exc}") from exc
 
-        update_result = None
-        if bool(backend_config.get("auto_update_on_ingest", True)):
-            update_result = ingest_result["auto_update_result"]
+        update_result = ingest_result.auto_update_result
 
         return {
             "session_id": state.session_id,
