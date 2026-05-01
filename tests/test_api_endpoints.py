@@ -31,10 +31,18 @@ def test_api_forecast_create_and_retrieve():
 
     create_response = client.post("/forecast", json={"run_name": "api-test"})
     assert create_response.status_code == 200
-    assert create_response.json()["runtime"]["path"] == "batch"
-    assert create_response.json()["runtime"]["output_space"] == "raw_physical"
+    payload = create_response.json()
+    assert payload["runtime"]["path"] == "batch"
+    assert payload["runtime"]["output_space"] == "raw_physical"
+    assert payload["forecast_id"]
+    assert payload["issued_at"]
+    assert payload["model"]
+    assert "model_version" in payload
+    assert "artifacts" in payload
+    assert "runtime" in payload
+    assert "publishing" in payload
 
-    forecast_id = create_response.json()["forecast_id"]
+    forecast_id = payload["forecast_id"]
 
     get_response = client.get(f"/forecast/{forecast_id}")
     assert get_response.status_code == 200
