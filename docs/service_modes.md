@@ -96,3 +96,9 @@ Notes:
 - Worker execution is one-shot by default.
 - Optional local supervision loop: add `--loop` (and optionally `--interval-seconds` / `--max-iterations`) to the unified worker command.
 - Existing specific scripts (`scripts/run_forecast_worker.py` and `scripts/run_retraining_worker.py`) remain available.
+
+## Ops recommendation explanation context
+
+- The Ops recommendation API includes `GET /ops/retraining/recommendation/context` for LLM-ready structured context.
+- This context is deterministic, derived from current operational recommendation state, and does not call an LLM.
+- It is intended for future explanation layers and Training/Ops UX surfaces.
