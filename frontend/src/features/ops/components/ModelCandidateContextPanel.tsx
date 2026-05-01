@@ -62,8 +62,11 @@ export function ModelCandidateContextPanel() {
   const activeModel = asRecord(context?.active_model);
   const candidateModel = asRecord(context?.candidate_model);
   const comparison = asRecord(context?.comparison);
-  const metricValues = asRecord(comparison?.metrics ?? comparison?.metric_values);
-  const missingMetrics = Array.isArray(comparison?.missing_metrics) ? comparison?.missing_metrics : [];
+  const preferredMetricValues = asRecord(comparison?.available_metrics);
+  const fallbackMetricValues = asRecord(comparison?.metrics ?? comparison?.metric_values);
+  const metricValues = preferredMetricValues ?? fallbackMetricValues;
+  const missingMetrics = Array.isArray(comparison?.missing_metrics) ? comparison.missing_metrics : [];
+  const canCompare = typeof comparison?.can_compare === "boolean" ? comparison.can_compare : undefined;
   const safeUserActions = Array.isArray(context?.safe_user_actions) ? (context.safe_user_actions as SafeUserAction[]) : [];
   const systemBoundaries = Array.isArray(context?.system_boundaries) ? context.system_boundaries : [];
 
@@ -84,7 +87,7 @@ export function ModelCandidateContextPanel() {
           <p className="badge" style={{ display: "inline-block", borderRadius: 8 }}>{decisionMessage(decisionState)}</p>
           <dl className="detail-list" style={{ marginTop: 12 }}>
             <div className="detail-list-row"><dt>Decision state</dt><dd>{decisionState ?? "unknown"}</dd></div>
-            <div className="detail-list-row"><dt>Comparison available</dt><dd>{comparison && comparison.can_compare !== undefined ? String(comparison.can_compare) : "unknown"}</dd></div>
+            <div className="detail-list-row"><dt>Comparison available</dt><dd>{canCompare !== undefined ? String(canCompare) : "unknown"}</dd></div>
             <div className="detail-list-row"><dt>Comparison summary</dt><dd>{typeof comparison?.comparison_summary === "string" ? comparison.comparison_summary : "n/a"}</dd></div>
           </dl>
 
@@ -95,9 +98,16 @@ export function ModelCandidateContextPanel() {
           {candidateModel ? renderKeyValueTable(candidateModel) : <p className="muted">No candidate model summary provided.</p>}
 
           <h4 style={{ marginTop: 16 }}>Metrics snapshot</h4>
-          {metricValues ? renderKeyValueTable(metricValues) : <p className="muted">No metric values were provided.</p>}
+          {metricValues ? renderKeyValueTable(metricValues) : null}
           {missingMetrics.length > 0 ? (
             <p className="muted" style={{ marginTop: 8 }}>Missing metrics: {missingMetrics.map(String).join(", ")}</p>
+          ) : null}
+          {!metricValues && missingMetrics.length === 0 ? (
+            canCompare === false && typeof comparison?.comparison_summary === "string" ? (
+              <p className="muted">{comparison.comparison_summary}</p>
+            ) : (
+              <p className="muted">No metric values were provided.</p>
+            )
           ) : null}
 
           <h4 style={{ marginTop: 16 }}>Safe user actions</h4>
