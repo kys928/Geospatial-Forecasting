@@ -56,6 +56,7 @@ _LLM_INSTRUCTIONS = [
     "Do not invent metrics.",
     "Do not claim the candidate improved unless evidence says so.",
     "Do not tell the user that retraining was started unless the job state says so.",
+    "Treat this context as a deterministic summary of existing operational state, not a new analysis run.",
 ]
 
 
