@@ -56,7 +56,7 @@ class FileForecastStore:
         except ValueError:
             return datetime.min
 
-    def save(self, result: ForecastRunResult) -> dict[str, object]:
+    def save(self, result: ForecastRunResult, *, explanation: dict[str, object] | None = None) -> dict[str, object]:
         forecasts_root = self.artifact_root / "forecasts"
         forecasts_root.mkdir(parents=True, exist_ok=True)
 
@@ -99,6 +99,10 @@ class FileForecastStore:
         if "summary_statistics" in summary:
             metadata["summary_statistics"] = summary["summary_statistics"]
 
+        if explanation is not None:
+            metadata["available_artifacts"].append("explanation")
+            metadata["artifacts"]["explanation"] = str(forecast_dir / "explanation.json")
+
         temp_dir: Path | None = None
         try:
             temp_dir = Path(tempfile.mkdtemp(prefix=f"{result.forecast_id}-", dir=str(forecasts_root)))
@@ -106,6 +110,8 @@ class FileForecastStore:
             self._write_json(temp_dir / "geojson.json", geojson)
             self._write_json(temp_dir / "raster_metadata.json", raster_metadata)
             self._write_json(temp_dir / "metadata.json", metadata)
+            if explanation is not None:
+                self._write_json(temp_dir / "explanation.json", explanation)
             temp_dir.rename(forecast_dir)
         except Exception:
             if temp_dir is not None and temp_dir.exists():
@@ -156,3 +162,30 @@ class FileForecastStore:
 
     def exists(self, forecast_id: str) -> bool:
         return (self._forecast_dir(forecast_id) / "metadata.json").exists()
+
+    def save_explanation(self, forecast_id: str, explanation: dict[str, object]) -> None:
+        forecast_dir = self._forecast_dir(forecast_id)
+        metadata_path = forecast_dir / "metadata.json"
+        metadata = self._read_json(metadata_path, artifact="metadata")
+        if metadata is None:
+            raise FileNotFoundError(f"forecast artifact not found: {forecast_id}")
+
+        self._write_json(forecast_dir / "explanation.json", explanation)
+
+        artifacts = metadata.get("artifacts")
+        if not isinstance(artifacts, dict):
+            artifacts = {}
+            metadata["artifacts"] = artifacts
+        artifacts["explanation"] = str(forecast_dir / "explanation.json")
+
+        available = metadata.get("available_artifacts")
+        if not isinstance(available, list):
+            available = []
+            metadata["available_artifacts"] = available
+        if "explanation" not in available:
+            available.append("explanation")
+
+        self._write_json(metadata_path, metadata)
+
+    def get_explanation(self, forecast_id: str) -> dict[str, object] | None:
+        return self._read_json(self._forecast_dir(forecast_id) / "explanation.json", artifact="explanation")

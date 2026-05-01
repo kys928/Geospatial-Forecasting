@@ -80,3 +80,45 @@ def test_duplicate_save_rejected(tmp_path):
     store.save(result)
     with pytest.raises(FileExistsError):
         store.save(result)
+
+
+def test_file_forecast_store_get_explanation_missing_returns_none(tmp_path):
+    fs = get_forecast_service()
+    es = get_export_service()
+    store = FileForecastStore(tmp_path, forecast_service=fs, export_service=es)
+
+    result = fs.run_forecast(run_name="no-explanation")
+    store.save(result)
+
+    assert store.get_explanation(result.forecast_id) is None
+
+
+def test_file_forecast_store_save_with_explanation_writes_artifact(tmp_path):
+    fs = get_forecast_service()
+    es = get_export_service()
+    store = FileForecastStore(tmp_path, forecast_service=fs, export_service=es)
+
+    result = fs.run_forecast(run_name="with-explanation")
+    explanation = {"forecast_id": result.forecast_id, "used_llm": False, "summary": {}, "explanation": "ok"}
+    metadata = store.save(result, explanation=explanation)
+
+    forecast_dir = tmp_path / "forecasts" / result.forecast_id
+    assert (forecast_dir / "explanation.json").exists()
+    assert store.get_explanation(result.forecast_id) == explanation
+    assert "explanation" in metadata["available_artifacts"]
+
+
+def test_file_forecast_store_save_explanation_updates_metadata(tmp_path):
+    fs = get_forecast_service()
+    es = get_export_service()
+    store = FileForecastStore(tmp_path, forecast_service=fs, export_service=es)
+
+    result = fs.run_forecast(run_name="post-save-explanation")
+    store.save(result)
+    explanation = {"forecast_id": result.forecast_id, "used_llm": False, "summary": {}, "explanation": "saved"}
+    store.save_explanation(result.forecast_id, explanation)
+
+    metadata = store.get_metadata(result.forecast_id)
+    assert metadata is not None
+    assert "explanation" in metadata["available_artifacts"]
+    assert store.get_explanation(result.forecast_id) == explanation

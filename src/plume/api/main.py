@@ -106,7 +106,13 @@ def create_app() -> FastAPI:
         forecast_store=forecast_store,
         runtime_status_payload=_runtime_status_payload,
     )
-    register_forecast_routes(app, runtime_client=runtime_client, forecast_store=forecast_store, export_service=export_service)
+    register_forecast_routes(
+        app,
+        runtime_client=runtime_client,
+        forecast_store=forecast_store,
+        export_service=export_service,
+        explain_service=explain_service,
+    )
     register_session_routes(
         app,
         runtime_client=runtime_client,

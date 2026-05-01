@@ -108,6 +108,7 @@ Forecast artifacts are persisted on disk at:
 - default root: `artifacts/`
 - forecast folders: `artifacts/forecasts/<forecast_id>/`
 - files per forecast: `summary.json`, `geojson.json`, `raster_metadata.json`, `metadata.json`
+- optional file per forecast: `explanation.json` (only when explicitly enabled)
 
 Override the artifact root with:
 
@@ -117,7 +118,16 @@ export PLUME_ARTIFACT_DIR=/path/to/artifacts
 
 Use `GET /forecasts?limit=50` to list persisted forecast metadata (newest first).
 
-Current limitation: explanation generation requires an in-memory forecast result from the current process. If only persisted artifacts exist, explanation routes return HTTP `409 Conflict` with a persisted-only limitation message.
+Batch explanation persistence is **opt-in** and disabled by default:
+
+```bash
+export PLUME_PERSIST_BATCH_EXPLANATION=false
+export PLUME_PERSIST_BATCH_EXPLANATION_USE_LLM=false
+```
+
+When `PLUME_PERSIST_BATCH_EXPLANATION=true`, `POST /forecast` will generate an explanation payload and persist it as `explanation.json` alongside other artifacts. `GET /forecast/{forecast_id}/explanation` serves this persisted artifact when available.
+
+If `explanation.json` is missing (for older forecasts or when persistence is disabled), the explanation endpoint returns the honest HTTP `409 Conflict` limitation that persisted artifact reconstruction is not implemented.
 
 
 ### OpenRemote external service registration

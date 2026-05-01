@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from fastapi import FastAPI, HTTPException
 
+from plume.api.explanation_payloads import build_explanation_payload
 from plume.api.schemas import ObservationIngestRequest, SessionCreateRequest, SessionPredictionRequest
 
 
@@ -145,25 +146,4 @@ def register_session_routes(
     def get_session_latest_forecast_explanation(session_id: str, threshold: float = 1e-5, use_llm: bool = True):
         result = _get_latest_session_forecast_result(runtime_client, session_id)
         explanation_result = explain_service.explain(result, threshold=threshold, use_llm=use_llm)
-        return {
-            "forecast_id": result.forecast_id,
-            "issued_at": result.issued_at.isoformat(),
-            "model": result.model_name,
-            "used_llm": explanation_result.used_llm,
-            "summary": {
-                "source_latitude": explanation_result.summary.source_latitude,
-                "source_longitude": explanation_result.summary.source_longitude,
-                "grid_rows": explanation_result.summary.grid_rows,
-                "grid_columns": explanation_result.summary.grid_columns,
-                "projection": explanation_result.summary.projection,
-                "max_concentration": explanation_result.summary.max_concentration,
-                "mean_concentration": explanation_result.summary.mean_concentration,
-                "affected_cells_above_threshold": explanation_result.summary.affected_cells_above_threshold,
-                "affected_area_m2": explanation_result.summary.affected_area_m2,
-                "affected_area_hectares": explanation_result.summary.affected_area_hectares,
-                "dominant_spread_direction": explanation_result.summary.dominant_spread_direction,
-                "threshold_used": explanation_result.summary.threshold_used,
-                "note": explanation_result.summary.note,
-            },
-            "explanation": explanation_result.explanation,
-        }
+        return build_explanation_payload(result, explanation_result)
