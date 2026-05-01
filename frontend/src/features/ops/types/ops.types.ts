@@ -86,3 +86,26 @@ export interface RollbackResponse {
   rolled_back: boolean;
   active_model_id: string;
 }
+
+export interface SafeUserAction {
+  title?: string;
+  description?: string;
+  [key: string]: unknown;
+}
+
+export interface RetrainingRecommendation {
+  should_retrain: boolean;
+  reason?: string | null;
+  severity?: string | null;
+  evidence?: Record<string, unknown>;
+  recommended_actions?: string[];
+}
+
+export interface RetrainingExplanationContext {
+  topic?: string;
+  summary_seed?: string;
+  recommendation?: RetrainingRecommendation;
+  safe_user_actions?: SafeUserAction[];
+  system_boundaries?: string[];
+  llm_instructions?: string[];
+}
