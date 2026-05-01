@@ -231,8 +231,36 @@ python scripts/seed_demo_data.py
 ## Run API only
 
 ```bash
-uvicorn plume.api.main:app --reload --host 0.0.0.0 --port 8000
+python scripts/run_control_service.py
 ```
+
+Equivalent direct command:
+
+```bash
+python -m uvicorn plume.api.main:app --host 0.0.0.0 --port 8000
+```
+
+
+## Run two local process modes
+
+Terminal 1 (control service):
+
+```bash
+python scripts/run_control_service.py
+```
+
+Terminal 2 (execution worker):
+
+```bash
+python scripts/run_execution_worker.py --kind all
+```
+
+Notes:
+- This remains one repo with two process modes (control and execution), not a production deployment split.
+- No broker or SQL/SQLite database is required.
+- Shared state is coordinated through configured local files (artifact/job/state paths).
+- Worker execution is one-shot by default; rerun it as needed or add external supervision later.
+- Existing specific worker scripts remain available (`scripts/run_forecast_worker.py`, `scripts/run_retraining_worker.py`).
 
 ## Run backend + frontend (one command)
 

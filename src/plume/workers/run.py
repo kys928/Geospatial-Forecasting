@@ -56,8 +56,8 @@ def _run_retraining(args: argparse.Namespace) -> dict[str, object]:
     )
 
 
-def main() -> int:
-    args = _build_parser().parse_args()
+def main(argv: list[str] | None = None) -> int:
+    args = _build_parser().parse_args(argv)
 
     if args.kind == "forecast":
         result = _run_forecast(args)
