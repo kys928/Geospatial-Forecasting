@@ -84,6 +84,16 @@ Run one worker cycle locally:
 python scripts/run_forecast_worker.py
 ```
 
+Unified worker runner (control vs execution mode boundary):
+
+```bash
+python -m plume.workers.run --kind forecast
+python -m plume.workers.run --kind retraining
+python -m plume.workers.run --kind all
+```
+
+See `docs/service_modes.md` for service mode guidance.
+
 Online endpoints:
 - `POST /sessions`
 - `GET /sessions`
