@@ -26,12 +26,30 @@ export function useRetrainingRecommendation(enabled = true): RetrainingRecommend
     setLoading(true);
     setError(null);
     try {
-      const [nextRecommendation, nextContext] = await Promise.all([
+      const [recommendationResult, contextResult] = await Promise.allSettled([
         opsClient.getRetrainingRecommendation(),
         opsClient.getRetrainingRecommendationContext()
       ]);
-      setRecommendation(nextRecommendation);
-      setContext(nextContext);
+
+      if (recommendationResult.status === "fulfilled") {
+        setRecommendation(recommendationResult.value);
+      } else {
+        setRecommendation(null);
+      }
+
+      if (contextResult.status === "fulfilled") {
+        setContext(contextResult.value);
+      } else {
+        setContext(null);
+      }
+
+      if (recommendationResult.status === "rejected") {
+        throw recommendationResult.reason;
+      }
+
+      if (contextResult.status === "rejected") {
+        setError("Recommendation loaded, but additional context is temporarily unavailable.");
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unable to load retraining recommendation");
     } finally {
