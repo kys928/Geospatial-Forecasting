@@ -43,6 +43,14 @@ class OpsEventsResponse(BaseModel):
     events: list[dict[str, Any]]
 
 
+class RetrainingRecommendationResponse(BaseModel):
+    should_retrain: bool
+    reason: str
+    severity: str
+    evidence: dict[str, Any]
+    recommended_actions: list[str]
+
+
 class RetrainingTriggerRequest(BaseModel):
     manual_override: bool = Field(default=False)
     dataset_snapshot_ref: str | None = Field(default=None)

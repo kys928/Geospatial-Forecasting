@@ -338,3 +338,54 @@ def test_ops_endpoints_support_sqlite_metadata_store(monkeypatch, tmp_path: Path
     events = client.get("/ops/events")
     assert events.status_code == 200
     assert any(item["event_type"] == "sqlite_seed" for item in events.json()["events"])
+
+
+def test_ops_retraining_recommendation_endpoint(monkeypatch, tmp_path: Path):
+    env = _seed_ops_files(tmp_path)
+    state_path = Path(env["PLUME_OPS_STATE_PATH"])
+    state_path.write_text(json.dumps({"phase": "collecting", "buffered_new_sample_count": 0}), encoding="utf-8")
+    for key, value in env.items():
+        monkeypatch.setenv(key, value)
+    monkeypatch.setenv("PLUME_OPS_AUTH_ENABLED", "true")
+    monkeypatch.setenv("PLUME_OPS_API_TOKEN", "operator-token")
+    monkeypatch.setenv("PLUME_OPS_READONLY_TOKEN", "readonly-token")
+    monkeypatch.setenv("PLUME_OPS_REQUIRE_AUTH_FOR_READ", "true")
+
+    client = TestClient(create_app())
+    response = client.get("/ops/retraining/recommendation", headers=_auth_header("readonly-token"))
+    assert response.status_code == 200
+    payload = response.json()
+    assert set(payload.keys()) == {"should_retrain", "reason", "severity", "evidence", "recommended_actions"}
+    assert payload["reason"] == "pending_candidate_review"
+
+
+def test_ops_retraining_recommendation_requires_read_access(monkeypatch, tmp_path: Path):
+    for key, value in _seed_ops_files(tmp_path).items():
+        monkeypatch.setenv(key, value)
+    monkeypatch.setenv("PLUME_OPS_AUTH_ENABLED", "true")
+    monkeypatch.setenv("PLUME_OPS_API_TOKEN", "operator-token")
+    monkeypatch.setenv("PLUME_OPS_READONLY_TOKEN", "readonly-token")
+    monkeypatch.setenv("PLUME_OPS_REQUIRE_AUTH_FOR_READ", "true")
+    client = TestClient(create_app())
+
+    unauth = client.get("/ops/retraining/recommendation")
+    assert unauth.status_code == 401
+
+
+def test_ops_retraining_recommendation_does_not_submit_job(monkeypatch, tmp_path: Path):
+    env = _seed_ops_files(tmp_path)
+    state_path = Path(env["PLUME_OPS_STATE_PATH"])
+    state_path.write_text(json.dumps({"phase": "collecting", "buffered_new_sample_count": 10_000}), encoding="utf-8")
+    for key, value in env.items():
+        monkeypatch.setenv(key, value)
+    monkeypatch.setenv("PLUME_OPS_AUTH_ENABLED", "true")
+    monkeypatch.setenv("PLUME_OPS_API_TOKEN", "operator-token")
+    monkeypatch.setenv("PLUME_OPS_READONLY_TOKEN", "readonly-token")
+    monkeypatch.setenv("PLUME_OPS_REQUIRE_AUTH_FOR_READ", "true")
+
+    client = TestClient(create_app())
+    before = client.get("/ops/jobs", headers=_auth_header("readonly-token")).json()["jobs"]
+    recommendation = client.get("/ops/retraining/recommendation", headers=_auth_header("readonly-token"))
+    assert recommendation.status_code == 200
+    after = client.get("/ops/jobs", headers=_auth_header("readonly-token")).json()["jobs"]
+    assert before == after
