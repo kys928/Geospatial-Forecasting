@@ -12,7 +12,6 @@ from plume.api.deps import (
     get_forecast_service,
     get_forecast_runtime_client,
     get_forecast_store,
-    get_online_forecast_service,
     get_openremote_publishing_runtime,
     get_openremote_service_registration_settings,
 )
@@ -70,7 +69,6 @@ def create_app() -> FastAPI:
     )
 
     forecast_service = get_forecast_service()
-    online_forecast_service = get_online_forecast_service()
     runtime_client = get_forecast_runtime_client()
     explain_service = get_explain_service()
     export_service = get_export_service()

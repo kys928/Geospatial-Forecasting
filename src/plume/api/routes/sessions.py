@@ -41,7 +41,6 @@ def register_session_routes(
     @app.post("/sessions")
     def create_session(payload: SessionCreateRequest | None = None):
         payload = (payload.model_dump(exclude_none=True) if payload is not None else {})
-        backend_name = payload.get("backend_name") or backend_config.get("default_backend", "convlstm_online")
         session = runtime_client.create_session(payload)
         return _session_response(session)
 

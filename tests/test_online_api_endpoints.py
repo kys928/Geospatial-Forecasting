@@ -103,6 +103,16 @@ def test_create_session_defaults_to_convlstm_online():
     assert response.json()["backend_name"] == "convlstm_online"
 
 
+def test_create_session_respects_explicit_backend_name():
+    app = create_app()
+    client = TestClient(app)
+
+    response = client.post("/sessions", json={"backend_name": "mock_online"})
+
+    assert response.status_code == 200
+    assert response.json()["backend_name"] == "mock_online"
+
+
 def test_capabilities_lists_only_production_facing_backends():
     app = create_app()
     client = TestClient(app)
