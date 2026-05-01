@@ -110,12 +110,20 @@ export interface RetrainingExplanationContext {
   llm_instructions?: string[];
 }
 
+export interface ModelCandidateComparison {
+  available_metrics?: Record<string, unknown>;
+  missing_metrics?: string[];
+  can_compare?: boolean;
+  comparison_summary?: string;
+  [key: string]: unknown;
+}
+
 export interface ModelCandidateContext {
   topic?: string;
   active_model?: Record<string, unknown> | null;
   candidate_model?: Record<string, unknown> | null;
   decision_state?: string;
-  comparison?: Record<string, unknown>;
+  comparison?: ModelCandidateComparison;
   safe_user_actions?: SafeUserAction[];
   system_boundaries?: string[];
   llm_instructions?: string[];
