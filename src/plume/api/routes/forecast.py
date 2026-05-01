@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import logging
+import os
 
 from fastapi import FastAPI, HTTPException
 
 from plume.api.errors import bad_request, conflict, not_found
+from plume.api.explanation_payloads import build_explanation_payload
 from plume.api.schemas import ForecastCreateRequest, ForecastCreateResponse, ForecastListResponse
 from plume.storage.file_forecast_store import ForecastArtifactReadError
 
@@ -18,7 +20,14 @@ def _artifact_corrupt_error(forecast_id: str, artifact: str) -> HTTPException:
     )
 
 
-def register_forecast_routes(app: FastAPI, *, runtime_client, forecast_store, export_service) -> None:
+def _env_flag(name: str, *, default: bool) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def register_forecast_routes(app: FastAPI, *, runtime_client, forecast_store, export_service, explain_service) -> None:
     logger = logging.getLogger(__name__)
 
     @app.get("/forecasts", response_model=ForecastListResponse)
@@ -37,8 +46,21 @@ def register_forecast_routes(app: FastAPI, *, runtime_client, forecast_store, ex
     async def create_forecast(payload: ForecastCreateRequest | None = None):
         payload = (payload.model_dump(exclude_none=True) if payload is not None else {})
         result = runtime_client.run_batch_forecast(payload)
+        persist_explanation = _env_flag("PLUME_PERSIST_BATCH_EXPLANATION", default=False)
+        persist_use_llm = _env_flag("PLUME_PERSIST_BATCH_EXPLANATION_USE_LLM", default=False)
+        explanation_payload = None
+        if persist_explanation:
+            try:
+                explanation_result = explain_service.explain(result, use_llm=persist_use_llm)
+                explanation_payload = build_explanation_payload(result, explanation_result)
+            except Exception as exc:
+                logger.warning(
+                    "forecast.explanation_persist_failed",
+                    extra={"forecast_id": result.forecast_id, "error": str(exc)},
+                )
+
         try:
-            artifact_metadata = forecast_store.save(result)
+            artifact_metadata = forecast_store.save(result, explanation=explanation_payload)
         except FileExistsError as exc:
             raise conflict("forecast_artifact_exists", str(exc), {"forecast_id": result.forecast_id}) from exc
         logger.info("forecast.saved", extra={"forecast_id": result.forecast_id, "artifact_dir": artifact_metadata.get("artifact_dir")})
@@ -125,13 +147,16 @@ def register_forecast_routes(app: FastAPI, *, runtime_client, forecast_store, ex
         del threshold, use_llm
         try:
             metadata = forecast_store.get_metadata(forecast_id)
+            explanation = forecast_store.get_explanation(forecast_id)
         except ForecastArtifactReadError as exc:
             raise _artifact_corrupt_error(forecast_id, exc.artifact) from exc
         if metadata is None:
             logger.info("forecast.missing", extra={"forecast_id": forecast_id})
             raise not_found("forecast_not_found", "Forecast not found", {"forecast_id": forecast_id})
+        if explanation is not None:
+            return explanation
         raise conflict(
             "forecast_explanation_requires_live_result",
-            "Explanation requires a live in-memory forecast result; persisted artifact reconstruction is not implemented.",
+            "Persisted explanation artifact is not available and live reconstruction is not implemented.",
             {"forecast_id": forecast_id},
         )

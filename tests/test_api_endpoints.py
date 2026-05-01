@@ -317,3 +317,87 @@ def test_api_cors_allows_origin_regex_from_env(monkeypatch):
 
     assert response.status_code == 200
     assert response.headers["access-control-allow-origin"] == "https://dynamic-5173.proxy.runpod.net"
+
+
+def test_api_forecast_explanation_missing_artifact_returns_409(monkeypatch, tmp_path):
+    monkeypatch.setenv("PLUME_ARTIFACT_DIR", str(tmp_path))
+    app = create_app()
+    client = TestClient(app)
+
+    forecast_id = client.post("/forecast", json={"run_name": "missing-expl"}).json()["forecast_id"]
+    response = client.get(f"/forecast/{forecast_id}/explanation")
+
+    assert response.status_code == 409
+    detail = response.json()["detail"]
+    assert detail["code"] == "forecast_explanation_requires_live_result"
+
+
+def test_api_forecast_create_default_does_not_persist_explanation(monkeypatch, tmp_path):
+    monkeypatch.setenv("PLUME_ARTIFACT_DIR", str(tmp_path))
+    monkeypatch.delenv("PLUME_PERSIST_BATCH_EXPLANATION", raising=False)
+    app = create_app()
+    client = TestClient(app)
+
+    payload = client.post("/forecast", json={"run_name": "default-no-expl"}).json()
+    forecast_id = payload["forecast_id"]
+    assert not (tmp_path / "forecasts" / forecast_id / "explanation.json").exists()
+
+
+def test_api_forecast_create_persists_explanation_when_enabled(monkeypatch, tmp_path):
+    monkeypatch.setenv("PLUME_ARTIFACT_DIR", str(tmp_path))
+    monkeypatch.setenv("PLUME_PERSIST_BATCH_EXPLANATION", "true")
+    monkeypatch.setenv("PLUME_PERSIST_BATCH_EXPLANATION_USE_LLM", "false")
+    app = create_app()
+    client = TestClient(app)
+
+    payload = client.post("/forecast", json={"run_name": "persist-expl"}).json()
+    forecast_id = payload["forecast_id"]
+
+    explanation_path = tmp_path / "forecasts" / forecast_id / "explanation.json"
+    assert explanation_path.exists()
+    assert "explanation" in payload["artifacts"]["available_artifacts"]
+
+    expl_response = client.get(f"/forecast/{forecast_id}/explanation")
+    assert expl_response.status_code == 200
+    expl_payload = expl_response.json()
+    assert expl_payload["forecast_id"] == forecast_id
+    assert "used_llm" in expl_payload
+    assert "summary" in expl_payload
+    assert "explanation" in expl_payload
+
+
+def test_api_forecast_create_explanation_failure_does_not_fail_post(monkeypatch, tmp_path):
+    monkeypatch.setenv("PLUME_ARTIFACT_DIR", str(tmp_path))
+    monkeypatch.setenv("PLUME_PERSIST_BATCH_EXPLANATION", "true")
+
+    from plume.services.explain_service import ExplainService
+
+    def explode(*args, **kwargs):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(ExplainService, "explain", explode)
+
+    app = create_app()
+    client = TestClient(app)
+
+    response = client.post("/forecast", json={"run_name": "expl-fail"})
+    assert response.status_code == 200
+    forecast_id = response.json()["forecast_id"]
+    assert not (tmp_path / "forecasts" / forecast_id / "explanation.json").exists()
+
+
+def test_api_forecast_explanation_corrupt_artifact_returns_stable_error(monkeypatch, tmp_path):
+    monkeypatch.setenv("PLUME_ARTIFACT_DIR", str(tmp_path))
+    monkeypatch.setenv("PLUME_PERSIST_BATCH_EXPLANATION", "true")
+    app = create_app()
+    client = TestClient(app)
+
+    forecast_id = client.post("/forecast", json={"run_name": "expl-corrupt"}).json()["forecast_id"]
+    artifact_path = tmp_path / "forecasts" / forecast_id / "explanation.json"
+    artifact_path.write_text("{bad-json", encoding="utf-8")
+
+    response = client.get(f"/forecast/{forecast_id}/explanation")
+    assert response.status_code == 400
+    detail = response.json()["detail"]
+    assert detail["code"] == "forecast_artifact_corrupt"
+    assert detail["details"]["artifact"] == "explanation"
