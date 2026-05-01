@@ -14,7 +14,13 @@ This keeps one codebase and one repository while making control-vs-execution bou
 Run the control/API service:
 
 ```bash
-uvicorn plume.api.main:app --host 0.0.0.0 --port 8000
+python scripts/run_control_service.py
+```
+
+Equivalent direct command:
+
+```bash
+python -m uvicorn plume.api.main:app --host 0.0.0.0 --port 8000
 ```
 
 Responsibilities:
@@ -24,11 +30,17 @@ Responsibilities:
 
 ## Execution worker mode
 
-Run one-shot worker execution via the unified runner:
+Run one-shot worker execution via the process-mode wrapper:
 
 ```bash
-python -m plume.workers.run --kind forecast
-python -m plume.workers.run --kind retraining
+python scripts/run_execution_worker.py --kind forecast
+python scripts/run_execution_worker.py --kind retraining
+python scripts/run_execution_worker.py --kind all
+```
+
+Equivalent direct command:
+
+```bash
 python -m plume.workers.run --kind all
 ```
 
@@ -61,3 +73,25 @@ Control and execution modes coordinate through shared local stores/artifacts:
 - Run control API and execution worker as separate processes.
 - Later containerize them separately.
 - Later evaluate optional broker/remote inference client only if needed.
+
+
+## Local two-process run
+
+Terminal 1 (control service):
+
+```bash
+python scripts/run_control_service.py
+```
+
+Terminal 2 (execution worker):
+
+```bash
+python scripts/run_execution_worker.py --kind all
+```
+
+Notes:
+- This is still one repository with two local process modes, not a fully split microservice deployment.
+- No broker or SQL database is required for this shape.
+- Shared state is coordinated through configured local artifact/job/state files.
+- Worker execution is one-shot by default. For repeated processing, run the worker repeatedly or use external process supervision later.
+- Existing specific scripts (`scripts/run_forecast_worker.py` and `scripts/run_retraining_worker.py`) remain available.
