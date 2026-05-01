@@ -34,3 +34,10 @@ class BaseStateStore(ABC):
     @abstractmethod
     def delete_session(self, session_id: str) -> None:
         raise NotImplementedError
+
+
+    def save_latest_forecast_linkage(self, session_id: str, forecast_id: str, artifact_dir: str | None) -> None:
+        return None
+
+    def get_latest_forecast_linkage(self, session_id: str) -> dict[str, str] | None:
+        return None

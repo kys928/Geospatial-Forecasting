@@ -209,3 +209,50 @@ def test_online_predict_endpoint_with_convlstm_shape_flows_to_summary(monkeypatc
     assert predict_response.status_code == 200
     assert predict_response.json()["forecast_id"] == session_id
     assert predict_response.json()["grid"]["rows"] > 0
+
+
+def test_csv_state_store_recovers_sessions_across_app_recreation(monkeypatch, tmp_path):
+    from plume.api import deps
+
+    monkeypatch.setenv("PLUME_STATE_STORE", "csv")
+    monkeypatch.setenv("PLUME_SESSION_STORE_DIR", str(tmp_path))
+    monkeypatch.setattr(deps, "_STATE_STORE_SINGLETON", None)
+    deps.get_online_forecast_service.cache_clear()
+
+    app = create_app()
+    client = TestClient(app)
+    created = client.post("/sessions", json={"backend_name": "mock_online"}).json()
+
+    monkeypatch.setattr(deps, "_STATE_STORE_SINGLETON", None)
+    deps.get_online_forecast_service.cache_clear()
+
+    app2 = create_app()
+    client2 = TestClient(app2)
+    listed = client2.get("/sessions")
+
+    assert listed.status_code == 200
+    assert any(item["session_id"] == created["session_id"] for item in listed.json())
+
+
+def test_latest_forecast_after_restart_is_honest_when_only_linkage_is_persisted(monkeypatch, tmp_path):
+    from plume.api import deps
+
+    monkeypatch.setenv("PLUME_STATE_STORE", "csv")
+    monkeypatch.setenv("PLUME_SESSION_STORE_DIR", str(tmp_path))
+    monkeypatch.setattr(deps, "_STATE_STORE_SINGLETON", None)
+    deps.get_online_forecast_service.cache_clear()
+
+    app = create_app()
+    client = TestClient(app)
+    session_id = client.post("/sessions", json={"backend_name": "mock_online"}).json()["session_id"]
+    assert client.post(f"/sessions/{session_id}/predict", json={}).status_code == 200
+
+    monkeypatch.setattr(deps, "_STATE_STORE_SINGLETON", None)
+    deps.get_online_forecast_service.cache_clear()
+
+    app2 = create_app()
+    client2 = TestClient(app2)
+    latest = client2.get(f"/sessions/{session_id}/forecast/latest/summary")
+
+    assert latest.status_code == 404
+    assert "persisted linkage only" in latest.json()["detail"]
