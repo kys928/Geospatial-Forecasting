@@ -16,6 +16,7 @@ from plume.api.ops_schemas import (
     OpsJobsResponse,
     OpsRegistryResponse,
     OpsStatusResponse,
+    RetrainingRecommendationResponse,
     RetrainingTriggerRequest,
     RetrainingTriggerResponse,
     RollbackResponse,
@@ -36,6 +37,8 @@ from plume.services.convlstm_operations import (
     submit_retraining_job,
     summarize_operational_status,
 )
+
+from plume.services.retraining_recommendation import build_retraining_recommendation
 
 
 def _env_flag(name: str, *, default: bool) -> bool:
@@ -214,6 +217,27 @@ def register_ops_routes(app: FastAPI, *, forecast_service, dispatch_worker=dispa
             return {"events": merged[-limit:]}
         except Exception as exc:
             raise HTTPException(status_code=400, detail=f"Unable to load operational events: {exc}") from exc
+
+
+    @app.get("/ops/retraining/recommendation", response_model=RetrainingRecommendationResponse)
+    def get_retraining_recommendation(_role: str = Depends(_require_ops_read_access)):
+        paths = _ops_paths()
+        try:
+            state = _load_operational_state(paths["state"])
+            registry_payload = ModelRegistry(paths["registry"]).load()
+            latest_job = RetrainingJobStore(paths["jobs"]).latest_job()
+            policy_check = evaluate_retraining_readiness(state=state, policy=retraining_policy, manual_trigger=False)
+            recent_events = _load_recent_events(paths["events"], limit=50)
+            return build_retraining_recommendation(
+                state=state,
+                policy=retraining_policy,
+                policy_check=policy_check,
+                latest_job=latest_job,
+                registry_payload=registry_payload,
+                recent_events=recent_events,
+            )
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=f"Unable to build retraining recommendation: {exc}") from exc
 
     @app.post("/ops/retraining/trigger", response_model=RetrainingTriggerResponse)
     def trigger_retraining(payload: RetrainingTriggerRequest, _role: str = Depends(_require_ops_operator_access)):

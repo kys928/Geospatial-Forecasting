@@ -66,6 +66,7 @@ Existing batch endpoints remain:
 - `GET /forecast/{forecast_id}/geojson`
 - `GET /forecast/{forecast_id}/raster-metadata`
 - `POST /ops/retraining/trigger` (submits retraining jobs)
+- `GET /ops/retraining/recommendation` (returns structured recommendation from policy/job/registry/event state only; no synthetic drift/performance metrics)
 
 
 ### Async batch forecast jobs
