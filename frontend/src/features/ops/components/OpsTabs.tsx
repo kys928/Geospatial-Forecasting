@@ -1,4 +1,4 @@
-export type OpsTabKey = "overview" | "registry" | "events";
+export type OpsTabKey = "overview" | "training" | "registry" | "events";
 
 interface OpsTabsProps {
   selected: OpsTabKey;
@@ -7,6 +7,7 @@ interface OpsTabsProps {
 
 const tabs: Array<{ key: OpsTabKey; label: string }> = [
   { key: "overview", label: "Overview" },
+  { key: "training", label: "Training" },
   { key: "registry", label: "Registry" },
   { key: "events", label: "Events" }
 ];

@@ -2,6 +2,7 @@ import { useState } from "react";
 import { AppShell } from "../app/AppShell";
 import { OpsTabs, type OpsTabKey } from "../features/ops/components/OpsTabs";
 import { OpsOverviewTab } from "../features/ops/components/OpsOverviewTab";
+import { OpsTrainingTab } from "../features/ops/components/OpsTrainingTab";
 import { OpsRegistryTab } from "../features/ops/components/OpsRegistryTab";
 import { OpsEventsTab } from "../features/ops/components/OpsEventsTab";
 
@@ -16,6 +17,7 @@ export function OpsPage() {
     >
       <OpsTabs selected={tab} onSelect={setTab} />
       {tab === "overview" ? <OpsOverviewTab /> : null}
+      {tab === "training" ? <OpsTrainingTab /> : null}
       {tab === "registry" ? <OpsRegistryTab /> : null}
       {tab === "events" ? <OpsEventsTab /> : null}
     </AppShell>
