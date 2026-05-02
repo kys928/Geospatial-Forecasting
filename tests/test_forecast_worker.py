@@ -66,3 +66,8 @@ def test_forecast_worker_import_does_not_import_api_deps():
     sys.modules.pop("plume.api.deps", None)
     importlib.import_module("plume.workers.forecast_worker")
     assert "plume.api.deps" not in sys.modules
+
+
+def test_forecast_worker_source_has_no_api_imports():
+    source = Path("src/plume/workers/forecast_worker.py").read_text()
+    assert "plume.api" not in source

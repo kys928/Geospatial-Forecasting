@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 from pathlib import Path
 
@@ -97,15 +98,15 @@ def _build_parser() -> argparse.ArgumentParser:
 
 def main() -> int:
     args = _build_parser().parse_args()
-    print(
+    print(json.dumps(
         run_retraining_worker_once(
             jobs_path=Path(args.jobs_path),
             registry_path=Path(args.registry_path),
             state_path=Path(args.state_path),
             events_path=Path(args.events_path),
             config_dir=Path(args.config_dir),
-        )
-    )
+        ), sort_keys=True
+    ))
     return 0
 
 
