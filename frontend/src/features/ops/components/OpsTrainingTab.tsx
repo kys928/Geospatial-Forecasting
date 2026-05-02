@@ -1,7 +1,7 @@
 import { useOpsJobs } from "../hooks/useOpsJobs";
 import { RetrainingRecommendationPanel } from "./RetrainingRecommendationPanel";
-import { ModelCandidateContextPanel } from "./ModelCandidateContextPanel";
 import { RetrainingPipelinePanel } from "./RetrainingPipelinePanel";
+import { ModelCandidateContextPanel } from "./ModelCandidateContextPanel";
 
 export function OpsTrainingTab() {
   const jobs = useOpsJobs();
@@ -10,7 +10,7 @@ export function OpsTrainingTab() {
     <div style={{ display: "grid", gap: 12 }}>
       <section className="panel">
         <h3>Training and model decisions</h3>
-        <p className="muted">Review retraining recommendations, candidate status, and safe next actions.</p>
+        <p className="muted">Review retraining recommendations, queued/running jobs, candidate status, and safe next actions.</p>
       </section>
 
       <div className="workspace-grid" style={{ gridTemplateColumns: "1fr 1fr 1fr" }}>
@@ -18,10 +18,10 @@ export function OpsTrainingTab() {
           <RetrainingRecommendationPanel />
         </div>
         <div className="workspace-column">
-          <ModelCandidateContextPanel />
+          <RetrainingPipelinePanel jobs={jobs.jobs?.jobs ?? []} />
         </div>
         <div className="workspace-column">
-          <RetrainingPipelinePanel jobs={jobs.jobs?.jobs ?? []} />
+          <ModelCandidateContextPanel />
         </div>
       </div>
     </div>

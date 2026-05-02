@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from fastapi import FastAPI, HTTPException
 
-from plume.api.explanation_payloads import build_explanation_payload
+from plume.services.explanation_payloads import build_explanation_payload
 from plume.api.schemas import ObservationIngestRequest, SessionCreateRequest, SessionPredictionRequest
 
 

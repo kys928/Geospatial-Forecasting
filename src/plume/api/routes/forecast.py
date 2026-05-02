@@ -6,7 +6,7 @@ import os
 from fastapi import FastAPI, HTTPException
 
 from plume.api.errors import bad_request, conflict, not_found
-from plume.api.explanation_payloads import build_explanation_payload
+from plume.services.explanation_payloads import build_explanation_payload
 from plume.api.schemas import ForecastCreateRequest, ForecastCreateResponse, ForecastListResponse
 from plume.forecast_jobs.store import ForecastJobStore, resolve_forecast_jobs_path
 from plume.storage.file_forecast_store import ForecastArtifactReadError

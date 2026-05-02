@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 from pathlib import Path
 
@@ -9,7 +10,7 @@ from plume.workers.deps import (
     get_worker_forecast_runtime_client,
     get_worker_forecast_store,
 )
-from plume.api.explanation_payloads import build_explanation_payload
+from plume.services.explanation_payloads import build_explanation_payload
 from plume.forecast_jobs.store import ForecastJobStore
 
 
@@ -72,13 +73,13 @@ def _build_parser() -> argparse.ArgumentParser:
 
 def main() -> int:
     args = _build_parser().parse_args()
-    print(
+    print(json.dumps(
         run_forecast_worker_once(
             jobs_path=Path(args.jobs_path),
             artifact_root=Path(args.artifact_root),
             config_dir=Path(args.config_dir),
-        )
-    )
+        ), sort_keys=True
+    ))
     return 0
 
 
