@@ -86,3 +86,47 @@ export interface RollbackResponse {
   rolled_back: boolean;
   active_model_id: string;
 }
+
+export interface SafeUserAction {
+  title?: string;
+  description?: string;
+  [key: string]: unknown;
+}
+
+export interface RetrainingRecommendation {
+  should_retrain: boolean;
+  reason?: string | null;
+  severity?: string | null;
+  evidence?: Record<string, unknown>;
+  recommended_actions?: string[];
+}
+
+export interface RetrainingExplanationContext {
+  topic?: string;
+  summary_seed?: string;
+  recommendation?: RetrainingRecommendation;
+  safe_user_actions?: SafeUserAction[];
+  system_boundaries?: string[];
+  llm_instructions?: string[];
+}
+
+export interface ModelCandidateComparison {
+  available_metrics?: Record<string, unknown>;
+  missing_metrics?: string[];
+  can_compare?: boolean;
+  comparison_summary?: string;
+  [key: string]: unknown;
+}
+
+export interface ModelCandidateContext {
+  topic?: string;
+  active_model?: Record<string, unknown> | null;
+  candidate_model?: Record<string, unknown> | null;
+  decision_state?: string;
+  comparison?: ModelCandidateComparison;
+  safe_user_actions?: SafeUserAction[];
+  system_boundaries?: string[];
+  llm_instructions?: string[];
+  recent_events?: Array<Record<string, unknown>>;
+  [key: string]: unknown;
+}

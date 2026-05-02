@@ -22,6 +22,7 @@ class OnlineForecastService:
         self.config = config
         self.state_store = state_store
         self.observation_service = observation_service or ObservationService()
+        self._latest_forecast_by_session: dict[str, ForecastRunResult] = {}
 
     def create_session(
         self,
@@ -145,7 +146,7 @@ class OnlineForecastService:
         )
 
         summary_statistics = ForecastPostprocessor(self.config.load_inference()).compute_summary_statistics(forecast)
-        return ForecastRunResult(
+        result = ForecastRunResult(
             forecast_id=request.session_id,
             issued_at=now,
             model_name=session.model_name or execution_backend_name,
@@ -158,12 +159,32 @@ class OnlineForecastService:
                 "backend_name": session.backend_name,
                 "primary_backend_name": session.backend_name,
                 "effective_backend_name": execution_backend_name,
+                "output_space": str(session.runtime_metadata.get("output_space", "unknown")),
                 "fallback_used": bool(fallback_metadata.get("fallback_used", False)),
                 "fallback_backend_name": fallback_metadata.get("fallback_backend_name"),
                 "fallback_reason": fallback_metadata.get("fallback_reason"),
                 "request_metadata": request.metadata,
             },
         )
+        self._latest_forecast_by_session[request.session_id] = result
+        artifact_dir = None
+        execution_output_dir = result.execution_metadata.get("output_dir")
+        if isinstance(execution_output_dir, str) and execution_output_dir:
+            artifact_dir = execution_output_dir
+        self.state_store.save_latest_forecast_linkage(request.session_id, result.forecast_id, artifact_dir)
+        return result
+
+    def get_latest_forecast_result(self, session_id: str) -> ForecastRunResult:
+        self.get_session(session_id)
+        result = self._latest_forecast_by_session.get(session_id)
+        if result is None:
+            linkage = self.state_store.get_latest_forecast_linkage(session_id)
+            if linkage is not None:
+                raise ValueError(
+                    "Latest forecast exists as persisted linkage only; full forecast result is not recoverable after restart"
+                )
+            raise ValueError(f"No forecast result found for session: {session_id}")
+        return result
 
     def _predict_with_optional_fallback(
         self,

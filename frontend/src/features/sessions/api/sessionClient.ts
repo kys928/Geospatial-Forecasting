@@ -4,6 +4,7 @@ import type {
   IngestObservationsRequest,
   IngestObservationsResponse,
   SessionDetail,
+  SessionForecastBundle,
   SessionPredictionRequest,
   SessionPredictionResponse,
   SessionStateSummary,
@@ -38,5 +39,16 @@ export const sessionClient = {
 
   predictSession(sessionId: string, payload: SessionPredictionRequest): Promise<SessionPredictionResponse> {
     return httpPost<SessionPredictionResponse, SessionPredictionRequest>(`/sessions/${sessionId}/predict`, payload);
+  },
+
+  async getLatestForecastBundle(sessionId: string): Promise<SessionForecastBundle> {
+    const [summary, geojson, rasterMetadata, explanation] = await Promise.all([
+      httpGet<Record<string, unknown>>(`/sessions/${sessionId}/forecast/latest/summary`),
+      httpGet<Record<string, unknown>>(`/sessions/${sessionId}/forecast/latest/geojson`),
+      httpGet<Record<string, unknown>>(`/sessions/${sessionId}/forecast/latest/raster-metadata`),
+      httpGet<Record<string, unknown>>(`/sessions/${sessionId}/forecast/latest/explanation`)
+    ]);
+
+    return { summary, geojson, rasterMetadata, explanation };
   }
 };

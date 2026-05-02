@@ -42,7 +42,23 @@ def test_online_session_lifecycle_endpoints():
         json={"observations": [_observation_payload()]},
     )
     assert ingest_response.status_code == 200
-    assert ingest_response.json()["observation_count"] >= 1
+    ingest_json = ingest_response.json()
+    assert ingest_json["observation_count"] >= 1
+    assert set(ingest_json.keys()) == {
+        "session_id",
+        "observation_count",
+        "state_version",
+        "last_update_time",
+        "auto_update_result",
+    }
+    assert ingest_json["auto_update_result"] is not None
+    assert set(ingest_json["auto_update_result"].keys()) == {
+        "success",
+        "updated_at",
+        "state_version",
+        "message",
+        "changed",
+    }
 
     update_response = client.post(f"/sessions/{session_id}/update")
     assert update_response.status_code == 200
@@ -103,7 +119,17 @@ def test_create_session_defaults_to_convlstm_online():
     assert response.json()["backend_name"] == "convlstm_online"
 
 
-def test_capabilities_lists_convlstm_first_and_mock_legacy():
+def test_create_session_respects_explicit_backend_name():
+    app = create_app()
+    client = TestClient(app)
+
+    response = client.post("/sessions", json={"backend_name": "mock_online"})
+
+    assert response.status_code == 200
+    assert response.json()["backend_name"] == "mock_online"
+
+
+def test_capabilities_lists_only_production_facing_backends():
     app = create_app()
     client = TestClient(app)
 
@@ -113,7 +139,7 @@ def test_capabilities_lists_convlstm_first_and_mock_legacy():
     backends = response.json()["backends"]
     assert backends[0] == "convlstm_online"
     assert "gaussian_fallback" in backends
-    assert "mock_online" in backends
+    assert "mock_online" not in backends
 
 
 def test_online_predict_endpoint_with_convlstm_shape_flows_to_summary(monkeypatch):
@@ -183,3 +209,50 @@ def test_online_predict_endpoint_with_convlstm_shape_flows_to_summary(monkeypatc
     assert predict_response.status_code == 200
     assert predict_response.json()["forecast_id"] == session_id
     assert predict_response.json()["grid"]["rows"] > 0
+
+
+def test_csv_state_store_recovers_sessions_across_app_recreation(monkeypatch, tmp_path):
+    from plume.api import deps
+
+    monkeypatch.setenv("PLUME_STATE_STORE", "csv")
+    monkeypatch.setenv("PLUME_SESSION_STORE_DIR", str(tmp_path))
+    monkeypatch.setattr(deps, "_STATE_STORE_SINGLETON", None)
+    deps.get_online_forecast_service.cache_clear()
+
+    app = create_app()
+    client = TestClient(app)
+    created = client.post("/sessions", json={"backend_name": "mock_online"}).json()
+
+    monkeypatch.setattr(deps, "_STATE_STORE_SINGLETON", None)
+    deps.get_online_forecast_service.cache_clear()
+
+    app2 = create_app()
+    client2 = TestClient(app2)
+    listed = client2.get("/sessions")
+
+    assert listed.status_code == 200
+    assert any(item["session_id"] == created["session_id"] for item in listed.json())
+
+
+def test_latest_forecast_after_restart_is_honest_when_only_linkage_is_persisted(monkeypatch, tmp_path):
+    from plume.api import deps
+
+    monkeypatch.setenv("PLUME_STATE_STORE", "csv")
+    monkeypatch.setenv("PLUME_SESSION_STORE_DIR", str(tmp_path))
+    monkeypatch.setattr(deps, "_STATE_STORE_SINGLETON", None)
+    deps.get_online_forecast_service.cache_clear()
+
+    app = create_app()
+    client = TestClient(app)
+    session_id = client.post("/sessions", json={"backend_name": "mock_online"}).json()["session_id"]
+    assert client.post(f"/sessions/{session_id}/predict", json={}).status_code == 200
+
+    monkeypatch.setattr(deps, "_STATE_STORE_SINGLETON", None)
+    deps.get_online_forecast_service.cache_clear()
+
+    app2 = create_app()
+    client2 = TestClient(app2)
+    latest = client2.get(f"/sessions/{session_id}/forecast/latest/summary")
+
+    assert latest.status_code == 404
+    assert "persisted linkage only" in latest.json()["detail"]

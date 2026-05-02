@@ -6,7 +6,10 @@ import type {
   CandidateDecisionRequest,
   OpsEventsResponse,
   OpsJobsResponse,
+  ModelCandidateContext,
   OpsStatusResponse,
+  RetrainingExplanationContext,
+  RetrainingRecommendation,
   RetrainingTriggerRequest,
   RetrainingTriggerResponse,
   RollbackResponse
@@ -39,6 +42,18 @@ export const opsClient = {
 
   getEvents(limit = 50): Promise<OpsEventsResponse> {
     return httpGet<OpsEventsResponse>(`/ops/events?limit=${limit}`, opsHeaders());
+  },
+
+  getRetrainingRecommendation(): Promise<RetrainingRecommendation> {
+    return httpGet<RetrainingRecommendation>("/ops/retraining/recommendation", opsHeaders());
+  },
+
+  getRetrainingRecommendationContext(): Promise<RetrainingExplanationContext> {
+    return httpGet<RetrainingExplanationContext>("/ops/retraining/recommendation/context", opsHeaders());
+  },
+
+  getModelCandidateContext(): Promise<ModelCandidateContext> {
+    return httpGet<ModelCandidateContext>("/ops/models/candidate/context", opsHeaders());
   },
 
   triggerRetraining(payload: RetrainingTriggerRequest): Promise<RetrainingTriggerResponse> {

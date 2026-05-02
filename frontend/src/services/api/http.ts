@@ -28,7 +28,16 @@ async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
   if (!response.ok) {
     let message = `Request failed: ${response.status}`;
     if (typeof responseData === "object" && responseData && "detail" in responseData) {
-      message = `${message} - ${String((responseData as { detail: unknown }).detail)}`;
+      const detail = (responseData as { detail: unknown }).detail;
+      if (typeof detail === "string") {
+        message = `${message} - ${detail}`;
+      } else if (typeof detail === "object" && detail) {
+        const code = "code" in detail ? (detail as { code?: unknown }).code : undefined;
+        const detailMessage = "message" in detail ? (detail as { message?: unknown }).message : undefined;
+        if (typeof code === "string" && typeof detailMessage === "string") {
+          message = `${message} - ${code}: ${detailMessage}`;
+        }
+      }
     }
     throw new HttpError(message, response.status, responseData);
   }

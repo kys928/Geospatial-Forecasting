@@ -8,21 +8,16 @@ Geospatial Forecasting is an early proof-of-concept Python project for airborne 
 
 This is **not** a production atmospheric dispersion platform, and real online learning is **not** implemented yet.
 
-## Architecture direction (current)
+## Current architecture
 
-The architecture is centered on backend runtime behavior and session lifecycle:
+Current deployment shape is a **modular monolith + worker boundary**:
 
-- `src/plume/backends`: runtime backend interface + implementations
-  - `convlstm_online` backend as the primary online runtime path
-  - `gaussian_fallback` backend wrapping Gaussian plume as fallback
-  - `mock_online` retained as legacy/dev scaffolding
-- `src/plume/state`: state-store abstraction and in-memory implementation
-- `src/plume/services/online_forecast_service.py`: session, ingest, update, predict orchestration
-- `src/plume/services/observation_service.py`: observation validation/normalization boundary
-- `src/plume/services/forecast_service.py`: batch one-off forecasting service (legacy path preserved)
-- `src/plume/api`: thin FastAPI routes for both batch and online session APIs
-
-Gaussian plume remains available as the baseline batch model and online fallback path.
+- **Control/API layer (`src/plume/api`)**: one FastAPI app exposing batch, sessions, service/runtime status, and ops routes.
+- **Runtime boundary (`src/plume/runtime`)**: `ForecastRuntimeClient` protocol with `LocalForecastRuntimeClient` implementation. Local runtime delegates to existing `ForecastService` (batch) and `OnlineForecastService` (session workflows).
+- **Forecast artifact boundary**: batch forecast artifacts are durably written to `artifacts/forecasts/<forecast_id>/...` and can be listed/retrieved by API.
+- **Retraining worker boundary (`src/plume/workers/retraining_worker.py`)**: API submits jobs; a dedicated worker process claims/executes jobs. Shared boundary is job store + model registry + operational state + event log.
+- **OpenRemote boundary (`src/plume/openremote`)**: optional service registration lifecycle and optional forecast attribute publishing; both are disabled by default.
+- **Frontend workspaces (`frontend/src/pages`)**: React pages for Map/Forecast (`/forecast`), Sessions (`/sessions`), and Ops (`/ops`).
 
 ## What is implemented now
 
@@ -32,14 +27,13 @@ Gaussian plume remains available as the baseline batch model and online fallback
 - Gaussian plume concentration grid generation
 - Forecast summary statistics (`max_concentration`, `mean_concentration`)
 
-### Online backend skeleton
-- Backend abstraction (`BaseBackend`)
+### Runtime/session workflows
+- Runtime client boundary (`ForecastRuntimeClient`) and local implementation (`LocalForecastRuntimeClient`)
 - Session/state schemas (`BackendSession`, `BackendState`, observation/prediction/update schemas)
-- In-memory state store (`InMemoryStateStore`), process-lifetime singleton in API wiring
-- `ConvLSTMBackend` primary online path (random/untrained demo weights currently)
-- `GaussianFallbackBackend` wrapping existing Gaussian logic
-- `MockOnlineBackend` retained for legacy/dev testing
-- Online service orchestration (`OnlineForecastService`)
+- Default in-memory session store (`InMemoryStateStore`) with process-lifetime behavior
+- Optional local CSV session store (`CsvStateStore`) for app-owned session metadata/state recovery
+- Online orchestration (`OnlineForecastService`) for session create/ingest/update/predict
+- ConvLSTM online backend with Gaussian fallback path
 
 ### Session lifecycle semantics
 Session statuses are explicit and lightweight:
@@ -66,10 +60,41 @@ Existing batch endpoints remain:
 - `GET /health`
 - `GET /capabilities`
 - `POST /forecast`
+- `GET /forecasts?limit=50`
 - `GET /forecast/{forecast_id}`
 - `GET /forecast/{forecast_id}/summary`
 - `GET /forecast/{forecast_id}/geojson`
 - `GET /forecast/{forecast_id}/raster-metadata`
+- `POST /ops/retraining/trigger` (submits retraining jobs)
+- `GET /ops/retraining/recommendation` (returns structured recommendation from policy/job/registry/event state only; no synthetic drift/performance metrics)
+
+
+### Async batch forecast jobs
+
+`POST /forecast` remains synchronous and executes forecast creation inline.
+
+For asynchronous control/execution separation, use:
+- `POST /forecast/jobs` to enqueue a batch forecast request
+- `GET /forecast/jobs` and `GET /forecast/jobs/{job_id}` to track status
+
+A forecast worker process claims queued jobs and executes normal batch forecast logic, then writes standard durable forecast artifacts under the configured artifact root. This boundary prepares future decoupling without introducing a broker, a second HTTP service, or model behavior changes.
+
+Run one worker cycle locally:
+
+```bash
+python scripts/run_forecast_worker.py
+```
+
+Unified worker runner (control vs execution mode boundary):
+
+```bash
+python -m plume.workers.run --kind forecast
+python -m plume.workers.run --kind retraining
+python -m plume.workers.run --kind all
+```
+
+See `docs/service_modes.md` for service mode guidance.
+See `docs/optional_features_audit.md` for a compact optional/provisional feature audit.
 
 Online endpoints:
 - `POST /sessions`
@@ -92,21 +117,94 @@ Backend/session behavior is configured in `configs/backend.yaml`:
 OpenRemote publishing behavior is configured in `configs/openremote.yaml` (or env overrides):
 
 - `enabled`
-- `sink_mode` (`disabled`, `fake`, `http`)
+- `sink_mode` (`disabled`, `http`)
 - `base_url`
 - `realm`
 - `site_asset_id`
 - `parent_asset_id`
 - `geojson_public_base_url`
 - `access_token_env_var` (name of env var containing token)
+- `forecast_asset_id` (required for attribute publishing target)
+- `forecast_attribute_mode` (`single_asset_attributes`)
+- forecast attribute names (`forecastSummary`, `forecastGeoJson`, `forecastRasterMetadata`, `forecastRuntime`, `forecastRiskLevel`, `forecastIssuedAt`, `forecastId`)
 
 `POST /forecast` always stores the forecast locally first, then publishes if enabled. A `publishing` field in the response reports `disabled`, `succeeded`, or `failed`.
 
-### OpenRemote demo modes
+### Persisted forecast artifacts
+
+Forecast artifacts are persisted on disk at:
+
+- default root: `artifacts/`
+- forecast folders: `artifacts/forecasts/<forecast_id>/`
+- files per forecast: `summary.json`, `geojson.json`, `raster_metadata.json`, `metadata.json`
+- optional file per forecast: `explanation.json` (only when explicitly enabled)
+
+Override the artifact root with:
+
+```bash
+export PLUME_ARTIFACT_DIR=/path/to/artifacts
+```
+
+Use `GET /forecasts?limit=50` to list persisted forecast metadata (newest first).
+
+Batch explanation persistence is **opt-in** and disabled by default:
+
+```bash
+export PLUME_PERSIST_BATCH_EXPLANATION=false
+export PLUME_PERSIST_BATCH_EXPLANATION_USE_LLM=false
+```
+
+When `PLUME_PERSIST_BATCH_EXPLANATION=true`, `POST /forecast` will generate an explanation payload and persist it as `explanation.json` alongside other artifacts. `GET /forecast/{forecast_id}/explanation` serves this persisted artifact when available.
+
+If `explanation.json` is missing (for older forecasts or when persistence is disabled), the explanation endpoint returns the honest HTTP `409 Conflict` limitation that persisted artifact reconstruction is not implemented.
+
+
+### OpenRemote external service registration
+
+External service registration is **optional** and **disabled by default**. This lifecycle only registers this FastAPI/React service with OpenRemote and maintains heartbeat/deregistration; it does **not** publish plume assets.
+
+Environment variables:
+- `PLUME_OPENREMOTE_SERVICE_REGISTRATION_ENABLED` (default `false`)
+- `PLUME_OPENREMOTE_MANAGER_API_URL` (full Manager API base for target realm, e.g. `https://host/api/master`)
+- `PLUME_OPENREMOTE_SERVICE_ID` (default `geospatial-plume-forecast`)
+- `PLUME_OPENREMOTE_SERVICE_LABEL` (default `Geospatial Plume Forecast`)
+- `PLUME_OPENREMOTE_SERVICE_VERSION` (default `0.1.0`)
+- `PLUME_OPENREMOTE_SERVICE_ICON` (default `mdi-map-marker-radius`)
+- `PLUME_OPENREMOTE_SERVICE_HOMEPAGE_URL` (UI/frontend URL for Manager embedding)
+- `PLUME_OPENREMOTE_SERVICE_GLOBAL` (default `false`)
+- `PLUME_OPENREMOTE_SERVICE_HEARTBEAT_SECONDS` (default `30`)
+- `PLUME_OPENREMOTE_SERVICE_TOKEN` (bearer token for Service User with `write:services`)
+
+Notes:
+- Global service registration requires using the master realm API base and a super-user-capable service user.
+- Service registration lifecycle is implemented in the FastAPI lifespan startup/shutdown flow.
+- A provisional forecast asset/attribute contract is implemented in `src/plume/openremote/forecast_asset_contract.py` and used by forecast publishing.
+- Forecast publishing remains optional and disabled by default.
+- `PLUME_OPENREMOTE_FORECAST_ASSET_ID` is required to publish forecast attributes to a target asset.
+
+### OpenRemote publishing modes
 
 - **Disabled mode (safe default)**: no publish attempt.
-- **Fake mode (recommended for demos)**: publishes to in-memory sink with no network dependency.
-- **HTTP mode (live)**: uses real HTTP calls; if token/base URL is missing or request fails, forecast creation still succeeds and response reports publish failure.
+- **HTTP mode (provisional)**: uses real HTTP calls; endpoint shapes can vary by deployment. If token/base URL/asset ID is missing or request fails, forecast creation still succeeds and the response reports `skipped` or `failed`.
+
+Tests use isolated test doubles and do not require a live OpenRemote instance.
+
+Forecast attribute mapping currently targets:
+- `forecastId`
+- `forecastIssuedAt`
+- `forecastSummary`
+- `forecastGeoJson`
+- `forecastRasterMetadata`
+- `forecastRuntime`
+- `forecastRiskLevel`
+
+### OpenRemote DB/schema note
+
+- OpenRemote uses PostgreSQL internally for Manager storage.
+- This project does **not** copy or mirror the OpenRemote database.
+- Integration should continue through OpenRemote APIs/service registration/attribute publishing only.
+- If local durable sessions are implemented, they should use this app's own CSV/JSON contract.
+- See `docs/openremote_schema_mapping.md` for mapping notes and the proposed local CSV session-store contract.
 
 ## Installation
 Use Python 3.11.
@@ -115,9 +213,13 @@ Use Python 3.11.
 python -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip
-pip install -r requirements.txt
+pip install -e .
+# for tests/dev extras
 pip install -e ".[test]"
 ```
+
+`requirements.txt` is kept as a compatibility/convenience mirror for environments that still use
+`pip install -r requirements.txt`; editable install via `pyproject.toml` is the recommended path.
 
 ## Run local script paths
 
@@ -131,8 +233,36 @@ python scripts/seed_demo_data.py
 ## Run API only
 
 ```bash
-uvicorn plume.api.main:app --reload --host 0.0.0.0 --port 8000
+python scripts/run_control_service.py
 ```
+
+Equivalent direct command:
+
+```bash
+python -m uvicorn plume.api.main:app --host 0.0.0.0 --port 8000
+```
+
+
+## Run two local process modes
+
+Terminal 1 (control service):
+
+```bash
+python scripts/run_control_service.py
+```
+
+Terminal 2 (execution worker):
+
+```bash
+python scripts/run_execution_worker.py --kind all
+```
+
+Notes:
+- This remains one repo with two process modes (control and execution), not a production deployment split.
+- No broker or SQL/SQLite database is required.
+- Shared state is coordinated through configured local files (artifact/job/state paths).
+- Worker execution is one-shot by default; rerun it as needed or add external supervision later.
+- Existing specific worker scripts remain available (`scripts/run_forecast_worker.py`, `scripts/run_retraining_worker.py`).
 
 ## Run backend + frontend (one command)
 
@@ -174,9 +304,7 @@ For remote pod usage, do not rely on browser `localhost` unless you are explicit
 Frontend workspace routes now include functional operator-facing pages:
 - `/forecast`: existing forecast demo workflow (unchanged)
 - `/sessions`: session list/create/state/ingest/update/predict controls
-- `/ops`: operations status, retraining trigger, approval actions, jobs, and recent events
-- `/registry`: model registry inspection with activate/rollback controls
-- `/events`: ops event/audit inspection with basic filtering
+- `/ops`: operations workspace with status, retraining, registry, and event/audit panels
 
 Ops read and write actions may require bearer-token auth depending on backend auth settings.
 By default, backend ops auth also requires auth for reads, so `VITE_OPS_API_TOKEN` may be needed to load ops pages as well as perform write actions.
@@ -195,18 +323,49 @@ Hugging Face preload env (used when `--preload-models` is passed or `PLUME_PRELO
 
 Ops retraining triggers now queue jobs and return immediately. A local worker process executes queued jobs.
 
+Retraining worker boundary:
+- API submits retraining jobs and reports status.
+- Worker claims queued jobs and owns execution (training + candidate registration).
+- Job store, model registry, and ops event log are the shared boundary.
+- This remains a single-repo deployment with an optional worker process (not a brokered microservice split).
+
+## OpenRemote status (honest current state)
+
+- External service registration exists and is **disabled by default**.
+- Forecast attribute publishing exists and is **disabled by default**.
+- Runtime sink modes are `disabled` or `http`; fake sink usage is test-only.
+- `forecastGeoJson` publishing uses exported forecast GeoJSON payloads from the forecast result.
+- HTTP mode is still provisional until validated against the target OpenRemote deployment.
+- This repository does **not** claim a live-validated OpenRemote contract yet.
+
+## Not implemented yet (important limits)
+
+- No separate deployed inference HTTP service (runtime boundary is internal today).
+- No broker/queue infrastructure (worker uses shared stores and local dispatch).
+- Durable sessions are opt-in via CSV (`state_store: csv` or `PLUME_STATE_STORE=csv`) and remain local app-owned persistence only.
+- No persisted explanation artifacts for persisted-only forecasts.
+- No automatic OpenRemote asset creation/discovery workflow.
+- No live OpenRemote validation in this repo.
+- ConvLSTM should not be treated as a proven production default unless a real trained checkpoint/registry model is configured.
+
+## Service-boundary roadmap (concise)
+
+- **Current**: single FastAPI control/runtime service with modular boundaries + dedicated retraining worker boundary.
+- **Inference direction**: `ForecastRuntimeClient` is the seam for future optional remote inference service integration.
+- **Training direction**: worker already owns retraining execution boundary.
+- **Not claimed**: this is not yet two independently deployed services.
+
 - API trigger endpoint: `POST /ops/retraining/trigger`
 - Auto-dispatch on trigger: enabled by default via `PLUME_OPS_AUTO_DISPATCH_WORKER=true`
 - Manual worker entrypoint:
 
 ```bash
-PYTHONPATH=src python scripts/run_retraining_worker.py --once
+PYTHONPATH=src python scripts/run_retraining_worker.py
 ```
 
 Useful worker flags:
 - `--jobs-path <path>`: override retraining job store location
 - `--config-dir <path>`: override config directory containing `convlstm_training.yaml`
-- `--poll-interval <seconds>`: poll cadence in loop mode
 
 Ops metadata persistence can use a single SQLite file by setting:
 
@@ -224,10 +383,12 @@ See `docs/api-contract.md` for response examples.
 pytest
 ```
 
+Pull requests to `main` run backend `pytest -q` and frontend `npm run build` in GitHub Actions CI.
+
 ## Current limitations
 - ConvLSTM online path currently runs inference with random/untrained demo weights unless trained weights are wired in
 - Online backend does not implement gradient-based online training
-- State store is process-local in-memory only
+- State store defaults to process-local in-memory; CSV persistence is opt-in for local recovery and not intended for high-concurrency production use.
 - Ops auth is token-based and limited to `/ops/*`; no full identity provider integration
 - OpenRemote adapter is a **provisional generic payload translation** only (not validated contract, not live integration)
 - OpenRemote HTTP endpoint shapes can vary by deployed OpenRemote version; timestamped/predicted routes may need minor path adjustments for a target instance

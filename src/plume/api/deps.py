@@ -1,24 +1,32 @@
 from __future__ import annotations
 
 from functools import lru_cache
+import logging
 import os
 from pathlib import Path
 from typing import Any
 
-from plume.openremote.fake_sink import InMemoryOpenRemoteResultSink
 from plume.openremote.publishing_service import OpenRemotePublishingService
 from plume.openremote.sink import HttpOpenRemoteResultSink, OpenRemoteResultSink
+from plume.openremote.settings import (
+    get_openremote_service_registration_settings,
+    load_openremote_settings,
+)
 from plume.services.explain_service import ExplainService
 from plume.services.export_service import ExportService
 from plume.services.forecast_service import ForecastService
 from plume.services.llm_service import LLMService
+from plume.runtime.local_client import LocalForecastRuntimeClient
 from plume.services.observation_service import ObservationService
 from plume.services.online_forecast_service import OnlineForecastService
+from plume.storage.file_forecast_store import FileForecastStore
 from plume.state.base import BaseStateStore
+from plume.state.csv_store import CsvStateStore
 from plume.state.in_memory import InMemoryStateStore
 from plume.utils.config import Config
 
-_STATE_STORE_SINGLETON: BaseStateStore = InMemoryStateStore()
+_STATE_STORE_SINGLETON: BaseStateStore | None = None
+logger = logging.getLogger(__name__)
 
 
 def get_config(config_dir: str | None = None):
@@ -30,6 +38,17 @@ def get_forecast_service(config_dir: str | None = None):
 
 
 def get_state_store() -> BaseStateStore:
+    global _STATE_STORE_SINGLETON
+    if _STATE_STORE_SINGLETON is not None:
+        return _STATE_STORE_SINGLETON
+
+    backend_config = get_config().load_backend()
+    state_store_type = str(os.getenv("PLUME_STATE_STORE", backend_config.get("state_store", "in_memory"))).strip().lower()
+    if state_store_type == "csv":
+        store_dir = os.getenv("PLUME_SESSION_STORE_DIR", "artifacts/session_store")
+        _STATE_STORE_SINGLETON = CsvStateStore(store_dir=store_dir)
+    else:
+        _STATE_STORE_SINGLETON = InMemoryStateStore()
     return _STATE_STORE_SINGLETON
 
 
@@ -46,15 +65,24 @@ def get_online_forecast_service(config_dir: str | None = None) -> OnlineForecast
     )
 
 
+
+def get_forecast_runtime_client(config_dir: str | None = None) -> LocalForecastRuntimeClient:
+    forecast_service = get_forecast_service(config_dir=config_dir)
+    return LocalForecastRuntimeClient(
+        forecast_service=forecast_service,
+        online_forecast_service=get_online_forecast_service(config_dir=config_dir),
+        backend_config=forecast_service.config.load_backend(),
+    )
+
 def get_explain_service(config_dir: str | None = None):
     config = get_config(config_dir=config_dir)
 
     try:
         api_config_path = Path(config.config_dir) / "api.yaml"
         llm_service = LLMService.from_yaml(api_config_path)
-        print("[deps] LLM service initialized successfully")
+        logger.info("[deps] LLM service initialized successfully")
     except Exception as e:
-        print(f"[deps] LLM service unavailable, falling back: {e}")
+        logger.warning("[deps] LLM service unavailable, falling back: %s", e)
         llm_service = None
 
     return ExplainService(llm_service=llm_service)
@@ -64,38 +92,13 @@ def get_export_service():
     return ExportService()
 
 
-def _env_enabled(name: str, default: bool) -> bool:
-    raw = os.getenv(name)
-    if raw is None:
-        return default
-    return raw.strip().lower() in {"1", "true", "yes", "on"}
-
-
-def load_openremote_settings(config_dir: str | None = None) -> dict[str, object]:
-    config = get_config(config_dir=config_dir)
-    settings = dict(config.load_openremote())
-
-    settings["enabled"] = _env_enabled("PLUME_OPENREMOTE_ENABLED", bool(settings.get("enabled", False)))
-    settings["sink_mode"] = os.getenv("PLUME_OPENREMOTE_SINK_MODE", str(settings.get("sink_mode", "disabled")))
-    settings["base_url"] = os.getenv("PLUME_OPENREMOTE_BASE_URL", str(settings.get("base_url", "")))
-    settings["realm"] = os.getenv("PLUME_OPENREMOTE_REALM", str(settings.get("realm") or ""))
-    settings["site_asset_id"] = os.getenv("PLUME_OPENREMOTE_SITE_ASSET_ID", str(settings.get("site_asset_id") or ""))
-    settings["parent_asset_id"] = os.getenv(
-        "PLUME_OPENREMOTE_PARENT_ASSET_ID",
-        str(settings.get("parent_asset_id") or ""),
+def get_forecast_store(config_dir: str | None = None) -> FileForecastStore:
+    artifact_root = Path(os.getenv("PLUME_ARTIFACT_DIR", "artifacts"))
+    return FileForecastStore(
+        artifact_root=artifact_root,
+        forecast_service=get_forecast_service(config_dir=config_dir),
+        export_service=get_export_service(),
     )
-    settings["geojson_public_base_url"] = os.getenv(
-        "PLUME_OPENREMOTE_GEOJSON_PUBLIC_BASE_URL",
-        str(settings.get("geojson_public_base_url") or ""),
-    )
-
-    token_env_var = os.getenv(
-        "PLUME_OPENREMOTE_ACCESS_TOKEN_ENV_VAR",
-        str(settings.get("access_token_env_var", "OPENREMOTE_ACCESS_TOKEN")),
-    )
-    settings["access_token_env_var"] = token_env_var
-    settings["access_token"] = os.getenv(token_env_var)
-    return settings
 
 
 def get_openremote_publishing_runtime(config_dir: str | None = None) -> dict[str, Any]:
@@ -113,9 +116,7 @@ def get_openremote_publishing_runtime(config_dir: str | None = None) -> dict[str
     if not enabled or sink_mode == "disabled":
         return runtime
 
-    if sink_mode == "fake":
-        sink: OpenRemoteResultSink = InMemoryOpenRemoteResultSink()
-    elif sink_mode == "http":
+    if sink_mode == "http":
         base_url = str(settings.get("base_url", "")).strip()
         access_token = settings.get("access_token")
         if not base_url:
@@ -138,5 +139,17 @@ def get_openremote_publishing_runtime(config_dir: str | None = None) -> dict[str
         default_site_asset_id=str(settings.get("site_asset_id") or "") or None,
         default_site_parent_id=str(settings.get("parent_asset_id") or "") or None,
         geojson_base_url=str(settings.get("geojson_public_base_url") or "") or None,
+        forecast_asset_id=str(settings.get("forecast_asset_id") or "") or None,
+        forecast_attribute_mode=str(settings.get("forecast_attribute_mode") or "single_asset_attributes"),
+        forecast_attribute_names={
+            "summary": str(settings.get("forecast_summary_attribute") or "forecastSummary"),
+            "geojson": str(settings.get("forecast_geojson_attribute") or "forecastGeoJson"),
+            "raster_metadata": str(settings.get("forecast_raster_metadata_attribute") or "forecastRasterMetadata"),
+            "runtime": str(settings.get("forecast_runtime_attribute") or "forecastRuntime"),
+            "risk_level": str(settings.get("forecast_risk_level_attribute") or "forecastRiskLevel"),
+            "issued_at": str(settings.get("forecast_issued_at_attribute") or "forecastIssuedAt"),
+            "forecast_id": str(settings.get("forecast_id_attribute") or "forecastId"),
+        },
     )
     return runtime
+

@@ -52,11 +52,13 @@ def test_convlstm_backend_creates_session_with_contract_defaults():
     assert session.capabilities["supports_online_updates"] is False
     assert session.runtime_metadata["model_load"]["load_status"] == "random_init"
     assert session.runtime_metadata["input_mode"] == "degraded"
+    assert session.runtime_metadata["output_space"] == "demo_raw_physical"
 
     state = backend.initialize_state(session)
     contract = state.internal_state["inference_contract"]
     assert state.internal_state["sequence_length"] == 3
     assert state.internal_state["inference_input_mode"] == "degraded"
+    assert state.internal_state["output_space"] == "demo_raw_physical"
     assert contract["default_input_channels"] == 10
     assert contract["channel_manifest"] == list(CONVLSTM_CHANNEL_MANIFEST)
     assert contract["temporal_spacing"] == "hourly"

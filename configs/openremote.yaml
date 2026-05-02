@@ -6,3 +6,12 @@ site_asset_id: null
 parent_asset_id: null
 geojson_public_base_url: null
 access_token_env_var: OPENREMOTE_ACCESS_TOKEN
+forecast_asset_id: null
+forecast_attribute_mode: single_asset_attributes
+forecast_summary_attribute: forecastSummary
+forecast_geojson_attribute: forecastGeoJson
+forecast_raster_metadata_attribute: forecastRasterMetadata
+forecast_runtime_attribute: forecastRuntime
+forecast_risk_level_attribute: forecastRiskLevel
+forecast_issued_at_attribute: forecastIssuedAt
+forecast_id_attribute: forecastId

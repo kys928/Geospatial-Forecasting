@@ -1,8 +1,18 @@
 from __future__ import annotations
 
+import json
+
 from fastapi.testclient import TestClient
 
 from plume.api.main import create_app
+
+
+
+
+def test_create_app_avoids_on_event_deprecation_warning(recwarn):
+    create_app()
+    deprecations = [w for w in recwarn if issubclass(w.category, DeprecationWarning)]
+    assert not any("on_event is deprecated" in str(w.message) for w in deprecations)
 
 
 def test_api_health_endpoint():
@@ -21,8 +31,18 @@ def test_api_forecast_create_and_retrieve():
 
     create_response = client.post("/forecast", json={"run_name": "api-test"})
     assert create_response.status_code == 200
+    payload = create_response.json()
+    assert payload["runtime"]["path"] == "batch"
+    assert payload["runtime"]["output_space"] == "raw_physical"
+    assert payload["forecast_id"]
+    assert payload["issued_at"]
+    assert payload["model"]
+    assert "model_version" in payload
+    assert "artifacts" in payload
+    assert "runtime" in payload
+    assert "publishing" in payload
 
-    forecast_id = create_response.json()["forecast_id"]
+    forecast_id = payload["forecast_id"]
 
     get_response = client.get(f"/forecast/{forecast_id}")
     assert get_response.status_code == 200
@@ -76,6 +96,188 @@ def test_api_404_missing_forecast_id():
     response = client.get("/forecast/does-not-exist")
 
     assert response.status_code == 404
+    assert response.json()["detail"]["code"] == "forecast_not_found"
+
+
+def test_api_forecast_artifacts_persisted(monkeypatch, tmp_path):
+    monkeypatch.setenv("PLUME_ARTIFACT_DIR", str(tmp_path))
+    app = create_app()
+    client = TestClient(app)
+
+    create_response = client.post("/forecast", json={"run_name": "api-persist"})
+    assert create_response.status_code == 200
+    payload = create_response.json()
+    forecast_id = payload["forecast_id"]
+
+    assert (tmp_path / "forecasts" / forecast_id / "summary.json").exists()
+    metadata = json.loads((tmp_path / "forecasts" / forecast_id / "metadata.json").read_text(encoding="utf-8"))
+    assert metadata["runtime"]["output_space"] == "raw_physical"
+
+
+def test_api_forecast_summary_reads_persisted(monkeypatch, tmp_path):
+    monkeypatch.setenv("PLUME_ARTIFACT_DIR", str(tmp_path))
+    app = create_app()
+    client = TestClient(app)
+
+    forecast_id = client.post("/forecast", json={"run_name": "api-summary-persist"}).json()["forecast_id"]
+    response = client.get(f"/forecast/{forecast_id}/summary")
+    assert response.status_code == 200
+    assert response.json()["forecast_id"] == forecast_id
+
+
+def test_service_info_endpoint():
+    app = create_app()
+    client = TestClient(app)
+
+    response = client.get("/service/info")
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["service_id"] == "geospatial-plume-forecast"
+    assert payload["artifact_store"] == "file"
+    assert payload["persistence"]["forecast_store_durable"] is True
+    assert payload["persistence"]["session_store_durable"] is False
+    assert payload["openremote_service_registration"] == {
+        "enabled": False,
+        "registered": False,
+        "service_id": "geospatial-plume-forecast",
+        "instance_id": None,
+    }
+
+
+def test_runtime_status_endpoint(monkeypatch, tmp_path):
+    monkeypatch.setenv("PLUME_ARTIFACT_DIR", str(tmp_path))
+    app = create_app()
+    client = TestClient(app)
+
+    response = client.get("/runtime/status")
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["forecast_store"]["durable"] is True
+    assert payload["session_store"]["durable"] is False
+    assert payload["model_runtime"]["online_default_backend"]
+    assert payload["model_runtime"]["online_default_backend"] != "mock_online"
+    assert payload["model_runtime"]["fallback_backend"]
+    assert payload["model_runtime"]["batch_output_space"] == "raw_physical"
+    assert payload["model_runtime"]["convlstm_default_output_space"] == "demo_raw_physical"
+    assert payload["openremote_service_registration"]["enabled"] is False
+    assert payload["openremote_service_registration"]["registered"] is False
+
+
+def test_ready_endpoint(monkeypatch, tmp_path):
+    monkeypatch.setenv("PLUME_ARTIFACT_DIR", str(tmp_path))
+    app = create_app()
+    client = TestClient(app)
+
+    response = client.get("/ready")
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["status"] == "ready"
+    assert payload["checks"] == {
+        "config": "ok",
+        "artifact_dir": "ok",
+        "forecast_store": "ok",
+    }
+
+
+def test_api_forecasts_listing(monkeypatch, tmp_path):
+    monkeypatch.setenv("PLUME_ARTIFACT_DIR", str(tmp_path))
+    app = create_app()
+    client = TestClient(app)
+
+    first = client.post("/forecast", json={"run_name": "list-1"}).json()["forecast_id"]
+    second = client.post("/forecast", json={"run_name": "list-2"}).json()["forecast_id"]
+
+    response = client.get("/forecasts?limit=10")
+    assert response.status_code == 200
+    payload = response.json()
+    assert [item["forecast_id"] for item in payload["forecasts"]][:2] == [second, first]
+    assert payload["forecasts"][0]["runtime"]["model_family"] == "gaussian_plume"
+
+
+def test_api_forecasts_listing_ignores_malformed_folder(monkeypatch, tmp_path):
+    monkeypatch.setenv("PLUME_ARTIFACT_DIR", str(tmp_path))
+    app = create_app()
+    client = TestClient(app)
+    valid_id = client.post("/forecast", json={"run_name": "list-valid"}).json()["forecast_id"]
+
+    malformed = tmp_path / "forecasts" / "broken"
+    malformed.mkdir(parents=True)
+    (malformed / "metadata.json").write_text("{bad-json", encoding="utf-8")
+
+    response = client.get("/forecasts?limit=10")
+    assert response.status_code == 200
+    ids = [item["forecast_id"] for item in response.json()["forecasts"]]
+    assert valid_id in ids
+
+
+def test_api_forecasts_listing_limit_zero_invalid(monkeypatch, tmp_path):
+    monkeypatch.setenv("PLUME_ARTIFACT_DIR", str(tmp_path))
+    app = create_app()
+    client = TestClient(app)
+
+    response = client.get("/forecasts?limit=0")
+    assert response.status_code == 400
+    payload = response.json()["detail"]
+    assert payload["code"] == "invalid_limit"
+    assert payload["details"]["limit"] == 0
+
+
+def test_api_forecasts_listing_limit_above_max_invalid(monkeypatch, tmp_path):
+    monkeypatch.setenv("PLUME_ARTIFACT_DIR", str(tmp_path))
+    app = create_app()
+    client = TestClient(app)
+
+    response = client.get("/forecasts?limit=501")
+    assert response.status_code == 400
+    payload = response.json()["detail"]
+    assert payload["code"] == "invalid_limit"
+    assert payload["details"]["limit"] == 501
+    assert payload["details"]["max_limit"] == 500
+
+
+def test_api_forecast_summary_corrupt_artifact_returns_stable_error(monkeypatch, tmp_path):
+    monkeypatch.setenv("PLUME_ARTIFACT_DIR", str(tmp_path))
+    app = create_app()
+    client = TestClient(app)
+    forecast_id = client.post("/forecast", json={"run_name": "summary-corrupt"}).json()["forecast_id"]
+
+    artifact_path = tmp_path / "forecasts" / forecast_id / "summary.json"
+    artifact_path.write_text("{bad-json", encoding="utf-8")
+    response = client.get(f"/forecast/{forecast_id}/summary")
+
+    assert response.status_code == 400
+    detail = response.json()["detail"]
+    assert detail["code"] == "forecast_artifact_corrupt"
+    assert detail["details"]["forecast_id"] == forecast_id
+    assert detail["details"]["artifact"] == "summary"
+
+
+def test_api_forecast_geojson_corrupt_artifact_returns_stable_error(monkeypatch, tmp_path):
+    monkeypatch.setenv("PLUME_ARTIFACT_DIR", str(tmp_path))
+    app = create_app()
+    client = TestClient(app)
+    forecast_id = client.post("/forecast", json={"run_name": "geojson-corrupt"}).json()["forecast_id"]
+
+    artifact_path = tmp_path / "forecasts" / forecast_id / "geojson.json"
+    artifact_path.write_text("{bad-json", encoding="utf-8")
+    response = client.get(f"/forecast/{forecast_id}/geojson")
+
+    assert response.status_code == 400
+    detail = response.json()["detail"]
+    assert detail["code"] == "forecast_artifact_corrupt"
+    assert detail["details"]["forecast_id"] == forecast_id
+    assert detail["details"]["artifact"] == "geojson"
+
+
+def test_ready_endpoint_uses_unique_probe_and_no_fixed_probe_file(monkeypatch, tmp_path):
+    monkeypatch.setenv("PLUME_ARTIFACT_DIR", str(tmp_path))
+    app = create_app()
+    client = TestClient(app)
+
+    response = client.get("/ready")
+    assert response.status_code == 200
+    assert response.json()["status"] == "ready"
+    assert not (tmp_path / ".ready_probe.tmp").exists()
 
 
 def test_api_cors_allows_extra_origin_from_env(monkeypatch):
@@ -115,3 +317,121 @@ def test_api_cors_allows_origin_regex_from_env(monkeypatch):
 
     assert response.status_code == 200
     assert response.headers["access-control-allow-origin"] == "https://dynamic-5173.proxy.runpod.net"
+
+
+def test_api_forecast_explanation_missing_artifact_returns_409(monkeypatch, tmp_path):
+    monkeypatch.setenv("PLUME_ARTIFACT_DIR", str(tmp_path))
+    app = create_app()
+    client = TestClient(app)
+
+    forecast_id = client.post("/forecast", json={"run_name": "missing-expl"}).json()["forecast_id"]
+    response = client.get(f"/forecast/{forecast_id}/explanation")
+
+    assert response.status_code == 409
+    detail = response.json()["detail"]
+    assert detail["code"] == "forecast_explanation_requires_live_result"
+
+
+def test_api_forecast_create_default_does_not_persist_explanation(monkeypatch, tmp_path):
+    monkeypatch.setenv("PLUME_ARTIFACT_DIR", str(tmp_path))
+    monkeypatch.delenv("PLUME_PERSIST_BATCH_EXPLANATION", raising=False)
+    app = create_app()
+    client = TestClient(app)
+
+    payload = client.post("/forecast", json={"run_name": "default-no-expl"}).json()
+    forecast_id = payload["forecast_id"]
+    assert not (tmp_path / "forecasts" / forecast_id / "explanation.json").exists()
+
+
+def test_api_forecast_create_persists_explanation_when_enabled(monkeypatch, tmp_path):
+    monkeypatch.setenv("PLUME_ARTIFACT_DIR", str(tmp_path))
+    monkeypatch.setenv("PLUME_PERSIST_BATCH_EXPLANATION", "true")
+    monkeypatch.setenv("PLUME_PERSIST_BATCH_EXPLANATION_USE_LLM", "false")
+    app = create_app()
+    client = TestClient(app)
+
+    payload = client.post("/forecast", json={"run_name": "persist-expl"}).json()
+    forecast_id = payload["forecast_id"]
+
+    explanation_path = tmp_path / "forecasts" / forecast_id / "explanation.json"
+    assert explanation_path.exists()
+    assert "explanation" in payload["artifacts"]["available_artifacts"]
+
+    expl_response = client.get(f"/forecast/{forecast_id}/explanation")
+    assert expl_response.status_code == 200
+    expl_payload = expl_response.json()
+    assert expl_payload["forecast_id"] == forecast_id
+    assert "used_llm" in expl_payload
+    assert "summary" in expl_payload
+    assert "explanation" in expl_payload
+
+
+def test_api_forecast_create_explanation_failure_does_not_fail_post(monkeypatch, tmp_path):
+    monkeypatch.setenv("PLUME_ARTIFACT_DIR", str(tmp_path))
+    monkeypatch.setenv("PLUME_PERSIST_BATCH_EXPLANATION", "true")
+
+    from plume.services.explain_service import ExplainService
+
+    def explode(*args, **kwargs):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(ExplainService, "explain", explode)
+
+    app = create_app()
+    client = TestClient(app)
+
+    response = client.post("/forecast", json={"run_name": "expl-fail"})
+    assert response.status_code == 200
+    forecast_id = response.json()["forecast_id"]
+    assert not (tmp_path / "forecasts" / forecast_id / "explanation.json").exists()
+
+
+def test_api_forecast_explanation_corrupt_artifact_returns_stable_error(monkeypatch, tmp_path):
+    monkeypatch.setenv("PLUME_ARTIFACT_DIR", str(tmp_path))
+    monkeypatch.setenv("PLUME_PERSIST_BATCH_EXPLANATION", "true")
+    app = create_app()
+    client = TestClient(app)
+
+    forecast_id = client.post("/forecast", json={"run_name": "expl-corrupt"}).json()["forecast_id"]
+    artifact_path = tmp_path / "forecasts" / forecast_id / "explanation.json"
+    artifact_path.write_text("{bad-json", encoding="utf-8")
+
+    response = client.get(f"/forecast/{forecast_id}/explanation")
+    assert response.status_code == 400
+    detail = response.json()["detail"]
+    assert detail["code"] == "forecast_artifact_corrupt"
+    assert detail["details"]["artifact"] == "explanation"
+
+def test_api_forecast_jobs_create_list_get(monkeypatch, tmp_path):
+    monkeypatch.setenv("PLUME_ARTIFACT_DIR", str(tmp_path / "artifacts"))
+    monkeypatch.setenv("PLUME_FORECAST_JOBS_PATH", str(tmp_path / "forecast_jobs.json"))
+    app = create_app()
+    client = TestClient(app)
+
+    create = client.post("/forecast/jobs", json={"run_name": "queued-job"})
+    assert create.status_code == 200
+    job = create.json()
+    assert job["status"] == "queued"
+    assert not (tmp_path / "artifacts" / "forecasts").exists()
+
+    listed = client.get("/forecast/jobs?limit=10")
+    assert listed.status_code == 200
+    assert listed.json()["jobs"][0]["job_id"] == job["job_id"]
+
+    fetched = client.get(f"/forecast/jobs/{job['job_id']}")
+    assert fetched.status_code == 200
+    assert fetched.json()["job_id"] == job["job_id"]
+
+
+def test_api_forecast_jobs_limit_and_missing(monkeypatch, tmp_path):
+    monkeypatch.setenv("PLUME_FORECAST_JOBS_PATH", str(tmp_path / "forecast_jobs.json"))
+    app = create_app()
+    client = TestClient(app)
+
+    bad_limit = client.get("/forecast/jobs?limit=0")
+    assert bad_limit.status_code == 400
+    assert bad_limit.json()["detail"]["code"] == "invalid_limit"
+
+    missing = client.get("/forecast/jobs/missing-job")
+    assert missing.status_code == 404
+    assert missing.json()["detail"]["code"] == "forecast_job_not_found"

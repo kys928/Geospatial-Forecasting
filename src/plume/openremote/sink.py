@@ -43,6 +43,17 @@ class OpenRemoteResultSink(ABC):
     async def write_predicted_datapoints(self, write: ORPredictedDatapointWrite) -> dict[str, Any]:
         raise NotImplementedError
 
+    async def publish_attribute(
+        self,
+        *,
+        asset_id: str,
+        attribute_name: str,
+        value: Any,
+    ) -> dict[str, Any]:
+        return await self.write_attribute(
+            ORAttributeWrite(asset_id=asset_id, attribute_name=attribute_name, value=value)
+        )
+
 
 class HttpOpenRemoteResultSink(OpenRemoteResultSink):
     """

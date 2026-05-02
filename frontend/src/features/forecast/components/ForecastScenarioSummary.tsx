@@ -25,7 +25,7 @@ export function ForecastScenarioSummary({ activeScenario }: ForecastScenarioSumm
       </div>
 
       <p className="control-note muted">
-        Run Forecast samples a new bounded scenario each time.
+        Run demo scenario samples a new bounded sandbox scenario each time.
       </p>
     </section>
   );
