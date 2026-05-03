@@ -99,6 +99,9 @@ Notes:
 - Shared state is coordinated through configured local artifact/job/state files.
 - Worker execution is one-shot by default.
 - Optional local supervision loop: add `--loop` (and optionally `--interval-seconds` / `--max-iterations`) to the unified worker command.
+- Worker heartbeat/status is written to `artifacts/worker_status/worker_status.json` by default; override with `PLUME_WORKER_STATUS_PATH` or `--worker-status-path`.
+- Control API exposes `GET /ops/workers/status` for the latest file-backed worker heartbeat/status snapshot.
+- This status mechanism is local file-based visibility, not distributed service discovery.
 - Existing specific scripts (`scripts/run_forecast_worker.py` and `scripts/run_retraining_worker.py`) remain available.
 
 ## Ops recommendation explanation context

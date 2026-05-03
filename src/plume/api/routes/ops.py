@@ -22,6 +22,7 @@ from plume.api.ops_schemas import (
     RetrainingTriggerRequest,
     RetrainingTriggerResponse,
     RollbackResponse,
+    WorkerStatusResponse,
 )
 from plume.services.convlstm_operations import (
     ModelRegistry,
@@ -41,6 +42,7 @@ from plume.services.convlstm_operations import (
 )
 
 from plume.services.model_candidate_context import build_model_candidate_context
+from plume.workers.status import WorkerStatusStore
 from plume.services.retraining_explanation_context import build_retraining_explanation_context
 from plume.services.retraining_recommendation import build_retraining_recommendation
 
@@ -130,6 +132,11 @@ def _ops_paths() -> dict[str, Path]:
         "events": Path(os.getenv("PLUME_OPS_EVENTS_PATH", str(root / "ops_events.jsonl"))),
     }
 
+
+
+
+def _worker_status_path() -> Path:
+    return Path(os.getenv("PLUME_WORKER_STATUS_PATH", "artifacts/worker_status/worker_status.json"))
 
 def _should_auto_dispatch_worker() -> bool:
     return _env_flag("PLUME_OPS_AUTO_DISPATCH_WORKER", default=True)
@@ -224,6 +231,13 @@ def register_ops_routes(app: FastAPI, *, forecast_service, dispatch_worker=dispa
             return {"jobs": jobs, "latest_job": store.latest_job()}
         except Exception as exc:
             raise HTTPException(status_code=400, detail=f"Unable to load retraining jobs: {exc}") from exc
+
+    @app.get("/ops/workers/status", response_model=WorkerStatusResponse)
+    def get_worker_status(_role: str = Depends(_require_ops_read_access)):
+        try:
+            return {"worker_status": WorkerStatusStore(_worker_status_path()).read_status()}
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=f"Unable to load worker status: {exc}") from exc
 
     @app.get("/ops/events", response_model=OpsEventsResponse)
     def get_ops_events(limit: int = 50, _role: str = Depends(_require_ops_read_access)):
