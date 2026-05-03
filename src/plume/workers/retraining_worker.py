@@ -29,10 +29,23 @@ def run_retraining_worker_once(
     resolved_pid = worker_pid or os.getpid()
     job_store = RetrainingJobStore(jobs_path)
     event_log = OperationalEventLog(events_path)
+    recovery_enabled = _env_flag("PLUME_RETRAINING_JOB_STALE_RECOVERY_ENABLED", default=False)
+    recovery_info: dict[str, object] = {}
+    if recovery_enabled:
+        stale_after_seconds = float(os.getenv("PLUME_RETRAINING_JOB_STALE_AFTER_SECONDS", "7200"))
+        recovered_jobs = job_store.mark_stale_running_failed(stale_after_seconds=stale_after_seconds)
+        recovery_info = {
+            "stale_recovery": {
+                "enabled": True,
+                "threshold": stale_after_seconds,
+                "recovered_count": len(recovered_jobs),
+                "recovered_job_ids": [str(job.get("job_id")) for job in recovered_jobs],
+            }
+        }
 
     claimed = job_store.claim_next_queued_job(worker_pid=resolved_pid)
     if claimed is None:
-        return {"claimed": False, "status": "idle"}
+        return {"claimed": False, "status": "idle", **recovery_info}
 
     job_id = str(claimed["job_id"])
     event_log.append(event_type="retraining_job_claimed", payload={"job_id": job_id, "worker_pid": resolved_pid})
@@ -61,7 +74,7 @@ def run_retraining_worker_once(
                 }
             )
         )
-        return {"claimed": True, "status": "failed", "job": completed}
+        return {"claimed": True, "status": "failed", "job": completed, **recovery_info}
 
     candidate = register_candidate_from_run(
         registry=ModelRegistry(registry_path),
@@ -83,7 +96,14 @@ def run_retraining_worker_once(
             }
         )
     )
-    return {"claimed": True, "status": "succeeded", "job": completed, "candidate": candidate}
+    return {"claimed": True, "status": "succeeded", "job": completed, "candidate": candidate, **recovery_info}
+
+
+def _env_flag(name: str, *, default: bool) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _build_parser() -> argparse.ArgumentParser:

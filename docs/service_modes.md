@@ -50,6 +50,8 @@ Notes:
 - Forecast worker dependencies are composed in `plume.workers.deps` (service/runtime/storage), not via API route dependency wiring.
 - Forecast stale-job recovery is optional and disabled by default. When enabled, stale `running` jobs are marked `failed` (not requeued) before claiming queued work.
 - Configure stale-job recovery with `PLUME_FORECAST_JOB_STALE_RECOVERY_ENABLED` and `PLUME_FORECAST_JOB_STALE_AFTER_SECONDS`.
+- Retraining stale-job recovery is optional and disabled by default. When enabled, stale `running` retraining jobs are marked `failed` (not requeued) before claiming queued work.
+- Configure retraining stale-job recovery with `PLUME_RETRAINING_JOB_STALE_RECOVERY_ENABLED` and `PLUME_RETRAINING_JOB_STALE_AFTER_SECONDS` (default `7200`).
 
 ## Shared boundaries
 

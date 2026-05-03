@@ -120,6 +120,7 @@ class RetrainingJobRecord:
     result_run_id: str | None = None
     result_candidate_id: str | None = None
     worker_pid: int | None = None
+    metadata: dict[str, object] | None = None
 
     def __post_init__(self) -> None:
         if self.status not in RETRAINING_JOB_STATUSES:
@@ -147,6 +148,7 @@ class RetrainingJobRecord:
             result_run_id=_optional_str(payload.get("result_run_id")),
             result_candidate_id=_optional_str(payload.get("result_candidate_id")),
             worker_pid=_optional_int(payload.get("worker_pid")),
+            metadata=_optional_dict(payload.get("metadata")),
         )
 
 
@@ -264,6 +266,49 @@ class RetrainingJobStore:
             self._atomic_write(payload)
             return validated
 
+    def mark_stale_running_failed(
+        self,
+        *,
+        stale_after_seconds: float,
+        now: datetime | None = None,
+    ) -> list[dict[str, object]]:
+        if stale_after_seconds <= 0:
+            raise ValueError("stale_after_seconds must be > 0")
+        if self._sqlite:
+            return self._mark_stale_running_failed_sqlite(stale_after_seconds=stale_after_seconds, now=now)
+
+        reference = now or datetime.now(timezone.utc)
+        recovered: list[dict[str, object]] = []
+        with self.acquire_lock():
+            payload = self.load()
+            jobs = payload["jobs"]
+            changed = False
+            for idx, item in enumerate(jobs):
+                if not isinstance(item, dict) or item.get("status") != "running":
+                    continue
+                anchor = item.get("started_at") if item.get("started_at") is not None else item.get("updated_at")
+                started = _parse_utc_datetime(anchor)
+                if started is None or (reference - started).total_seconds() <= stale_after_seconds:
+                    continue
+                updated = dict(item)
+                updated["status"] = "failed"
+                updated["finished_at"] = reference.isoformat()
+                updated["updated_at"] = reference.isoformat()
+                updated["error_message"] = "Retraining job marked failed by stale running recovery"
+                metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
+                updated["metadata"] = {
+                    **metadata,
+                    "stale_recovery": True,
+                    "stale_after_seconds": stale_after_seconds,
+                }
+                validated = RetrainingJobRecord.from_dict(updated).to_dict()
+                jobs[idx] = validated
+                recovered.append(validated)
+                changed = True
+            if changed:
+                self._atomic_write(payload)
+        return recovered
+
     @contextmanager
     def acquire_lock(self):
         self.lock_path.parent.mkdir(parents=True, exist_ok=True)
@@ -322,6 +367,7 @@ class RetrainingJobStore:
                 result_run_id TEXT,
                 result_candidate_id TEXT,
                 worker_pid INTEGER
+                ,metadata TEXT
             )
             """
         )
@@ -333,7 +379,17 @@ class RetrainingJobStore:
             rows = conn.execute(
                 "SELECT * FROM retraining_jobs ORDER BY created_sequence ASC"
             ).fetchall()
-            jobs = [dict(row) for row in rows]
+            jobs: list[dict[str, object]] = []
+            for row in rows:
+                item = dict(row)
+                raw_meta = item.get("metadata")
+                if isinstance(raw_meta, str):
+                    try:
+                        decoded = json.loads(raw_meta)
+                        item["metadata"] = decoded if isinstance(decoded, dict) else None
+                    except Exception:
+                        item["metadata"] = None
+                jobs.append(item)
             next_sequence = int(conn.execute("SELECT value FROM retraining_job_meta WHERE key='next_sequence'").fetchone()[0])
             return {"jobs": jobs, "next_sequence": next_sequence}
 
@@ -350,7 +406,8 @@ class RetrainingJobStore:
                             job_id, status, created_sequence, created_at, started_at, finished_at,
                             dataset_snapshot_ref, run_config_ref, output_dir, error_message,
                             result_run_dir, result_run_id, result_candidate_id, worker_pid
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            ,metadata
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                         """,
                         (
                             row["job_id"],
@@ -367,6 +424,7 @@ class RetrainingJobStore:
                             row["result_run_id"],
                             row["result_candidate_id"],
                             row["worker_pid"],
+                            json.dumps(row["metadata"]) if isinstance(row.get("metadata"), dict) else None,
                         ),
                     )
             next_sequence = int(payload.get("next_sequence", len(payload.get("jobs", []))))
@@ -406,7 +464,8 @@ class RetrainingJobStore:
                     job_id, status, created_sequence, created_at, started_at, finished_at,
                     dataset_snapshot_ref, run_config_ref, output_dir, error_message,
                     result_run_dir, result_run_id, result_candidate_id, worker_pid
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ,metadata
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     record["job_id"],
@@ -423,6 +482,7 @@ class RetrainingJobStore:
                     record["result_run_id"],
                     record["result_candidate_id"],
                     record["worker_pid"],
+                    json.dumps(record["metadata"]) if isinstance(record.get("metadata"), dict) else None,
                 ),
             )
             conn.execute(
@@ -448,6 +508,7 @@ class RetrainingJobStore:
                 UPDATE retraining_jobs SET
                     status=?, started_at=?, finished_at=?, dataset_snapshot_ref=?, run_config_ref=?, output_dir=?,
                     error_message=?, result_run_dir=?, result_run_id=?, result_candidate_id=?, worker_pid=?
+                    ,metadata=?
                 WHERE job_id=?
                 """,
                 (
@@ -462,6 +523,7 @@ class RetrainingJobStore:
                     validated["result_run_id"],
                     validated["result_candidate_id"],
                     validated["worker_pid"],
+                    json.dumps(validated["metadata"]) if isinstance(validated.get("metadata"), dict) else None,
                     validated["job_id"],
                 ),
             )
@@ -490,6 +552,47 @@ class RetrainingJobStore:
             )
             conn.commit()
             return validated
+
+    def _mark_stale_running_failed_sqlite(self, *, stale_after_seconds: float, now: datetime | None) -> list[dict[str, object]]:
+        reference = now or datetime.now(timezone.utc)
+        recovered: list[dict[str, object]] = []
+        with self._sqlite_conn() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            rows = conn.execute("SELECT * FROM retraining_jobs WHERE status='running'").fetchall()
+            for row in rows:
+                current = dict(row)
+                anchor = current.get("started_at") if current.get("started_at") is not None else current.get("updated_at")
+                started = _parse_utc_datetime(anchor)
+                if started is None or (reference - started).total_seconds() <= stale_after_seconds:
+                    continue
+                updated = dict(current)
+                updated["status"] = "failed"
+                updated["finished_at"] = reference.isoformat()
+                updated["updated_at"] = reference.isoformat()
+                updated["error_message"] = "Retraining job marked failed by stale running recovery"
+                metadata: dict[str, object] = {}
+                if isinstance(current.get("metadata"), str):
+                    try:
+                        decoded = json.loads(current["metadata"])
+                        if isinstance(decoded, dict):
+                            metadata = decoded
+                    except Exception:
+                        metadata = {}
+                updated["metadata"] = {**metadata, "stale_recovery": True, "stale_after_seconds": stale_after_seconds}
+                validated = RetrainingJobRecord.from_dict(updated).to_dict()
+                conn.execute(
+                    "UPDATE retraining_jobs SET status=?, finished_at=?, error_message=?, metadata=? WHERE job_id=?",
+                    (
+                        validated["status"],
+                        validated["finished_at"],
+                        validated["error_message"],
+                        json.dumps(validated["metadata"]) if isinstance(validated.get("metadata"), dict) else None,
+                        validated["job_id"],
+                    ),
+                )
+                recovered.append(validated)
+            conn.commit()
+        return recovered
 
 
 class ModelRegistry:
@@ -1687,6 +1790,18 @@ def _validate_checkpoint_readable(path: Path, *, context: str) -> None:
 def _is_sqlite_path(path: Path) -> bool:
     suffixes = {s.lower() for s in path.suffixes}
     return ".db" in suffixes or ".sqlite" in suffixes or ".sqlite3" in suffixes
+
+
+def _parse_utc_datetime(value: object) -> datetime | None:
+    if not isinstance(value, str):
+        return None
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
 
 
 def _utc_now_iso() -> str:

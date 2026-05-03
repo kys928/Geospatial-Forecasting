@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from fastapi.testclient import TestClient
@@ -105,3 +106,67 @@ def test_worker_once_failure(monkeypatch, tmp_path: Path):
     updated = RetrainingJobStore(tmp_path / "jobs.json").latest_job()
     assert updated["status"] == "failed"
     assert updated["error_message"] == "boom"
+
+
+def test_worker_stale_recovery_disabled_by_default(tmp_path: Path):
+    store = RetrainingJobStore(tmp_path / "jobs.json")
+    stale = store.create_job(dataset_snapshot_ref="snapshot://stale", run_config_ref="{}", output_dir=None)
+    queued = store.create_job(dataset_snapshot_ref="snapshot://queued", run_config_ref="{}", output_dir=None)
+    store.claim_next_queued_job(worker_pid=1)
+    store.update_job(job_id=stale["job_id"], started_at=(datetime.now(timezone.utc) - timedelta(seconds=10_000)).isoformat())
+    OperationalStateStore(tmp_path / "state.json").save(OperationalState(phase="collecting", buffered_new_sample_count=9))
+    ModelRegistry(tmp_path / "registry.json").save({"models": [], "events": [], "active_model_id": None, "previous_active_model_id": None})
+
+    result = run_retraining_worker_once(
+        jobs_path=tmp_path / "jobs.json",
+        registry_path=tmp_path / "registry.json",
+        state_path=tmp_path / "state.json",
+        events_path=tmp_path / "events.jsonl",
+        config_dir=tmp_path,
+        worker_pid=9,
+    )
+    assert "stale_recovery" not in result
+    jobs = {job["job_id"]: job for job in RetrainingJobStore(tmp_path / "jobs.json").list_jobs()}
+    assert jobs[stale["job_id"]]["status"] == "running"
+    assert jobs[queued["job_id"]]["status"] in {"running", "failed", "succeeded"}
+
+
+def test_worker_stale_recovery_enabled_recovers_then_claims(monkeypatch, tmp_path: Path):
+    monkeypatch.setenv("PLUME_RETRAINING_JOB_STALE_RECOVERY_ENABLED", "true")
+    monkeypatch.setenv("PLUME_RETRAINING_JOB_STALE_AFTER_SECONDS", "60")
+    store = RetrainingJobStore(tmp_path / "jobs.json")
+    stale = store.create_job(dataset_snapshot_ref="snapshot://stale", run_config_ref="{}", output_dir=None)
+    queued = store.create_job(dataset_snapshot_ref="snapshot://queued", run_config_ref="{}", output_dir=None)
+    store.claim_next_queued_job(worker_pid=1)
+    store.update_job(job_id=stale["job_id"], started_at=(datetime.now(timezone.utc) - timedelta(seconds=10_000)).isoformat())
+    OperationalStateStore(tmp_path / "state.json").save(OperationalState(phase="collecting", buffered_new_sample_count=9))
+    ModelRegistry(tmp_path / "registry.json").save({"models": [], "events": [], "active_model_id": None, "previous_active_model_id": None})
+    monkeypatch.setattr("plume.workers.retraining_worker.run_local_retraining_job", lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("boom")))
+
+    result = run_retraining_worker_once(
+        jobs_path=tmp_path / "jobs.json",
+        registry_path=tmp_path / "registry.json",
+        state_path=tmp_path / "state.json",
+        events_path=tmp_path / "events.jsonl",
+        config_dir=tmp_path,
+        worker_pid=10,
+    )
+    assert result["stale_recovery"]["recovered_count"] == 1
+    assert stale["job_id"] in result["stale_recovery"]["recovered_job_ids"]
+    jobs = {job["job_id"]: job for job in RetrainingJobStore(tmp_path / "jobs.json").list_jobs()}
+    assert jobs[stale["job_id"]]["status"] == "failed"
+    assert jobs[queued["job_id"]]["status"] == "failed"
+
+
+def test_worker_idle_includes_recovery_metadata_when_enabled(monkeypatch, tmp_path: Path):
+    monkeypatch.setenv("PLUME_RETRAINING_JOB_STALE_RECOVERY_ENABLED", "true")
+    result = run_retraining_worker_once(
+        jobs_path=tmp_path / "jobs.json",
+        registry_path=tmp_path / "registry.json",
+        state_path=tmp_path / "state.json",
+        events_path=tmp_path / "events.jsonl",
+        config_dir=tmp_path,
+        worker_pid=1234,
+    )
+    assert result["claimed"] is False
+    assert result["stale_recovery"]["enabled"] is True
