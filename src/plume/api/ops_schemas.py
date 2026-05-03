@@ -116,3 +116,7 @@ class ActivationResponse(BaseModel):
 class RollbackResponse(BaseModel):
     rolled_back: bool
     active_model_id: str
+
+
+class WorkerStatusResponse(BaseModel):
+    worker_status: dict[str, Any] | None = None

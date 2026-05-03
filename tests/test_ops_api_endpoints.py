@@ -455,3 +455,48 @@ def test_ops_retraining_recommendation_does_not_submit_job(monkeypatch, tmp_path
     assert recommendation.status_code == 200
     after = client.get("/ops/jobs", headers=_auth_header("readonly-token")).json()["jobs"]
     assert before == after
+
+
+def test_ops_worker_status_returns_null_when_missing(monkeypatch, tmp_path: Path):
+    for key, value in _seed_ops_files(tmp_path).items():
+        monkeypatch.setenv(key, value)
+    monkeypatch.setenv("PLUME_OPS_AUTH_ENABLED", "true")
+    monkeypatch.setenv("PLUME_OPS_API_TOKEN", "operator-token")
+    monkeypatch.setenv("PLUME_OPS_READONLY_TOKEN", "readonly-token")
+    monkeypatch.setenv("PLUME_OPS_REQUIRE_AUTH_FOR_READ", "true")
+    monkeypatch.setenv("PLUME_WORKER_STATUS_PATH", str(tmp_path / "missing.json"))
+
+    client = TestClient(create_app())
+    response = client.get("/ops/workers/status", headers=_auth_header("readonly-token"))
+    assert response.status_code == 200
+    assert response.json() == {"worker_status": None}
+
+
+def test_ops_worker_status_returns_payload(monkeypatch, tmp_path: Path):
+    for key, value in _seed_ops_files(tmp_path).items():
+        monkeypatch.setenv(key, value)
+    monkeypatch.setenv("PLUME_OPS_AUTH_ENABLED", "true")
+    monkeypatch.setenv("PLUME_OPS_API_TOKEN", "operator-token")
+    monkeypatch.setenv("PLUME_OPS_READONLY_TOKEN", "readonly-token")
+    monkeypatch.setenv("PLUME_OPS_REQUIRE_AUTH_FOR_READ", "true")
+    status_path = tmp_path / "worker_status.json"
+    status_path.write_text(json.dumps({"worker_id": "worker-1", "kind": "all"}), encoding="utf-8")
+    monkeypatch.setenv("PLUME_WORKER_STATUS_PATH", str(status_path))
+
+    client = TestClient(create_app())
+    response = client.get("/ops/workers/status", headers=_auth_header("readonly-token"))
+    assert response.status_code == 200
+    assert response.json()["worker_status"]["worker_id"] == "worker-1"
+
+
+def test_ops_worker_status_requires_read_access(monkeypatch, tmp_path: Path):
+    for key, value in _seed_ops_files(tmp_path).items():
+        monkeypatch.setenv(key, value)
+    monkeypatch.setenv("PLUME_OPS_AUTH_ENABLED", "true")
+    monkeypatch.setenv("PLUME_OPS_API_TOKEN", "operator-token")
+    monkeypatch.setenv("PLUME_OPS_READONLY_TOKEN", "readonly-token")
+    monkeypatch.setenv("PLUME_OPS_REQUIRE_AUTH_FOR_READ", "true")
+    client = TestClient(create_app())
+
+    response = client.get("/ops/workers/status")
+    assert response.status_code == 401
