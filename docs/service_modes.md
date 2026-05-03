@@ -48,6 +48,8 @@ Notes:
 - `--once` is accepted for compatibility, but one-shot behavior is already the default.
 - `--kind all` runs forecast once, then retraining once.
 - Forecast worker dependencies are composed in `plume.workers.deps` (service/runtime/storage), not via API route dependency wiring.
+- Forecast stale-job recovery is optional and disabled by default. When enabled, stale `running` jobs are marked `failed` (not requeued) before claiming queued work.
+- Configure stale-job recovery with `PLUME_FORECAST_JOB_STALE_RECOVERY_ENABLED` and `PLUME_FORECAST_JOB_STALE_AFTER_SECONDS`.
 
 ## Shared boundaries
 

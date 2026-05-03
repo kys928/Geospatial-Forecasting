@@ -30,15 +30,28 @@ def run_forecast_worker_once(
 ) -> dict[str, object]:
     resolved_pid = worker_pid or os.getpid()
     job_store = ForecastJobStore(jobs_path)
+    recovery_enabled = _env_flag("PLUME_FORECAST_JOB_STALE_RECOVERY_ENABLED", default=False)
+    recovery_info: dict[str, object] = {}
+    if recovery_enabled:
+        stale_after_seconds = float(os.getenv("PLUME_FORECAST_JOB_STALE_AFTER_SECONDS", "3600"))
+        recovered_jobs = job_store.mark_stale_running_failed(stale_after_seconds=stale_after_seconds)
+        recovery_info = {
+            "stale_recovery": {
+                "enabled": True,
+                "stale_after_seconds": stale_after_seconds,
+                "recovered_count": len(recovered_jobs),
+                "recovered_job_ids": [str(job.get("job_id")) for job in recovered_jobs],
+            }
+        }
     claimed = job_store.claim_next_queued_job(worker_pid=resolved_pid)
     if claimed is None:
-        return {"claimed": False, "status": "idle"}
+        return {"claimed": False, "status": "idle", **recovery_info}
 
     job_id = str(claimed["job_id"])
     payload = claimed.get("request_payload")
     if not isinstance(payload, dict):
         completed = job_store.mark_failed(job_id, "Invalid request_payload in forecast job")
-        return {"claimed": True, "status": "failed", "job": completed}
+        return {"claimed": True, "status": "failed", "job": completed, **recovery_info}
 
     runtime_client = get_worker_forecast_runtime_client(config_dir=str(config_dir))
     forecast_store = get_worker_forecast_store(artifact_root=artifact_root, config_dir=str(config_dir))
@@ -57,10 +70,10 @@ def run_forecast_worker_once(
             artifact_dir=str(artifact_metadata.get("artifact_dir") or ""),
             metadata={"runtime": artifact_metadata.get("runtime")},
         )
-        return {"claimed": True, "status": "succeeded", "job": completed}
+        return {"claimed": True, "status": "succeeded", "job": completed, **recovery_info}
     except Exception as exc:
         completed = job_store.mark_failed(job_id, str(exc))
-        return {"claimed": True, "status": "failed", "job": completed}
+        return {"claimed": True, "status": "failed", "job": completed, **recovery_info}
 
 
 def _build_parser() -> argparse.ArgumentParser:

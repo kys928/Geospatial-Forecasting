@@ -119,3 +119,55 @@ class ForecastJobStore:
                 self._write_jobs(jobs)
                 return deepcopy(job)
         raise KeyError(f"Unknown forecast job_id: {job_id}")
+
+    def mark_stale_running_failed(
+        self,
+        *,
+        stale_after_seconds: float,
+        now: datetime | None = None,
+    ) -> list[dict[str, object]]:
+        if stale_after_seconds <= 0:
+            raise ValueError("stale_after_seconds must be greater than 0")
+
+        now_dt = now or datetime.now(timezone.utc)
+        now_iso = now_dt.isoformat()
+        jobs = self._load_jobs()
+        updated_jobs: list[dict[str, object]] = []
+
+        for job in jobs:
+            if job.get("status") != "running":
+                continue
+
+            candidate = job.get("started_at") if job.get("started_at") is not None else job.get("updated_at")
+            if not isinstance(candidate, str):
+                continue
+            try:
+                candidate_dt = datetime.fromisoformat(candidate)
+            except ValueError:
+                continue
+            if candidate_dt.tzinfo is None:
+                continue
+
+            age_seconds = (now_dt - candidate_dt).total_seconds()
+            if age_seconds <= stale_after_seconds:
+                continue
+
+            job["status"] = "failed"
+            job["finished_at"] = now_iso
+            job["updated_at"] = now_iso
+            job["error_message"] = (
+                "Job marked failed because it was running longer than stale_after_seconds"
+            )
+            metadata = job.get("metadata")
+            if not isinstance(metadata, dict):
+                metadata = {}
+            else:
+                metadata = deepcopy(metadata)
+            metadata["stale_recovery"] = True
+            metadata["stale_after_seconds"] = stale_after_seconds
+            job["metadata"] = metadata
+            updated_jobs.append(deepcopy(job))
+
+        if updated_jobs:
+            self._write_jobs(jobs)
+        return updated_jobs
