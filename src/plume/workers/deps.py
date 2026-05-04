@@ -48,7 +48,30 @@ def get_worker_export_service() -> ExportService:
     return ExportService()
 
 
+
+
+def _validate_runtime_backends() -> None:
+    forecast_backend = os.getenv("PLUME_FORECAST_BACKEND", "placeholder").strip().lower()
+    if forecast_backend == "convlstm":
+        required = [
+            "PLUME_CONVLSTM_MODEL_PATH",
+            "PLUME_CONVLSTM_CONFIG_PATH",
+            "PLUME_CONVLSTM_CHANNEL_MANIFEST_PATH",
+            "PLUME_CONVLSTM_NORMALIZER_PATH",
+        ]
+        missing = [k for k in required if not str(os.getenv(k, "")).strip()]
+        if missing:
+            raise ValueError(f"ConvLSTM backend requested but missing required env vars: {', '.join(missing)}")
+
+    explanation_backend = os.getenv("PLUME_EXPLANATION_BACKEND", "deterministic").strip().lower()
+    llm_enabled = os.getenv("PLUME_LLM_ENABLED", "false").strip().lower() in {"1","true","yes","on"}
+    if explanation_backend == "llm" or llm_enabled:
+        provider = os.getenv("PLUME_LLM_PROVIDER", "none").strip().lower()
+        if provider in {"", "none"}:
+            raise ValueError("LLM explanation mode requires PLUME_LLM_PROVIDER to be set")
+
 def get_worker_forecast_runtime_client(config_dir: str | None = None) -> LocalForecastRuntimeClient:
+    _validate_runtime_backends()
     forecast_service = get_worker_forecast_service(config_dir=config_dir)
     online_forecast_service = OnlineForecastService(
         config=get_worker_config(config_dir=config_dir),
@@ -71,6 +94,7 @@ def get_worker_forecast_store(artifact_root: Path, config_dir: str | None = None
 
 
 def get_worker_explain_service(config_dir: str | None = None) -> ExplainService:
+    _validate_runtime_backends()
     config = get_worker_config(config_dir=config_dir)
     try:
         api_config_path = Path(config.config_dir) / "api.yaml"
