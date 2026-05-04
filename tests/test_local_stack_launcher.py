@@ -30,6 +30,12 @@ def _args(**overrides):
     return SimpleNamespace(**data)
 
 
+def test_get_npm_executable_platform_specific():
+    module = _load_module("run_local_stack.py")
+    assert module.get_npm_executable("nt") == "npm.cmd"
+    assert module.get_npm_executable("posix") == "npm"
+
+
 def test_build_stack_commands_defaults():
     module = _load_module("run_local_stack.py")
     args = _args()
@@ -56,6 +62,12 @@ def test_build_stack_commands_defaults():
         "5.0",
     ]
     assert specs[2].cmd == ["npm", "run", "dev"]
+
+
+def test_build_stack_commands_frontend_uses_npm_cmd_on_windows():
+    module = _load_module("run_local_stack.py")
+    specs = module.build_stack_commands(_args(), {}, platform_name="nt")
+    assert specs[2].cmd == ["npm.cmd", "run", "dev"]
 
 
 def test_build_stack_commands_no_frontend():
@@ -120,3 +132,48 @@ def test_shutdown_helper_terminates_and_kills_when_needed():
     module._shutdown_processes([proc], timeout_seconds=0)
     assert proc.terminated
     assert proc.killed
+
+
+def test_main_returns_1_and_prints_on_startup_failure(monkeypatch, capsys):
+    module = _load_module("run_local_stack.py")
+
+    def _fail_popen(*_args, **_kwargs):
+        raise OSError("boom")
+
+    monkeypatch.setattr(module.subprocess, "Popen", _fail_popen)
+
+    rc = module.main(["--no-worker", "--no-frontend"])
+
+    out = capsys.readouterr().out
+    assert rc == 1
+    assert "[stack] failed to start api: boom" in out
+
+
+def test_main_returns_1_and_prints_on_child_exit(monkeypatch, capsys):
+    module = _load_module("run_local_stack.py")
+
+    class _Proc:
+        def __init__(self):
+            self._poll_count = 0
+            self.stdout = iter([])
+
+        def poll(self):
+            self._poll_count += 1
+            return 7 if self._poll_count >= 1 else None
+
+        def terminate(self):
+            return None
+
+        def wait(self, timeout=None):
+            return 7
+
+        def kill(self):
+            return None
+
+    monkeypatch.setattr(module.subprocess, "Popen", lambda *a, **k: _Proc())
+
+    rc = module.main(["--no-worker", "--no-frontend"])
+
+    out = capsys.readouterr().out
+    assert rc == 1
+    assert "[stack] api exited with code 7; shutting down stack." in out
