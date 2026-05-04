@@ -40,6 +40,23 @@ function isPresentValue(value: unknown): boolean {
   if (Array.isArray(value)) return value.length > 0;
   return true;
 }
+function getNestedValue(source: unknown, ...paths: string[]): unknown {
+  for (const path of paths) {
+    const parts = path.split(".");
+    let current: unknown = source;
+    let found = true;
+    for (const part of parts) {
+      if (current && typeof current === "object" && part in (current as Record<string, unknown>)) {
+        current = (current as Record<string, unknown>)[part];
+      } else {
+        found = false;
+        break;
+      }
+    }
+    if (found && isPresentValue(current)) return current;
+  }
+  return undefined;
+}
 
 function formatTimestamp(value: unknown): string {
   if (typeof value !== "string" || !value.trim()) return "Unavailable";
@@ -58,6 +75,32 @@ function formatArea(value: unknown): string {
   if (parsed === 0) return "0 m²";
   if (Math.abs(parsed) >= 10000) return `${(parsed / 10000).toLocaleString(undefined, { maximumFractionDigits: 1 })} ha`;
   return `${parsed.toLocaleString(undefined, { maximumFractionDigits: 0 })} m²`;
+}
+function formatCoordinate(value: unknown): string {
+  const parsed = typeof value === "string" ? Number(value) : value;
+  if (typeof parsed !== "number" || Number.isNaN(parsed)) return "Unavailable";
+  return parsed.toFixed(5);
+}
+function formatSpeed(value: unknown): string {
+  const n = formatNumber(value);
+  return n === "Unavailable" ? n : `${n} m/s`;
+}
+function formatDirection(value: unknown): string {
+  if (!isPresentValue(value)) return "Unavailable";
+  if (typeof value === "number") return `${value}°`;
+  return String(value);
+}
+function formatTemperature(value: unknown): string {
+  const n = formatNumber(value, 1);
+  return n === "Unavailable" ? n : `${n} °C`;
+}
+function formatPressure(value: unknown): string {
+  const n = formatNumber(value, 1);
+  return n === "Unavailable" ? n : `${n} hPa`;
+}
+function formatPercent(value: unknown): string {
+  const n = formatNumber(value, 1);
+  return n === "Unavailable" ? n : `${n}%`;
 }
 
 function formatUnknown(value: unknown): string {
@@ -123,7 +166,7 @@ export function DecisionSupportPage() {
       `Forecast evidence: ${safeText(data?.forecast_evidence ?? summary.evidence)}`,
       `System honesty: ${safeText(data?.system_honesty ?? explanation.system_honesty, modeLabel)}`
     ];
-    return parts.join("\n\n");
+    return parts.join("\n\n").replace(/^Grounded response:\s*/i, "");
   }, [data, explanation, summary, modeLabel]);
 
   useEffect(() => {
@@ -146,10 +189,18 @@ export function DecisionSupportPage() {
   const hasNoPlumeSignal = Number(affectedAreaRaw ?? -1) === 0 || Number(affectedCellsRaw ?? -1) === 0 || safeText(explanation.summary, "").toLowerCase().includes("no meaningful plume");
   const plumeStatus = hasNoPlumeSignal ? "No meaningful plume above threshold" : (isPresentValue(affectedAreaRaw) || isPresentValue(affectedCellsRaw) ? "Plume detected above threshold" : "Unavailable");
 
-  const snapshotRows = [
-    ["Key finding", safeText(data?.situation_summary ?? explanation.summary, hasNoPlumeSignal ? "No meaningful plume is visible above the selected threshold." : "Forecast signals plume transport above the selected threshold.")],
-    ["Recommended action", safeText(data?.recommended_action ?? explanation.recommendation, "Continue monitoring and review local response protocols.")],
-    ["Main limitation", safeText(data?.uncertainty_limitations ?? explanation.uncertainty_note, "No major limitation reported.")]
+  const adapterMeta = getNestedValue(sessionState, "last_input_adapter_metadata", "input_adapter_metadata", "internal_state.last_input_adapter_metadata");
+  const meteorologyRows = [
+    ["Wind speed", formatSpeed(getNestedValue(summary, "wind_speed", "meteorology.wind_speed", "met.wind_speed", "inputs.wind_speed", "weather.wind_speed", "u10_speed", "wind.speed", "meteo.wind_speed", "source_inputs.wind_speed", "request.wind_speed", "runtime_metadata.wind_speed"))],
+    ["Wind direction", formatDirection(getNestedValue(summary, "wind_direction", "meteorology.wind_direction", "met.wind_direction", "inputs.wind_direction", "weather.wind_direction", "wind.direction", "meteo.wind_direction"))],
+    ["U wind", formatSpeed(getNestedValue(summary, "u_wind", "u", "meteorology.u_wind", "met.u_wind", "wind.u"))],
+    ["V wind", formatSpeed(getNestedValue(summary, "v_wind", "v", "meteorology.v_wind", "met.v_wind", "wind.v"))],
+    ["Temperature", formatTemperature(getNestedValue(summary, "temperature", "meteorology.temperature", "met.temperature", "weather.temperature"))],
+    ["Relative humidity", formatPercent(getNestedValue(summary, "relative_humidity", "humidity", "meteorology.relative_humidity", "met.relative_humidity", "weather.humidity"))],
+    ["Surface pressure", formatPressure(getNestedValue(summary, "surface_pressure", "pressure", "meteorology.surface_pressure", "met.surface_pressure", "weather.pressure"))],
+    ["PBL height", `${formatNumber(getNestedValue(summary, "pbl_height", "meteorology.pbl_height", "met.pbl_height", "weather.pbl_height"), 1)} m`],
+    ["Meteorology timestamp", formatTimestamp(getNestedValue(summary, "meteorology.timestamp", "met.timestamp", "weather.timestamp", "timestamp"))],
+    ["Meteorology source", formatUnknown(getNestedValue(summary, "meteorology.source", "met.source", "weather.source", "source", "adapter.source", "runtime_metadata.meteorology_source"))]
   ] as Array<[string, string]>;
 
   const keyOutputRows = [
@@ -161,29 +212,22 @@ export function DecisionSupportPage() {
     ["Forecast time", formatTimestamp(data?.last_forecast_time ?? values.timestamp)]
   ] as Array<[string, string]>;
 
-  const meteorologyLine = [
-    isPresentValue(values.wind_speed) ? `Wind ${formatNumber(values.wind_speed)} m/s` : null,
-    isPresentValue(values.wind_direction) ? `Dir ${formatUnknown(values.wind_direction)}` : null,
-    isPresentValue(values.temperature) ? `Temp ${formatNumber(values.temperature)}°` : null
-  ].filter(Boolean).join(" • ");
-  const meteoStatus = meteorologyLine || "Meteorology unavailable or degraded/default values in use";
-  const releaseLine = [
-    isPresentValue(values.pollutant) ? `Pollutant ${formatUnknown(values.pollutant)}` : null,
-    isPresentValue(values.emission_rate) ? `Emission ${formatNumber(values.emission_rate)}` : null,
-    isPresentValue(values.release_height) ? `Height ${formatNumber(values.release_height)} m` : null
-  ].filter(Boolean).join(" • ");
+  const meteorologyConnected = meteorologyRows.some(([_, value]) => value !== "Unavailable");
+  const releaseRows = [
+    ["Source latitude", formatCoordinate(getNestedValue(summary, "source_latitude", "source.lat", "release.latitude", "scenario.source_latitude", "request.source_latitude"))],
+    ["Source longitude", formatCoordinate(getNestedValue(summary, "source_longitude", "source.lon", "release.longitude", "scenario.source_longitude", "request.source_longitude"))],
+    ["Pollutant type", formatUnknown(getNestedValue(summary, "pollutant", "pollutant_type", "release.pollutant", "scenario.pollutant"))],
+    ["Emission rate", formatUnknown(getNestedValue(summary, "emission_rate", "release.emission_rate", "scenario.emission_rate"))],
+    ["Release height", `${formatNumber(getNestedValue(summary, "release_height", "release.height", "scenario.release_height"))} m`],
+    ["Duration", formatUnknown(getNestedValue(summary, "duration", "release.duration", "scenario.duration"))],
+    ["Start time", formatTimestamp(getNestedValue(summary, "start_time", "release.start_time", "scenario.start_time"))],
+    ["End time", formatTimestamp(getNestedValue(summary, "end_time", "release.end_time", "scenario.end_time"))],
+    ["Forecast horizon", formatUnknown(getNestedValue(summary, "forecast_horizon", "horizon", "scenario.forecast_horizon"))]
+  ] as Array<[string, string]>;
   const liveObsCount = sessionState?.observation_count;
   const liveObsLine = typeof liveObsCount === "number" && liveObsCount > 0
     ? `${formatNumber(liveObsCount, 0)} observations • latest ${formatTimestamp(session?.runtime_metadata?.last_observation_time)}`
     : "No live asset observations";
-  const qualityItems = [
-    liveObsLine === "No live asset observations" ? "No live asset observations" : null,
-    meteorologyLine ? null : "Meteorology unavailable",
-    data?.mode === "stub" || modeLabel.includes("Stub") ? "Explanation mode: stub/development" : null,
-    typeof session?.model_name === "string" && session.model_name.includes("random_init") ? "Model mode indicates random initialization" : null,
-    ...(Array.isArray(data?.limitations) ? data.limitations : [])
-  ].filter((item, index, arr): item is string => Boolean(item) && arr.indexOf(item as string) === index);
-
   async function sendQuestion(question: string) {
     if (!question.trim() || !hasContext) return;
     setMessages((prev) => [...prev, { role: "user", content: question }]);
@@ -192,7 +236,7 @@ export function DecisionSupportPage() {
       const response = await httpPost<{ answer?: string }>("/decision-support/chat", { message: question });
       setMessages((prev) => [...prev, { role: "assistant", content: safeText(response.answer, "No answer available.") }]);
     } catch {
-      const fallback = `Deterministic fallback (${modeLabel}): ${safeText(explanation.summary)}. Missing details remain unavailable in current context.`;
+      const fallback = `${safeText(explanation.summary)} Missing details remain unavailable in current context.`;
       setMessages((prev) => [...prev, { role: "assistant", content: fallback }]);
     }
   }
@@ -231,31 +275,29 @@ export function DecisionSupportPage() {
       </section>
 
       <section className="panel decision-support-live-panel">
-        <h3>Forecast Evidence</h3>
+        <h3>Geospatial Conditions</h3>
         <div className="values-section">
-          <h4>Forecast Interpretation Snapshot</h4>
+          <h4>Weather / Dispersion</h4>
           <div className="values-grid compact-values-grid">
-            {snapshotRows.map(([label, value]) => <div key={label} className="status-row"><strong>{label}</strong><span>{value}</span></div>)}
+            {meteorologyRows.map(([label, value]) => <div key={label} className="status-row"><strong>{label}</strong><span>{value}</span></div>)}
           </div>
+          {!meteorologyConnected ? <p className="subtle-note">Live meteorology is not connected yet.</p> : null}
         </div>
 
         <div className="values-section">
-          <h4>Key Forecast Outputs</h4>
+          <h4>Release Source</h4>
+          <p className="subtle-note">Forecast scenario inputs</p>
+          <div className="values-grid compact-values-grid">{releaseRows.map(([label, value]) => <div key={label} className="status-row"><strong>{label}</strong><span>{value}</span></div>)}</div>
+        </div>
+
+        <div className="values-section">
+          <h4>Plume Metrics</h4>
           <div className="values-grid compact-values-grid">{keyOutputRows.map(([label, value]) => <div key={label} className="status-row"><strong>{label}</strong><span>{value}</span></div>)}</div>
         </div>
 
         <div className="values-section">
-          <h4>Input Drivers</h4>
-          <div className="values-grid compact-values-grid">
-            <div className="status-row"><strong>Meteorology</strong><span>{meteoStatus}</span></div>
-            <div className="status-row"><strong>Release / Incident</strong><span>{releaseLine || "Forecast scenario input values are limited"}</span></div>
-            <div className="status-row"><strong>Live observations</strong><span>{liveObsLine}</span></div>
-          </div>
-        </div>
-
-        <div className="values-section">
-          <h4>Data Gaps / Quality</h4>
-          {qualityItems.length === 0 ? <p>No major input gaps reported.</p> : <div className="chip-list">{qualityItems.map((item) => <span key={item} className="detail-chip">{item}</span>)}</div>}
+          <h4>Live Observations</h4>
+          <div className="values-grid compact-values-grid"><div className="status-row"><strong>Status</strong><span>{liveObsLine === "No live asset observations" ? "No live asset observations connected." : liveObsLine}</span></div></div>
         </div>
 
         <details className="technical-details">
