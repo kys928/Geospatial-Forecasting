@@ -20,9 +20,11 @@ from plume.api.routes import (
     register_ops_routes,
     register_service_routes,
     register_session_routes,
+    register_decision_support_routes,
 )
 from plume.openremote.service_registration import OpenRemoteServiceRegistrar
 from plume.services.convlstm_operations import dispatch_retraining_worker
+from plume.services.decision_support_service import DecisionSupportService
 
 
 def _env_flag(name: str, *, default: bool) -> bool:
@@ -113,6 +115,8 @@ def create_app() -> FastAPI:
         export_service=export_service,
         explain_service=explain_service,
     )
+    decision_support_service = DecisionSupportService(runtime_client=runtime_client, explain_service=explain_service)
+
     register_session_routes(
         app,
         runtime_client=runtime_client,
@@ -120,6 +124,7 @@ def create_app() -> FastAPI:
         export_service=export_service,
         explain_service=explain_service,
     )
+    register_decision_support_routes(app, decision_support_service=decision_support_service)
     register_ops_routes(app, forecast_service=forecast_service, dispatch_worker=dispatch_retraining_worker)
 
     return app

@@ -6,7 +6,7 @@ export interface JsonObject {
 
 export interface SessionSummary {
   session_id: string;
-  backend_name: string;
+  backend_name?: string;
   model_name: string;
   status: string;
   created_at: string;
@@ -28,7 +28,7 @@ export interface SessionStateSummary {
 }
 
 export interface CreateSessionRequest {
-  backend_name: string;
+  backend_name?: string;
   model_name?: string;
   metadata?: Record<string, unknown>;
 }

@@ -17,7 +17,14 @@ const ACTIVE_SESSION_STORAGE_KEY = "plume_active_session_id";
 export interface RunSessionForecastResult {
   sessionId: string;
   recreatedSession: boolean;
+  resetReason?: string;
   prediction: SessionPredictionResponse;
+}
+
+interface EnsureSessionResult {
+  sessionId: string;
+  recreatedSession: boolean;
+  resetReason?: string;
 }
 
 export const sessionClient = {
@@ -38,31 +45,37 @@ export const sessionClient = {
     return { summary, geojson, rasterMetadata, explanation };
   },
   clearSession() { localStorage.removeItem(ACTIVE_SESSION_STORAGE_KEY); },
-  async ensureSession(): Promise<{ sessionId: string; recreated: boolean }> {
+  async ensureSession(): Promise<EnsureSessionResult> {
     const stored = localStorage.getItem(ACTIVE_SESSION_STORAGE_KEY);
     if (stored) {
       try {
         await this.getSession(stored);
-        return { sessionId: stored, recreated: false };
-      } catch {
+        return { sessionId: stored, recreatedSession: false };
+      } catch (error) {
         this.clearSession();
+        const reason = error instanceof Error ? error.message : "stored session unavailable";
+        const created = await this.createSession({});
+        localStorage.setItem(ACTIVE_SESSION_STORAGE_KEY, created.session_id);
+        return { sessionId: created.session_id, recreatedSession: true, resetReason: reason };
       }
     }
-    const created = await this.createSession({ backend_name: "convlstm_online" });
+    const created = await this.createSession({});
     localStorage.setItem(ACTIVE_SESSION_STORAGE_KEY, created.session_id);
-    return { sessionId: created.session_id, recreated: true };
+    return { sessionId: created.session_id, recreatedSession: true, resetReason: "new session created" };
   },
   async runSessionForecast(payload: SessionPredictionRequest = {}): Promise<RunSessionForecastResult> {
     const ensured = await this.ensureSession();
     try {
       const prediction = await this.predictSession(ensured.sessionId, payload);
-      return { sessionId: ensured.sessionId, recreatedSession: ensured.recreated, prediction };
+      return { sessionId: ensured.sessionId, recreatedSession: ensured.recreatedSession, resetReason: ensured.resetReason, prediction };
     } catch (error) {
-      if (!(error instanceof Error) || !error.message.includes("404")) { throw error; }
+      const isMissing = typeof error === "object" && error !== null && ("status" in error ? (error as { status?: number }).status === 404 : false)
+        || (error instanceof Error && error.message.includes("404"));
+      if (!isMissing) { throw error; }
       this.clearSession();
       const recreated = await this.ensureSession();
       const prediction = await this.predictSession(recreated.sessionId, payload);
-      return { sessionId: recreated.sessionId, recreatedSession: true, prediction };
+      return { sessionId: recreated.sessionId, recreatedSession: true, resetReason: "session missing during predict; recreated", prediction };
     }
   }
 };
