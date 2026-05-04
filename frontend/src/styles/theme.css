@@ -531,34 +531,83 @@ textarea {
   min-width: 0;
 }
 
-.chat-thread {
-  max-height: clamp(260px, 42vh, 520px);
-  overflow: auto;
+.polished-chat-panel {
+  grid-template-rows: auto minmax(0, 1fr) auto auto;
+  min-height: clamp(520px, 68vh, 820px);
+}
+
+.chat-panel-header {
   display: grid;
   gap: 8px;
 }
 
-.chat-message {
-  border: 1px solid #d7deea;
-  border-radius: 10px;
-  padding: 10px;
-  background: #f8fbff;
+.chat-panel-header h3 {
+  margin: 0;
 }
 
-.chat-message.user { background: #eef4ff; }
-.chat-message p { margin: 0; white-space: pre-wrap; }
+.chat-thread {
+  max-height: none;
+  overflow: auto;
+  display: grid;
+  gap: 10px;
+  min-height: 0;
+  padding: 4px;
+}
+
+.polished-chat-thread {
+  border: 1px solid #e2e8f0;
+  border-radius: 16px;
+  background: #f8fafc;
+  padding: 14px;
+}
+
+.chat-message {
+  border: 1px solid #e2e8f0;
+  border-radius: 14px;
+  padding: 10px 12px;
+  background: #ffffff;
+  max-width: min(92%, 760px);
+}
+
+.chat-message.assistant {
+  justify-self: start;
+  color: #0f172a;
+}
+
+.chat-message.user {
+  justify-self: end;
+  background: #eff6ff;
+  border-color: #dbeafe;
+}
+
+.chat-message p { margin: 0; white-space: pre-wrap; line-height: 1.45; }
+
+.chat-empty-state {
+  margin: 0;
+  color: #475569;
+}
 
 .suggested-prompts { display: flex; flex-wrap: wrap; gap: 8px; }
-.chip-button { border: 1px solid #d7deea; background: #fff; border-radius: 999px; padding: 6px 10px; cursor: pointer; }
+.chip-button { border: 1px solid #d9e2ef; background: #fff; border-radius: 999px; padding: 6px 10px; cursor: pointer; font-size: 0.82rem; }
 
-.chat-input-row { display: grid; gap: 8px; }
-.chat-input-row textarea { min-height: 84px; resize: vertical; max-height: 240px; }
+.chat-composer {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: end;
+  border: 1px solid #e2e8f0;
+  border-radius: 16px;
+  padding: 10px;
+  background: #ffffff;
+}
 
-.status-grid { display: grid; gap: 8px; }
-.status-row { display: flex; justify-content: space-between; gap: 10px; border-bottom: 1px dashed #e3e8f2; padding-bottom: 6px; }
+.chat-composer textarea { min-height: 54px; resize: vertical; max-height: 180px; border: 0; outline: none; font: inherit; }
+
+.values-section { display: grid; gap: 8px; }
+.values-section h4, .values-section h5 { margin: 0; }
+.compact-values-grid { display: grid; gap: 6px; }
+.status-row { display: flex; justify-content: space-between; gap: 10px; border-bottom: 1px solid #edf2f7; padding-bottom: 6px; }
 .status-row span { text-align: right; }
-
-.live-values-table { overflow: auto; max-height: clamp(220px, 34vh, 420px); }
 
 .technical-details pre {
   margin: 8px 0 0;
