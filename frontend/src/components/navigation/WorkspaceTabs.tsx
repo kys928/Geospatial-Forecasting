@@ -2,7 +2,7 @@ import { NavLink } from "react-router-dom";
 
 const tabs = [
   { label: "Map", to: "/forecast" },
-  { label: "Sessions", to: "/sessions" },
+  { label: "Decision Support", to: "/decision-support" },
   { label: "Ops", to: "/ops" }
 ];
 
