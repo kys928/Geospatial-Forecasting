@@ -516,3 +516,57 @@ textarea {
   display: grid;
   gap: 12px;
 }
+
+.decision-support-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1.5fr) minmax(0, 1fr);
+  gap: 14px;
+  align-items: start;
+}
+
+.decision-support-chat-panel,
+.decision-support-live-panel {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+}
+
+.chat-thread {
+  max-height: clamp(260px, 42vh, 520px);
+  overflow: auto;
+  display: grid;
+  gap: 8px;
+}
+
+.chat-message {
+  border: 1px solid #d7deea;
+  border-radius: 10px;
+  padding: 10px;
+  background: #f8fbff;
+}
+
+.chat-message.user { background: #eef4ff; }
+.chat-message p { margin: 0; white-space: pre-wrap; }
+
+.suggested-prompts { display: flex; flex-wrap: wrap; gap: 8px; }
+.chip-button { border: 1px solid #d7deea; background: #fff; border-radius: 999px; padding: 6px 10px; cursor: pointer; }
+
+.chat-input-row { display: grid; gap: 8px; }
+.chat-input-row textarea { min-height: 84px; resize: vertical; max-height: 240px; }
+
+.status-grid { display: grid; gap: 8px; }
+.status-row { display: flex; justify-content: space-between; gap: 10px; border-bottom: 1px dashed #e3e8f2; padding-bottom: 6px; }
+.status-row span { text-align: right; }
+
+.live-values-table { overflow: auto; max-height: clamp(220px, 34vh, 420px); }
+
+.technical-details pre {
+  margin: 8px 0 0;
+  max-height: 280px;
+  overflow: auto;
+  white-space: pre-wrap;
+}
+
+@media (max-width: 1080px) {
+  .decision-support-layout { grid-template-columns: 1fr; }
+}
