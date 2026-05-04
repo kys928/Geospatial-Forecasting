@@ -19,4 +19,5 @@ def test_decision_support_chat_grounded_stub():
     resp = client.post('/decision-support/chat', json={'message': 'What should we do?'})
     assert resp.status_code == 200
     body = resp.json()
-    assert 'Grounded response' in body['answer']
+    assert 'Grounded response' not in body['answer']
+    assert body['answer']

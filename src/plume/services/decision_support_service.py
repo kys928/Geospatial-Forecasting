@@ -43,4 +43,16 @@ class DecisionSupportService:
 
     def chat(self, message: str, session_id: str | None = None) -> dict[str, object]:
         latest = self.latest(session_id=session_id).payload
-        return {"mode": latest.get("mode", "stub"), "answer": f"Grounded response: {message}. {latest.get('briefing', '')}", "used_context_fields": latest.get("used_context_fields", []), "limitations": latest.get("limitations", []), "context_forecast_id": None, "context_session_id": latest.get("runtime_metadata", {}).get("context_session_id")}
+        briefing = str(latest.get("briefing", "")).strip()
+        if not briefing or briefing.lower() == "unavailable":
+            answer = "I do not have enough forecast context to answer that specific question right now."
+        else:
+            answer = briefing
+        return {
+            "mode": latest.get("mode", "stub"),
+            "answer": answer,
+            "used_context_fields": latest.get("used_context_fields", []),
+            "limitations": latest.get("limitations", []),
+            "context_forecast_id": None,
+            "context_session_id": latest.get("runtime_metadata", {}).get("context_session_id"),
+        }

@@ -34,6 +34,12 @@ const SUGGESTED_PROMPTS = [
 function safeText(value: unknown, fallback = "Unavailable"): string {
   return typeof value === "string" && value.trim().length > 0 ? value : fallback;
 }
+function isPresentValue(value: unknown): boolean {
+  if (value == null) return false;
+  if (typeof value === "string") return value.trim().length > 0;
+  if (Array.isArray(value)) return value.length > 0;
+  return true;
+}
 
 function formatTimestamp(value: unknown): string {
   if (typeof value !== "string" || !value.trim()) return "Unavailable";
@@ -45,6 +51,13 @@ function formatNumber(value: unknown, digits = 2): string {
   const parsed = typeof value === "string" ? Number(value) : value;
   if (typeof parsed !== "number" || Number.isNaN(parsed)) return "Unavailable";
   return parsed.toLocaleString(undefined, { maximumFractionDigits: digits });
+}
+function formatArea(value: unknown): string {
+  const parsed = typeof value === "string" ? Number(value) : value;
+  if (typeof parsed !== "number" || Number.isNaN(parsed)) return "Unavailable";
+  if (parsed === 0) return "0 m²";
+  if (Math.abs(parsed) >= 10000) return `${(parsed / 10000).toLocaleString(undefined, { maximumFractionDigits: 1 })} ha`;
+  return `${parsed.toLocaleString(undefined, { maximumFractionDigits: 0 })} m²`;
 }
 
 function formatUnknown(value: unknown): string {
@@ -125,35 +138,51 @@ export function DecisionSupportPage() {
   }, [messages]);
 
   const hasContext = Boolean(latestForecastBundle || data);
+  const values = summary as Record<string, unknown>;
 
-  const forecastRows = useMemo(() => {
-    const values = summary as Record<string, unknown>;
-    const dominantDirection = values.dominant_spread_direction ?? values.wind_direction ?? values.direction;
-    return [
-      ["Risk level", formatRiskLevel(data?.risk_level ?? explanation.risk_level ?? values.risk_level)],
-      ["Max concentration", formatNumber(values.max_concentration)],
-      ["Mean concentration", formatNumber(values.mean_concentration)],
-      ["Affected cells above threshold", formatNumber(values.affected_cells_above_threshold, 0)],
-      ["Affected area", formatUnknown(values.affected_area)],
-      ["Dominant spread direction", formatUnknown(dominantDirection)],
-      ["Threshold used", formatUnknown(values.threshold ?? values.threshold_used)],
-      ["Last forecast time", formatTimestamp(data?.last_forecast_time ?? values.timestamp)]
-    ];
-  }, [summary, data, explanation]);
+  const riskLevel = formatRiskLevel(data?.risk_level ?? explanation.risk_level ?? values.risk_level);
+  const affectedAreaRaw = values.affected_area;
+  const affectedCellsRaw = values.affected_cells_above_threshold;
+  const hasNoPlumeSignal = Number(affectedAreaRaw ?? -1) === 0 || Number(affectedCellsRaw ?? -1) === 0 || safeText(explanation.summary, "").toLowerCase().includes("no meaningful plume");
+  const plumeStatus = hasNoPlumeSignal ? "No meaningful plume above threshold" : (isPresentValue(affectedAreaRaw) || isPresentValue(affectedCellsRaw) ? "Plume detected above threshold" : "Unavailable");
 
-  const liveInputRows = useMemo(() => {
-    if (data?.live_inputs && typeof data.live_inputs === "object") {
-      return Object.entries(data.live_inputs).map(([name, value]) => [name, formatUnknown(value)]);
-    }
-    return [] as Array<[string, string]>;
-  }, [data]);
+  const snapshotRows = [
+    ["Key finding", safeText(data?.situation_summary ?? explanation.summary, hasNoPlumeSignal ? "No meaningful plume is visible above the selected threshold." : "Forecast signals plume transport above the selected threshold.")],
+    ["Recommended action", safeText(data?.recommended_action ?? explanation.recommendation, "Continue monitoring and review local response protocols.")],
+    ["Main limitation", safeText(data?.uncertainty_limitations ?? explanation.uncertainty_note, "No major limitation reported.")]
+  ] as Array<[string, string]>;
 
-  const scenarioInputRows = useMemo(() => {
-    return Object.entries(summary)
-      .filter(([name, value]) => value != null && typeof value !== "object" && !["evidence", "risk_level", "session_status"].includes(name))
-      .slice(0, 8)
-      .map(([name, value]) => [name, formatUnknown(value)]);
-  }, [summary]);
+  const keyOutputRows = [
+    ["Risk level", riskLevel],
+    ["Plume status", plumeStatus],
+    ["Affected area", formatArea(affectedAreaRaw)],
+    ["Dominant spread direction", formatUnknown(values.dominant_spread_direction ?? values.wind_direction ?? values.direction)],
+    ["Peak concentration", formatNumber(values.max_concentration)],
+    ["Forecast time", formatTimestamp(data?.last_forecast_time ?? values.timestamp)]
+  ] as Array<[string, string]>;
+
+  const meteorologyLine = [
+    isPresentValue(values.wind_speed) ? `Wind ${formatNumber(values.wind_speed)} m/s` : null,
+    isPresentValue(values.wind_direction) ? `Dir ${formatUnknown(values.wind_direction)}` : null,
+    isPresentValue(values.temperature) ? `Temp ${formatNumber(values.temperature)}°` : null
+  ].filter(Boolean).join(" • ");
+  const meteoStatus = meteorologyLine || "Meteorology unavailable or degraded/default values in use";
+  const releaseLine = [
+    isPresentValue(values.pollutant) ? `Pollutant ${formatUnknown(values.pollutant)}` : null,
+    isPresentValue(values.emission_rate) ? `Emission ${formatNumber(values.emission_rate)}` : null,
+    isPresentValue(values.release_height) ? `Height ${formatNumber(values.release_height)} m` : null
+  ].filter(Boolean).join(" • ");
+  const liveObsCount = sessionState?.observation_count;
+  const liveObsLine = typeof liveObsCount === "number" && liveObsCount > 0
+    ? `${formatNumber(liveObsCount, 0)} observations • latest ${formatTimestamp(session?.runtime_metadata?.last_observation_time)}`
+    : "No live asset observations";
+  const qualityItems = [
+    liveObsLine === "No live asset observations" ? "No live asset observations" : null,
+    meteorologyLine ? null : "Meteorology unavailable",
+    data?.mode === "stub" || modeLabel.includes("Stub") ? "Explanation mode: stub/development" : null,
+    typeof session?.model_name === "string" && session.model_name.includes("random_init") ? "Model mode indicates random initialization" : null,
+    ...(Array.isArray(data?.limitations) ? data.limitations : [])
+  ].filter((item, index, arr): item is string => Boolean(item) && arr.indexOf(item as string) === index);
 
   async function sendQuestion(question: string) {
     if (!question.trim() || !hasContext) return;
@@ -202,24 +231,31 @@ export function DecisionSupportPage() {
       </section>
 
       <section className="panel decision-support-live-panel">
-        <h3>Forecast &amp; Live Inputs</h3>
+        <h3>Forecast Evidence</h3>
         <div className="values-section">
-          <h4>Forecast values</h4>
+          <h4>Forecast Interpretation Snapshot</h4>
           <div className="values-grid compact-values-grid">
-            {forecastRows.map(([label, value]) => <div key={label} className="status-row"><strong>{label}</strong><span>{value}</span></div>)}
+            {snapshotRows.map(([label, value]) => <div key={label} className="status-row"><strong>{label}</strong><span>{value}</span></div>)}
           </div>
         </div>
 
         <div className="values-section">
-          <h4>Live input values</h4>
-          {liveInputRows.length === 0 ? <p>No live asset observations are currently available.</p> : null}
-          {liveInputRows.length > 0 ? <div className="values-grid compact-values-grid">{liveInputRows.map(([label, value]) => <div key={label} className="status-row"><strong>{label}</strong><span>{value}</span></div>)}</div> : null}
-          {liveInputRows.length === 0 && scenarioInputRows.length > 0 ? <>
-            <h5>Forecast scenario inputs</h5>
-            <div className="values-grid compact-values-grid">
-              {scenarioInputRows.map(([label, value]) => <div key={label} className="status-row"><strong>{label}</strong><span>{value}</span></div>)}
-            </div>
-          </> : null}
+          <h4>Key Forecast Outputs</h4>
+          <div className="values-grid compact-values-grid">{keyOutputRows.map(([label, value]) => <div key={label} className="status-row"><strong>{label}</strong><span>{value}</span></div>)}</div>
+        </div>
+
+        <div className="values-section">
+          <h4>Input Drivers</h4>
+          <div className="values-grid compact-values-grid">
+            <div className="status-row"><strong>Meteorology</strong><span>{meteoStatus}</span></div>
+            <div className="status-row"><strong>Release / Incident</strong><span>{releaseLine || "Forecast scenario input values are limited"}</span></div>
+            <div className="status-row"><strong>Live observations</strong><span>{liveObsLine}</span></div>
+          </div>
+        </div>
+
+        <div className="values-section">
+          <h4>Data Gaps / Quality</h4>
+          {qualityItems.length === 0 ? <p>No major input gaps reported.</p> : <div className="chip-list">{qualityItems.map((item) => <span key={item} className="detail-chip">{item}</span>)}</div>}
         </div>
 
         <details className="technical-details">
