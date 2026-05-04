@@ -35,7 +35,12 @@ def build_child_env(args: argparse.Namespace, env: dict[str, str]) -> dict[str, 
     return child_env
 
 
-def build_stack_commands(args: argparse.Namespace, env: dict[str, str]) -> list[ProcessSpec]:
+def get_npm_executable(platform_name: str | None = None) -> str:
+    name = platform_name or os.name
+    return "npm.cmd" if name == "nt" else "npm"
+
+
+def build_stack_commands(args: argparse.Namespace, env: dict[str, str], platform_name: str | None = None) -> list[ProcessSpec]:
     repo_root = Path(__file__).resolve().parents[1]
     frontend_dir = repo_root / "frontend"
 
@@ -68,7 +73,7 @@ def build_stack_commands(args: argparse.Namespace, env: dict[str, str]) -> list[
         )
 
     if not args.no_frontend:
-        frontend_cmd = ["npm", "run", "dev"]
+        frontend_cmd = [get_npm_executable(platform_name), "run", "dev"]
         if args.frontend_port is not None:
             frontend_cmd.extend(["--", "--port", str(args.frontend_port)])
         specs.append(ProcessSpec(name="frontend", cmd=frontend_cmd, cwd=frontend_dir))
@@ -108,35 +113,41 @@ def main(argv: list[str] | None = None) -> int:
 
     processes: list[subprocess.Popen[str]] = []
     threads: list[threading.Thread] = []
+    process_names: list[str] = []
 
     try:
         for spec in specs:
-            proc = subprocess.Popen(
+            try:
+                proc = subprocess.Popen(
                 spec.cmd,
                 cwd=str(spec.cwd),
                 env=child_env,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
+                shell=False,
             )
+            except Exception as exc:
+                print(f"[stack] failed to start {spec.name}: {exc}")
+                _shutdown_processes(processes)
+                return 1
             processes.append(proc)
+            process_names.append(spec.name)
             thread = threading.Thread(target=_stream_output, args=(spec.name, proc), daemon=True)
             thread.start()
             threads.append(thread)
 
         while True:
-            for proc in processes:
+            for name, proc in zip(process_names, processes):
                 code = proc.poll()
                 if code is not None:
+                    print(f"[stack] {name} exited with code {code}; shutting down stack.")
                     _shutdown_processes(processes)
-                    return 0 if code == 0 and all(p.poll() == 0 for p in processes) else 1
+                    return 1
             time.sleep(0.2)
     except KeyboardInterrupt:
         _shutdown_processes(processes)
         return 0
-    except Exception:
-        _shutdown_processes(processes)
-        return 1
 
 
 if __name__ == "__main__":
