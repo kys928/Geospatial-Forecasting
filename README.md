@@ -264,6 +264,26 @@ Notes:
 - Worker execution is one-shot by default; rerun it as needed or add external supervision later.
 - Existing specific worker scripts remain available (`scripts/run_forecast_worker.py`, `scripts/run_retraining_worker.py`).
 
+## Run full local dev stack (control + worker + frontend)
+
+From repo root:
+
+```bash
+python scripts/run_local_stack.py
+```
+
+Optional modes:
+
+```bash
+python scripts/run_local_stack.py --no-worker
+python scripts/run_local_stack.py --no-frontend
+```
+
+Notes:
+- This launcher is for local developer convenience only, not production orchestration.
+- For production/deployment, run services under a real process manager or container setup.
+- Press `Ctrl+C` to stop all child processes started by this launcher.
+
 ## Run backend + frontend (one command)
 
 From repo root:
