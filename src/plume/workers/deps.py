@@ -63,7 +63,7 @@ def _validate_runtime_backends() -> None:
         if missing:
             raise ValueError(f"ConvLSTM backend requested but missing required env vars: {', '.join(missing)}")
 
-    explanation_backend = os.getenv("PLUME_EXPLANATION_BACKEND", "deterministic").strip().lower()
+    explanation_backend = os.getenv("PLUME_EXPLANATION_BACKEND", "stub").strip().lower()
     llm_enabled = os.getenv("PLUME_LLM_ENABLED", "false").strip().lower() in {"1","true","yes","on"}
     if explanation_backend == "llm" or llm_enabled:
         provider = os.getenv("PLUME_LLM_PROVIDER", "none").strip().lower()

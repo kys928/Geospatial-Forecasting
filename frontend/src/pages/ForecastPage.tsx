@@ -14,6 +14,7 @@ export function ForecastPage() {
   const [loadingForecastId, setLoadingForecastId] = useState<string | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [runtimeNote, setRuntimeNote] = useState<string | null>(null);
+  const [isRunning, setIsRunning] = useState<boolean>(false);
 
   const geojson = (latestForecastBundle?.geojson ?? null) as GeoJsonFeatureCollection | null;
   const statusText = useMemo(() => {
@@ -24,22 +25,27 @@ export function ForecastPage() {
     return "Loading latest forecast";
   }, [activePersistedForecastId, forecastViewSource, latestForecastBundle, loadError, runtimeNote]);
 
-  useEffect(() => {
-    const run = async () => {
-      try {
-        const runResult = await sessionClient.runSessionForecast({});
-        setActiveSessionId(runResult.sessionId);
-        const bundle = await sessionClient.getLatestForecastBundle(runResult.sessionId);
-        setLatestForecastBundle(runResult.sessionId, bundle);
-        if (runResult.recreatedSession) {
-          setRuntimeNote("Runtime note: live state was reset; a new forecast was started.");
-        }
-      } catch (err) {
-        setRuntimeNote(err instanceof Error ? `Forecast load failed: ${err.message}` : "Forecast load failed.");
-      }
-    };
-    void run();
-  }, [setActiveSessionId, setLatestForecastBundle]);
+  const runLatestForecast = async () => {
+    setIsRunning(true);
+    setRuntimeNote(null);
+    try {
+      const runResult = await sessionClient.runSessionForecast({});
+      setActiveSessionId(runResult.sessionId);
+      const bundle = await sessionClient.getLatestForecastBundle(runResult.sessionId);
+      setLatestForecastBundle(runResult.sessionId, bundle);
+      const summary = (bundle.summary ?? {}) as Record<string, unknown>;
+      if (Number(summary.affected_cells_above_threshold ?? 0) <= 0) setRuntimeNote("No meaningful plume detected above threshold.");
+      if (runResult.recreatedSession) setRuntimeNote(`Session reset: ${runResult.resetReason ?? "runtime session was recreated"}`);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Forecast load failed.";
+      if (message.includes("Failed to fetch")) setRuntimeNote("Backend unavailable.");
+      else setRuntimeNote(`Forecast failed: ${message}`);
+    } finally {
+      setIsRunning(false);
+    }
+  };
+
+  useEffect(() => { void runLatestForecast(); }, []);
 
   const handleLoadPersistedForecast = async (forecastId: string) => {
     setLoadingForecastId(forecastId); setLoadError(null);
@@ -51,9 +57,9 @@ export function ForecastPage() {
     finally { setLoadingForecastId(null); }
   };
 
-  return <AppShell title="Map / Forecast" subtitle="Current forecast and persisted forecast artifacts." statusText={statusText} metaItems={[{ label: activeSessionId ? "Session active" : "Session unavailable" }]}>
+  return <AppShell title="Map / Forecast" subtitle="Current forecast and persisted forecast artifacts." statusText={statusText} metaItems={[{ label: activeSessionId ? "Session active" : "Session unavailable" }, { label: isRunning ? "Forecast running" : "Forecast idle" }]}>
     <main className="map-column">
-      <div className="panel"><button className="primary-button" onClick={() => window.location.reload()}>Refresh forecast</button></div>
+      <div className="panel"><button className="primary-button" disabled={isRunning} onClick={() => void runLatestForecast()}>{isRunning ? "Refreshing…" : "Refresh forecast"}</button></div>
       <RecentForecastsPanel forecasts={forecasts} loading={loading} error={error} loadingForecastId={loadingForecastId} onRefresh={() => void refresh()} onLoad={(forecast) => { void handleLoadPersistedForecast(forecast.forecast_id); }} />
       <ForecastMap geojson={geojson} selectedFeature={selectedFeature} onSelectFeature={setSelectedFeature} />
     </main>

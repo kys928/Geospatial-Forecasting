@@ -81,7 +81,7 @@ def _validate_runtime_backends() -> None:
         if missing:
             raise ValueError(f"ConvLSTM backend requested but missing required env vars: {', '.join(missing)}")
 
-    explanation_backend = os.getenv("PLUME_EXPLANATION_BACKEND", "deterministic").strip().lower()
+    explanation_backend = os.getenv("PLUME_EXPLANATION_BACKEND", "stub").strip().lower()
     llm_enabled = os.getenv("PLUME_LLM_ENABLED", "false").strip().lower() in {"1","true","yes","on"}
     if explanation_backend == "llm" or llm_enabled:
         provider = os.getenv("PLUME_LLM_PROVIDER", "none").strip().lower()
@@ -101,12 +101,17 @@ def get_explain_service(config_dir: str | None = None):
     _validate_runtime_backends()
     config = get_config(config_dir=config_dir)
 
+    explanation_backend = os.getenv("PLUME_EXPLANATION_BACKEND", "stub").strip().lower()
+    if explanation_backend == "llm":
+        api_config_path = Path(config.config_dir) / "api.yaml"
+        llm_service = LLMService.from_yaml(api_config_path)
+        logger.info("[deps] LLM service initialized in explicit llm mode")
+        return ExplainService(llm_service=llm_service)
+
     try:
         api_config_path = Path(config.config_dir) / "api.yaml"
         llm_service = LLMService.from_yaml(api_config_path)
-        logger.info("[deps] LLM service initialized successfully")
-    except Exception as e:
-        logger.warning("[deps] LLM service unavailable, falling back: %s", e)
+    except Exception:
         llm_service = None
 
     return ExplainService(llm_service=llm_service)
