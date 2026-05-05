@@ -680,9 +680,12 @@ textarea {
 .ops-readiness-not_met { border-color:#efc8ce; } .ops-readiness-not_met .ops-readiness-dot { background:#d2475b; }
 .ops-manual-modal { width:min(920px,96vw); max-height:90vh; overflow:auto; display:grid; gap:14px; }
 .ops-modal-backdrop { position:fixed; inset:0; background:rgba(15,23,42,0.35); display:grid; place-items:center; z-index:50; padding:16px; }
-.ops-modal-grid { display:grid; grid-template-columns:1fr 1fr; gap:12px; }
+.ops-modal-grid { display:grid; grid-template-columns:1fr 1fr; gap:14px; align-items:start; }
+.ops-modal-section{border:1px solid #dde4f0;border-radius:10px;padding:12px;background:#fbfcff;display:grid;gap:8px;}
+.ops-modal-section h4{margin:0;}
+.ops-control-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;}
 .ops-job-card { border:1px solid #d9e1ef; border-radius:10px; padding:10px; background:#fbfcff; }
-@media (max-width: 900px){ .ops-service-grid,.ops-modal-grid,.ops-event-row { grid-template-columns:1fr; } }
+@media (max-width: 900px){ .ops-service-grid,.ops-modal-grid,.ops-event-row,.ops-control-grid { grid-template-columns:1fr; } }
 
 .ops-gauge-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:10px;}
 .ops-gauge-card{border:1px solid #dde4f0;background:#fbfcff;border-radius:12px;padding:10px;display:grid;gap:8px;justify-items:center;}

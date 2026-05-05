@@ -190,6 +190,14 @@ def _collect_host_metrics() -> dict[str, object]:
 
     vm = psutil.virtual_memory()
     disk = psutil.disk_usage("/")
+    volume = None
+    try:
+        if hasattr(psutil, "disk_partitions"):
+            mounts = [part.mountpoint for part in psutil.disk_partitions() if part.mountpoint]
+            if mounts:
+                volume = psutil.disk_usage(mounts[0])
+    except Exception:
+        volume = None
     boot = datetime.fromtimestamp(psutil.boot_time(), tz=timezone.utc).isoformat()
     return {
         "available": True,
@@ -201,6 +209,9 @@ def _collect_host_metrics() -> dict[str, object]:
         "disk_percent": disk.percent,
         "disk_used_bytes": disk.used,
         "disk_total_bytes": disk.total,
+        "volume_percent": None if volume is None else volume.percent,
+        "volume_used_bytes": None if volume is None else volume.used,
+        "volume_total_bytes": None if volume is None else volume.total,
         "uptime_seconds": max(0, int(datetime.now(timezone.utc).timestamp() - psutil.boot_time())),
         "boot_time": boot,
         "process_count": len(psutil.pids()),
@@ -231,6 +242,7 @@ def _collect_gpu_metrics() -> dict[str, object]:
         "utilization_percent": float(parts[1]),
         "memory_used_mib": float(parts[2]),
         "memory_total_mib": float(parts[3]),
+        "vram_percent": (float(parts[2]) / float(parts[3]) * 100.0) if float(parts[3]) > 0 else None,
         "temperature_c": float(parts[4]),
         "power_w": float(parts[5]),
         "driver_version": parts[6],
