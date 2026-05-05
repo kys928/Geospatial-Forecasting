@@ -6,10 +6,10 @@ interface OpsTabsProps {
 }
 
 const tabs: Array<{ key: OpsTabKey; label: string }> = [
-  { key: "overview", label: "Overview" },
-  { key: "training", label: "Training" },
-  { key: "registry", label: "Registry" },
-  { key: "events", label: "Events" }
+  { key: "overview", label: "System Status" },
+  { key: "training", label: "Model Training" },
+  { key: "registry", label: "Model Versions" },
+  { key: "events", label: "Activity Log" }
 ];
 
 export function OpsTabs({ selected, onSelect }: OpsTabsProps) {
