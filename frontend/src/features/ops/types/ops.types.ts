@@ -130,3 +130,14 @@ export interface ModelCandidateContext {
   recent_events?: Array<Record<string, unknown>>;
   [key: string]: unknown;
 }
+
+
+export interface OpsSystemStatusResponse {
+  generated_at: string;
+  host: Record<string, unknown>;
+  gpu: Record<string, unknown>;
+  worker_status: Record<string, unknown>;
+  jobs: Record<string, unknown>;
+  recent_events: Array<Record<string, unknown>>;
+  status_summary: Record<string, unknown>;
+}

@@ -118,5 +118,15 @@ class RollbackResponse(BaseModel):
     active_model_id: str
 
 
+class OpsSystemStatusResponse(BaseModel):
+    generated_at: str
+    host: dict[str, Any]
+    gpu: dict[str, Any]
+    worker_status: dict[str, Any]
+    jobs: dict[str, Any]
+    recent_events: list[dict[str, Any]]
+    status_summary: dict[str, Any]
+
+
 class WorkerStatusResponse(BaseModel):
     worker_status: dict[str, Any] | None = None

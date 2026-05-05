@@ -660,3 +660,26 @@ textarea {
 @media (max-width: 1080px) {
   .decision-support-layout { grid-template-columns: 1fr; }
 }
+
+.ops-dashboard { display: grid; gap: 12px; }
+.ops-health-row h3 { margin-top: 0; }
+.ops-chip-row { display:flex; flex-wrap:wrap; gap:8px; }
+.ops-chip { border:1px solid #d3dceb; border-radius:10px; padding:8px 10px; background:#f8fafe; display:grid; gap:2px; min-width:180px; }
+.ops-chip-ok { border-color:#bbdfc8; background:#f2fbf6; }
+.ops-chip-warn { border-color:#f3d4b2; background:#fff9f0; }
+.ops-metric-grid { display:grid; grid-template-columns: repeat(auto-fit,minmax(180px,1fr)); gap:10px; }
+.ops-stat-card { border:1px solid #dde4f0; background:#fbfcff; border-radius:12px; padding:10px; }
+.ops-progress { height:8px; border-radius:999px; background:#e8edf7; overflow:hidden; }
+.ops-progress > div { height:100%; background:#8ca2c8; }
+.ops-service-grid { display:grid; grid-template-columns:1fr 1fr; gap:14px; }
+.ops-events-list { display:grid; gap:8px; }
+.ops-event-row { display:grid; grid-template-columns: 170px 180px 1fr; gap:8px; font-size:0.9rem; }
+.ops-readiness-item { display:flex; align-items:flex-start; gap:10px; padding:8px 10px; border:1px solid #dde4f0; border-radius:10px; margin-bottom:8px; }
+.ops-readiness-dot { width:10px; height:10px; border-radius:50%; margin-top:5px; background:#94a3b8; }
+.ops-readiness-met { border-color:#b9e1c7; } .ops-readiness-met .ops-readiness-dot { background:#2f9e5c; }
+.ops-readiness-not_met { border-color:#efc8ce; } .ops-readiness-not_met .ops-readiness-dot { background:#d2475b; }
+.ops-manual-modal { width:min(920px,96vw); max-height:90vh; overflow:auto; display:grid; gap:14px; }
+.ops-modal-backdrop { position:fixed; inset:0; background:rgba(15,23,42,0.35); display:grid; place-items:center; z-index:50; padding:16px; }
+.ops-modal-grid { display:grid; grid-template-columns:1fr 1fr; gap:12px; }
+.ops-job-card { border:1px solid #d9e1ef; border-radius:10px; padding:10px; background:#fbfcff; }
+@media (max-width: 900px){ .ops-service-grid,.ops-modal-grid,.ops-event-row { grid-template-columns:1fr; } }
