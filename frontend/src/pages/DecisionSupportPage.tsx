@@ -121,6 +121,27 @@ function formatRiskLevel(value: unknown): string {
   return text.charAt(0).toUpperCase() + text.slice(1);
 }
 
+function hasMeaningfulPlume(params: {
+  affectedAreaM2: unknown;
+  affectedCellsAboveThreshold: unknown;
+  maxConcentration: unknown;
+  explanationSummary: unknown;
+  riskLevel: string;
+}): boolean {
+  const toNumber = (value: unknown): number | null => {
+    const parsed = typeof value === "string" ? Number(value) : value;
+    return typeof parsed === "number" && Number.isFinite(parsed) ? parsed : null;
+  };
+  const affectedArea = toNumber(params.affectedAreaM2);
+  const affectedCells = toNumber(params.affectedCellsAboveThreshold);
+  const maxConcentration = toNumber(params.maxConcentration);
+  const explanationText = safeText(params.explanationSummary, "").toLowerCase();
+
+  if ((affectedArea != null && affectedArea > 0) || (affectedCells != null && affectedCells > 0) || (maxConcentration != null && maxConcentration > 0)) return true;
+  if (affectedArea == 0 || affectedCells == 0 || maxConcentration == 0 || explanationText.includes("no meaningful plume")) return false;
+  return params.riskLevel.toLowerCase() !== "low";
+}
+
 export function DecisionSupportPage() {
   const { activeSessionId, latestForecastBundle } = useSessionForecastView();
   const [data, setData] = useState<DecisionSupportLatest | null>(null);
@@ -189,10 +210,18 @@ export function DecisionSupportPage() {
   const values = summary as Record<string, unknown>;
 
   const riskLevel = formatRiskLevel(data?.risk_level ?? explanation.risk_level ?? values.risk_level);
-  const affectedAreaRaw = values.affected_area;
-  const affectedCellsRaw = values.affected_cells_above_threshold;
-  const hasNoPlumeSignal = Number(affectedAreaRaw ?? -1) === 0 || Number(affectedCellsRaw ?? -1) === 0 || safeText(explanation.summary, "").toLowerCase().includes("no meaningful plume");
-  const plumeStatus = hasNoPlumeSignal ? "No meaningful plume above threshold" : (isPresentValue(affectedAreaRaw) || isPresentValue(affectedCellsRaw) ? "Plume detected above threshold" : "Unavailable");
+  const forecastEvidence = getNestedValue(data, "forecast_evidence") as Record<string, unknown> | undefined;
+  const affectedAreaM2 = getNestedValue(summary, "affected_area_m2", "affected_area", "summary_statistics.affected_area_m2", "summary_statistics.affected_area") ?? getNestedValue(forecastEvidence, "affected_area_m2", "affected_area");
+  const affectedCellsRaw = getNestedValue(summary, "affected_cells_above_threshold", "summary_statistics.affected_cells_above_threshold") ?? getNestedValue(forecastEvidence, "affected_cells_above_threshold");
+  const maxConcentration = getNestedValue(summary, "max_concentration", "summary_statistics.max_concentration") ?? getNestedValue(forecastEvidence, "max_concentration");
+  const meanConcentration = getNestedValue(summary, "mean_concentration", "summary_statistics.mean_concentration") ?? getNestedValue(forecastEvidence, "mean_concentration");
+  const dominantSpreadDirection = getNestedValue(summary, "dominant_spread_direction", "summary_statistics.dominant_spread_direction", "wind_direction", "direction") ?? getNestedValue(forecastEvidence, "dominant_spread_direction");
+  const thresholdUsed = getNestedValue(summary, "threshold_used", "threshold", "summary_statistics.threshold_used") ?? getNestedValue(forecastEvidence, "threshold_used");
+  const forecastTime = getNestedValue(data, "last_forecast_time") ?? getNestedValue(summary, "timestamp", "issued_at");
+  const plumePresent = hasMeaningfulPlume({ affectedAreaM2, affectedCellsAboveThreshold: affectedCellsRaw, maxConcentration, explanationSummary: explanation.summary, riskLevel });
+  const hasThreatSignal = safeText(data?.situation_summary ?? explanation.summary, "").toLowerCase().includes("threat");
+  const explicitNoPlumeSignal = Number(affectedAreaM2) === 0 || Number(affectedCellsRaw) === 0 || Number(maxConcentration) === 0 || safeText(explanation.summary, "").toLowerCase().includes("no meaningful plume");
+  const plumeStatus = plumePresent ? (hasThreatSignal ? "Threat detected" : "Plume detected above threshold") : (explicitNoPlumeSignal ? "No meaningful plume above threshold" : "Unavailable");
 
   const adapterMeta = getNestedValue(sessionState, "last_input_adapter_metadata", "input_adapter_metadata", "internal_state.last_input_adapter_metadata");
   const windSpeedValue = getNestedValue(summary, "wind_speed", "meteorology.wind_speed", "met.wind_speed", "inputs.wind_speed", "weather.wind_speed", "u10_speed", "wind.speed", "meteo.wind_speed", "source_inputs.wind_speed", "request.wind_speed", "runtime_metadata.wind_speed");
@@ -236,21 +265,20 @@ export function DecisionSupportPage() {
   ] as Array<[string, string]>;
 
   const keyOutputRows = [
-    ["Risk", riskLevel],
-    ["Plume status", plumeStatus],
-    ["Affected area", formatArea(affectedAreaRaw)],
-    ["Peak concentration", formatNumber(values.max_concentration)],
-    ["Direction", formatUnknown(values.dominant_spread_direction ?? values.wind_direction ?? values.direction)]
-  ] as Array<[string, string]>;
+    ...(
+    plumePresent
+      ? [["Status", plumeStatus], ["Risk", riskLevel], ["Affected area", formatArea(affectedAreaM2)], ["Peak concentration", formatNumber(maxConcentration)], ["Direction", formatDirection(dominantSpreadDirection)], ["Forecast time", formatTimestamp(forecastTime)]]
+      : [["Status", plumeStatus], ["Risk", riskLevel], ["Forecast time", formatTimestamp(forecastTime)]]
+  )] as Array<[string, string]>;
 
   const meteorologyConnected = meteorologyRows.some(([_, value]) => value !== "Unavailable");
-  const sourceLatitude = formatCoordinate(getNestedValue(summary, "source_latitude", "source.lat", "release.latitude", "scenario.source_latitude", "request.source_latitude"));
-  const sourceLongitude = formatCoordinate(getNestedValue(summary, "source_longitude", "source.lon", "release.longitude", "scenario.source_longitude", "request.source_longitude"));
+  const sourceLatitude = formatCoordinate(getNestedValue(summary, "source.latitude", "source_latitude", "source.lat", "release.latitude", "scenario.source_latitude", "request.source_latitude"));
+  const sourceLongitude = formatCoordinate(getNestedValue(summary, "source.longitude", "source_longitude", "source.lon", "release.longitude", "scenario.source_longitude", "request.source_longitude"));
   const pollutant = formatUnknown(getNestedValue(summary, "pollutant", "pollutant_type", "release.pollutant", "scenario.pollutant"));
   const emissionRate = formatUnknown(getNestedValue(summary, "emission_rate", "release.emission_rate", "scenario.emission_rate"));
   const releaseRows = [
-    ["Source latitude", formatCoordinate(getNestedValue(summary, "source_latitude", "source.lat", "release.latitude", "scenario.source_latitude", "request.source_latitude"))],
-    ["Source longitude", formatCoordinate(getNestedValue(summary, "source_longitude", "source.lon", "release.longitude", "scenario.source_longitude", "request.source_longitude"))],
+    ["Source latitude", formatCoordinate(getNestedValue(summary, "source.latitude", "source_latitude", "source.lat", "release.latitude", "scenario.source_latitude", "request.source_latitude"))],
+    ["Source longitude", formatCoordinate(getNestedValue(summary, "source.longitude", "source_longitude", "source.lon", "release.longitude", "scenario.source_longitude", "request.source_longitude"))],
     ["Pollutant type", formatUnknown(getNestedValue(summary, "pollutant", "pollutant_type", "release.pollutant", "scenario.pollutant"))],
     ["Emission rate", formatUnknown(getNestedValue(summary, "emission_rate", "release.emission_rate", "scenario.emission_rate"))],
     ["Release height", `${formatNumber(getNestedValue(summary, "release_height", "release.height", "scenario.release_height"))} m`],
@@ -339,7 +367,7 @@ export function DecisionSupportPage() {
         </div>
 
         <div className="values-section">
-          <h4>Plume Metrics</h4>
+          <h4>Plume / Threat</h4>
           <div className="values-grid compact-values-grid">{keyOutputRows.map(([label, value]) => <div key={label} className="status-row"><strong>{label}</strong><span>{value}</span></div>)}</div>
         </div>
 
@@ -351,7 +379,7 @@ export function DecisionSupportPage() {
         <details className="technical-details">
           <summary>More geospatial values</summary>
           <div className="values-grid compact-values-grid">
-            {[...meteorologyRows, ...releaseRows, ["Forecast horizon", formatUnknown(getNestedValue(summary, "forecast_horizon", "horizon", "scenario.forecast_horizon"))], ["Threshold used", formatUnknown(values.threshold_used ?? values.threshold)], ["Grid size", formatUnknown(values.grid_size ?? values.grid_shape)], ["Mean concentration", formatNumber(values.mean_concentration)], ["Forecast time", formatTimestamp(data?.last_forecast_time ?? values.timestamp)]].map(([label, value]) => <div key={`more-${label}`} className="status-row"><strong>{label}</strong><span>{value}</span></div>)}
+            {[...meteorologyRows, ...releaseRows, ["Affected area", formatArea(affectedAreaM2)], ["Affected area (ha)", formatNumber(getNestedValue(summary, "affected_area_hectares", "summary_statistics.affected_area_hectares") ?? getNestedValue(forecastEvidence, "affected_area_hectares"), 3)], ["Affected cells", formatNumber(affectedCellsRaw, 0)], ["Peak concentration", formatNumber(maxConcentration)], ["Mean concentration", formatNumber(meanConcentration)], ["Dominant spread direction", formatDirection(dominantSpreadDirection)], ["Threshold used", formatUnknown(thresholdUsed)], ["Grid size", formatUnknown(getNestedValue(summary, "grid_size", "grid_shape", "grid.rows", "grid.columns"))], ["Forecast horizon", formatUnknown(getNestedValue(summary, "forecast_horizon", "horizon", "scenario.forecast_horizon"))], ["Forecast time", formatTimestamp(forecastTime)]].map(([label, value]) => <div key={`more-${label}`} className="status-row"><strong>{label}</strong><span>{value}</span></div>)}
           </div>
         </details>
 
