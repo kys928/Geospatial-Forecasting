@@ -200,7 +200,7 @@ input {
 
 .map-column {
   display: grid;
-  grid-template-rows: auto auto 1fr;
+  grid-template-rows: 1fr;
   gap: 14px;
   min-height: 0;
 }
