@@ -31,20 +31,28 @@ export function OpsTrainingTab() {
   const trainingView = useMemo(() => deriveTrainingView(statusState.status, latestJob), [statusState.status, latestJob]);
   const summaryText = useMemo(() => buildSummaryText(trainingView.state, checklist), [trainingView.state, checklist]);
   const logs = useMemo(() => collectLogs(statusState.status, latestJob), [statusState.status, latestJob]);
+  const hasErrorLogs = logs.some((line) => line.startsWith("ERROR:"));
 
   useEffect(() => { if (followLogs && logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight; }, [logs, followLogs]);
+  useEffect(() => { const timer = window.setInterval(() => { void refreshAll(); }, 10000); return () => window.clearInterval(timer); }, []);
 
   async function refreshAll() { await Promise.all([jobsState.refresh(), statusState.refresh(), recommendationState.refresh(), candidateState.refresh()]); }
   async function handleManualStart(payload: RetrainingTriggerRequest) { setManualSubmitting(true); setManualNotice(null); try { const r = await opsClient.triggerRetraining(payload); setManualNotice(r.submitted ? "Manual training job submitted." : "Submission was not accepted by backend policy."); setManualOpen(false); await refreshAll(); } catch (e) { setManualNotice(e instanceof Error ? e.message : "Unable to submit manual training job."); } finally { setManualSubmitting(false); } }
 
   return <div style={{ display: "grid", gap: 12 }}>
-    <section className="panel"><div className="button-row" style={{ justifyContent: "space-between", alignItems: "center" }}><h3 style={{ margin: 0 }}>Training Status</h3><button className="secondary-button" onClick={() => void refreshAll()} disabled={manualSubmitting}>Refresh training status</button></div>
-      <div className="ops-status-grid">{trainingView.rows.map((row) => <article key={row.label} className="ops-stat-card"><p className="muted" style={{ margin: 0 }}>{row.label}</p><strong>{row.value}</strong></article>)}</div>
-      {!trainingView.hasActiveJob ? <p className="muted" style={{ marginBottom: 0 }}>No training job is currently running.</p> : null}
+    <section className="panel"><h3 style={{ margin: 0 }}>Training Status</h3>
+      <div className="ops-training-status-panel">
+        <div>
+          <div className="ops-training-state">{trainingView.state}</div>
+          <p style={{ margin: "8px 0 0" }}>{summaryText}</p>
+        </div>
+        <dl className="ops-training-facts">
+          {trainingView.rows.map((row) => <div key={row.label}><dt>{row.label}</dt><dd title={row.value}>{row.value}</dd></div>)}
+        </dl>
+      </div>
     </section>
-    <section className="panel"><h3>Training Summary</h3><p style={{ marginBottom: 0 }}>{summaryText}</p></section>
     <section className="panel"><h3>Training Metrics</h3>{trainingView.metrics.length === 0 ? <p className="muted" style={{ marginBottom: 0 }}>No training metrics have been reported yet.</p> : <><div className="ops-status-grid">{trainingView.metrics.map((row) => <article key={row.label} className="ops-stat-card"><p className="muted" style={{ margin: 0 }}>{row.label}</p><strong>{row.value}</strong></article>)}</div>{trainingView.progressPct !== null ? <div style={{ marginTop: 10 }}><div className="ops-progress"><div style={{ width: `${trainingView.progressPct}%` }} /></div></div> : null}</>}</section>
-    <section className="panel"><div className="button-row" style={{ justifyContent: "space-between", alignItems: "center" }}><h3 style={{ margin: 0 }}>Live Training Logs</h3><div className="button-row"><label className="muted" style={{ display: "flex", gap: 6, alignItems: "center" }}><input type="checkbox" checked={followLogs} onChange={(e) => setFollowLogs(e.target.checked)} />Follow logs</label><button className="secondary-button" onClick={() => void navigator.clipboard?.writeText(logs.join("\n"))} disabled={!logs.length}>Copy logs</button></div></div>{!logs.length ? <p className="muted" style={{ marginBottom: 0 }}>No training logs reported yet.</p> : <pre ref={logRef} className="ops-log-window">{logs.join("\n")}</pre>}</section>
+    <section className="panel"><div className="button-row" style={{ justifyContent: "space-between", alignItems: "center" }}><h3 style={{ margin: 0 }}>Live Training Logs</h3><div className="button-row"><label className="muted" style={{ display: "flex", gap: 6, alignItems: "center" }} title="Keep the log view pinned to the newest line."><input type="checkbox" checked={followLogs} onChange={(e) => setFollowLogs(e.target.checked)} />Auto-scroll</label><button className="secondary-button" onClick={() => void navigator.clipboard?.writeText(logs.join("\n"))} disabled={!logs.length}>Copy logs</button></div></div>{!logs.length ? <p className="muted" style={{ marginBottom: 0 }}>No training logs reported yet.</p> : <pre ref={logRef} className={`ops-log-window${hasErrorLogs ? " ops-log-window-error" : ""}`}>{logs.join("\n")}</pre>}</section>
     <section className="panel"><details className="advanced-section"><summary>Automatic Training Readiness</summary>{checklist.map((item) => <ReadinessItem key={item.label} label={item.label} state={item.state} detail={item.detail} />)}</details></section>
     <section className="panel"><h3>Manual Training</h3><p className="muted">Manual training is an advanced override. Automatic training is the normal workflow.</p><button className="secondary-button" onClick={() => setManualOpen(true)}>Start manual training</button>{manualNotice ? <p className="muted">{manualNotice}</p> : null}</section>
     {manualOpen ? <ManualTrainingModal onClose={() => setManualOpen(false)} onSubmit={handleManualStart} submitting={manualSubmitting} /> : null}
@@ -62,9 +70,9 @@ function deriveTrainingView(status: any, latestJob: OpsJobRecord | null) { const
   const progress = pick(metrics, ["progress", "progress_pct", "percent_complete"]);
   const progressPct = typeof progress === "number" ? Math.max(0, Math.min(100, progress > 1 ? progress : progress * 100)) : null;
   const rows = [
-    { label: "Current state", value: state }, { label: "Active or latest job", value: asStr(latestJob?.job_id) ?? "No active training job" }, { label: "Trigger", value: asStr(pick(jobObj, ["trigger", "trigger_type", "source"])) ?? "Not reported" },
-    { label: "Dataset", value: asStr(latestJob?.dataset_snapshot_ref) ?? "Not reported" }, { label: "Base checkpoint", value: asStr(pick(runCfg, ["checkpoint_mode", "checkpoint_ref"])) ?? "Not reported" }, { label: "Preset", value: asStr(pick(runCfg, ["preset"])) ?? "Not reported" },
-    { label: "Started", value: started ?? "Not reported" }, { label: "Completed", value: completed ?? "Not reported" }, { label: "Elapsed", value: elapsed }
+    { label: "Current state", value: state }, { label: "Active/latest job", value: asStr(latestJob?.job_id) ?? "No active training job" },
+    { label: "Dataset", value: asStr(latestJob?.dataset_snapshot_ref) ?? "Not reported" }, { label: "Preset", value: asStr(pick(runCfg, ["preset"])) ?? "Not reported" },
+    { label: "Started", value: started ?? "Not reported" }, { label: "Elapsed", value: elapsed }
   ];
   const metricRows = [
     ["Progress", progressPct !== null ? `${progressPct.toFixed(1)}%` : null], ["Current epoch", pick(metrics, ["current_epoch", "epoch"])], ["Total epochs", pick(metrics, ["total_epochs", "max_epochs"])], ["Training loss", pick(metrics, ["training_loss", "train_loss"])], ["Validation loss", pick(metrics, ["validation_loss", "val_loss"])], ["Best validation loss", pick(metrics, ["best_validation_loss", "best_val_loss"])], ["Steps completed", pick(metrics, ["steps_completed", "global_step"])], ["ETA", pick(metrics, ["eta", "eta_seconds"])], ["Elapsed time", pick(metrics, ["elapsed", "elapsed_time"])], ["Candidate model produced", pick(jobObj, ["candidate_model_id", "candidate_model_produced"])]
