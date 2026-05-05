@@ -12,7 +12,8 @@ import type {
   RetrainingRecommendation,
   RetrainingTriggerRequest,
   RetrainingTriggerResponse,
-  RollbackResponse
+  RollbackResponse,
+  OpsSystemStatusResponse
 } from "../types/ops.types";
 
 const opsToken = import.meta.env.VITE_OPS_API_TOKEN?.trim();
@@ -30,6 +31,10 @@ function opsHeaders(): HeadersInit | undefined {
 export const opsClient = {
   getStatus(): Promise<OpsStatusResponse> {
     return httpGet<OpsStatusResponse>("/ops/status", opsHeaders());
+  },
+
+  getSystemStatus(): Promise<OpsSystemStatusResponse> {
+    return httpGet<OpsSystemStatusResponse>("/ops/system/status", opsHeaders());
   },
 
   getRegistry(): Promise<OpsRegistryResponse> {

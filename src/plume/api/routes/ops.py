@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timezone
 import os
 from pathlib import Path
+import shutil
+import subprocess
 
 from fastapi import Depends, FastAPI, Header, HTTPException
 import yaml
@@ -17,6 +20,7 @@ from plume.api.ops_schemas import (
     OpsRegistryResponse,
     ModelCandidateContextResponse,
     OpsStatusResponse,
+    OpsSystemStatusResponse,
     RetrainingExplanationContextResponse,
     RetrainingRecommendationResponse,
     RetrainingTriggerRequest,
@@ -177,6 +181,60 @@ def _load_retraining_policy(forecast_service) -> RetrainingPolicy:
     )
 
 
+def _collect_host_metrics() -> dict[str, object]:
+    try:
+        import psutil  # type: ignore
+    except Exception:
+        return {"available": False, "reason": "psutil not installed"}
+
+    vm = psutil.virtual_memory()
+    disk = psutil.disk_usage("/")
+    boot = datetime.fromtimestamp(psutil.boot_time(), tz=timezone.utc).isoformat()
+    return {
+        "available": True,
+        "cpu_percent": psutil.cpu_percent(interval=0.0),
+        "memory_percent": vm.percent,
+        "memory_used_bytes": vm.used,
+        "memory_total_bytes": vm.total,
+        "disk_percent": disk.percent,
+        "disk_used_bytes": disk.used,
+        "disk_total_bytes": disk.total,
+        "uptime_seconds": max(0, int(datetime.now(timezone.utc).timestamp() - psutil.boot_time())),
+        "boot_time": boot,
+        "process_count": len(psutil.pids()),
+    }
+
+
+def _collect_gpu_metrics() -> dict[str, object]:
+    if shutil.which("nvidia-smi") is None:
+        return {"available": False, "reason": "GPU not available"}
+    cmd = [
+        "nvidia-smi",
+        "--query-gpu=utilization.gpu,memory.used,memory.total,temperature.gpu,power.draw,driver_version,cuda_version",
+        "--format=csv,noheader,nounits",
+    ]
+    try:
+        out = subprocess.check_output(cmd, text=True, timeout=2).strip()
+    except Exception:
+        return {"available": False, "reason": "GPU metrics not reported"}
+    if not out:
+        return {"available": False, "reason": "GPU metrics not reported"}
+    first = out.splitlines()[0]
+    parts = [p.strip() for p in first.split(",")]
+    if len(parts) < 7:
+        return {"available": False, "reason": "GPU metrics not reported"}
+    return {
+        "available": True,
+        "utilization_percent": float(parts[0]),
+        "memory_used_mib": float(parts[1]),
+        "memory_total_mib": float(parts[2]),
+        "temperature_c": float(parts[3]),
+        "power_w": float(parts[4]),
+        "driver_version": parts[5],
+        "cuda_version": parts[6],
+    }
+
+
 def register_ops_routes(app: FastAPI, *, forecast_service, dispatch_worker=dispatch_retraining_worker) -> None:
     retraining_policy = _load_retraining_policy(forecast_service)
 
@@ -215,6 +273,45 @@ def register_ops_routes(app: FastAPI, *, forecast_service, dispatch_worker=dispa
             return summary
         except Exception as exc:
             raise HTTPException(status_code=400, detail=f"Unable to load operational status: {exc}") from exc
+
+
+    @app.get("/ops/system/status", response_model=OpsSystemStatusResponse)
+    def get_ops_system_status(_role: str = Depends(_require_ops_read_access)):
+        paths = _ops_paths()
+        status_payload = get_ops_status(_role)
+        jobs_store = RetrainingJobStore(paths["jobs"])
+        jobs = jobs_store.list_jobs()
+        events = _load_recent_events(paths["events"], limit=8)
+        worker_status = WorkerStatusStore(_worker_status_path()).read()
+
+        forecast_jobs = {"queued": 0, "running": 0}
+        retraining_jobs = {"queued": 0, "running": 0, "failed": 0}
+        for job in jobs:
+            status = job.get("status")
+            if status == "queued":
+                retraining_jobs["queued"] += 1
+            elif status == "running":
+                retraining_jobs["running"] += 1
+            elif status == "failed":
+                retraining_jobs["failed"] += 1
+
+        return {
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "host": _collect_host_metrics(),
+            "gpu": _collect_gpu_metrics(),
+            "worker_status": worker_status or {},
+            "jobs": {
+                "forecast": forecast_jobs,
+                "retraining": retraining_jobs,
+                "latest_retraining": jobs_store.latest_job(),
+            },
+            "recent_events": events,
+            "status_summary": {
+                "phase": status_payload["phase"],
+                "latest_warning_or_error": status_payload.get("latest_warning_or_error"),
+                "active_model": status_payload.get("active_model"),
+            },
+        }
 
     @app.get("/ops/registry", response_model=OpsRegistryResponse)
     def get_ops_registry(_role: str = Depends(_require_ops_read_access)):
