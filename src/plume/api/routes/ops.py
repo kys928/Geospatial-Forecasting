@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
+import platform
 
 from fastapi import Depends, FastAPI, Header, HTTPException
 import yaml
@@ -193,6 +194,7 @@ def _collect_host_metrics() -> dict[str, object]:
     return {
         "available": True,
         "cpu_percent": psutil.cpu_percent(interval=0.0),
+        "cpu_model": platform.processor() or None,
         "memory_percent": vm.percent,
         "memory_used_bytes": vm.used,
         "memory_total_bytes": vm.total,
@@ -210,7 +212,7 @@ def _collect_gpu_metrics() -> dict[str, object]:
         return {"available": False, "reason": "GPU not available"}
     cmd = [
         "nvidia-smi",
-        "--query-gpu=utilization.gpu,memory.used,memory.total,temperature.gpu,power.draw,driver_version,cuda_version",
+        "--query-gpu=name,utilization.gpu,memory.used,memory.total,temperature.gpu,power.draw,driver_version,cuda_version",
         "--format=csv,noheader,nounits",
     ]
     try:
@@ -221,17 +223,18 @@ def _collect_gpu_metrics() -> dict[str, object]:
         return {"available": False, "reason": "GPU metrics not reported"}
     first = out.splitlines()[0]
     parts = [p.strip() for p in first.split(",")]
-    if len(parts) < 7:
+    if len(parts) < 8:
         return {"available": False, "reason": "GPU metrics not reported"}
     return {
         "available": True,
-        "utilization_percent": float(parts[0]),
-        "memory_used_mib": float(parts[1]),
-        "memory_total_mib": float(parts[2]),
-        "temperature_c": float(parts[3]),
-        "power_w": float(parts[4]),
-        "driver_version": parts[5],
-        "cuda_version": parts[6],
+        "name": parts[0],
+        "utilization_percent": float(parts[1]),
+        "memory_used_mib": float(parts[2]),
+        "memory_total_mib": float(parts[3]),
+        "temperature_c": float(parts[4]),
+        "power_w": float(parts[5]),
+        "driver_version": parts[6],
+        "cuda_version": parts[7],
     }
 
 
