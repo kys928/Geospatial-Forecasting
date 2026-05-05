@@ -250,18 +250,26 @@ export function DecisionSupportPage() {
     : (uWind !== "Unavailable" || vWind !== "Unavailable"
       ? `U ${uWind}, V ${vWind}`.replace("U Unavailable, ", "").replace(", V Unavailable", "")
       : "Unavailable");
+  const displayValue = (value: string, fallback = "Not available") => value === "Unavailable" ? fallback : value;
 
   const weatherCompactRows = [
-    ["Wind", windSummary],
-    ["Temperature", formatTemperature(getNestedValue(summary, "temperature", "meteorology.temperature", "met.temperature", "weather.temperature"))],
-    ["Humidity", formatPercent(getNestedValue(summary, "relative_humidity", "humidity", "meteorology.relative_humidity", "met.relative_humidity", "weather.humidity"))],
+    ["Wind", displayValue(windSummary)],
+    ["Temperature", displayValue(formatTemperature(getNestedValue(summary, "temperature", "meteorology.temperature", "met.temperature", "weather.temperature")))],
+    ["Humidity", displayValue(formatPercent(getNestedValue(summary, "relative_humidity", "humidity", "meteorology.relative_humidity", "met.relative_humidity", "weather.humidity")))],
     ["Pressure / PBL", (() => {
       const pressure = formatPressure(getNestedValue(summary, "surface_pressure", "pressure", "meteorology.surface_pressure", "met.surface_pressure", "weather.pressure"));
       const pbl = `${formatNumber(getNestedValue(summary, "pbl_height", "meteorology.pbl_height", "met.pbl_height", "weather.pbl_height"), 1)} m`;
-      if (pressure === "Unavailable" && pbl === "Unavailable m") return "Unavailable";
+      if (pressure === "Unavailable" && pbl === "Unavailable m") return "Not available";
       if (pressure !== "Unavailable" && pbl !== "Unavailable m") return `${pressure} / ${pbl}`;
       return pressure !== "Unavailable" ? pressure : pbl;
     })()]
+  ] as Array<[string, string]>;
+  const sourceLatitude = formatCoordinate(getNestedValue(summary, "source.latitude", "source_latitude", "source.lat", "release.latitude", "scenario.source_latitude", "request.source_latitude"));
+  const sourceLongitude = formatCoordinate(getNestedValue(summary, "source.longitude", "source_longitude", "source.lon", "release.longitude", "scenario.source_longitude", "request.source_longitude"));
+  const sourceLocation = sourceLatitude !== "Unavailable" && sourceLongitude !== "Unavailable" ? `${sourceLatitude}, ${sourceLongitude}` : null;
+  const currentConditionsRows = [
+    ...weatherCompactRows,
+    ["Source", sourceLocation ?? "Not configured"]
   ] as Array<[string, string]>;
 
   const lastForecastLabel = formatTimestamp(forecastTime);
@@ -279,9 +287,6 @@ export function DecisionSupportPage() {
     ]
     : [];
 
-  const meteorologyConnected = meteorologyRows.some(([_, value]) => value !== "Unavailable");
-  const sourceLatitude = formatCoordinate(getNestedValue(summary, "source.latitude", "source_latitude", "source.lat", "release.latitude", "scenario.source_latitude", "request.source_latitude"));
-  const sourceLongitude = formatCoordinate(getNestedValue(summary, "source.longitude", "source_longitude", "source.lon", "release.longitude", "scenario.source_longitude", "request.source_longitude"));
   const pollutant = formatUnknown(getNestedValue(summary, "pollutant", "pollutant_type", "release.pollutant", "scenario.pollutant"));
   const emissionRate = formatUnknown(getNestedValue(summary, "emission_rate", "release.emission_rate", "scenario.emission_rate"));
   const releaseRows = [
@@ -295,38 +300,6 @@ export function DecisionSupportPage() {
     ["End time", formatTimestamp(getNestedValue(summary, "end_time", "release.end_time", "scenario.end_time"))],
     ["Forecast horizon", formatUnknown(getNestedValue(summary, "forecast_horizon", "horizon", "scenario.forecast_horizon"))]
   ] as Array<[string, string]>;
-  const liveObsCount = sessionState?.observation_count;
-  const weatherReadiness = (() => {
-    if (!meteorologyConnected) return "Not connected yet";
-    const degraded = safeText(getNestedValue(adapterMeta, "status", "mode", "quality"), "").toLowerCase().includes("degraded")
-      || safeText(getNestedValue(adapterMeta, "used_defaults", "defaults_used"), "").toLowerCase() === "true";
-    if (degraded) return "Degraded/default values";
-    return windSummary !== "Unavailable" ? `Connected: wind ${windSummary}` : "Connected";
-  })();
-  const sourceLocation = sourceLatitude !== "Unavailable" && sourceLongitude !== "Unavailable" ? `${sourceLatitude}, ${sourceLongitude}` : null;
-  const hasSourceDetails = sourceLocation || pollutant !== "Unavailable" || emissionRate !== "Unavailable";
-  const sourceReadiness = sourceLocation ? `Configured: ${sourceLocation}` : (hasSourceDetails ? "Using default forecast scenario" : "Unavailable");
-  const liveObservationReadiness = typeof liveObsCount === "number" && liveObsCount > 0
-    ? `${formatNumber(liveObsCount, 0)} observations received`
-    : "None connected";
-  const inputReadinessRows = [
-    ["Weather inputs", weatherReadiness],
-    ["Source inputs", sourceReadiness],
-    ["Live observations", liveObservationReadiness]
-  ] as Array<[string, string]>;
-
-  const activeEvidenceCandidates = [
-    ["Wind", windSummary],
-    ["Temperature", formatTemperature(getNestedValue(summary, "temperature", "meteorology.temperature", "met.temperature", "weather.temperature"))],
-    ["Humidity", formatPercent(getNestedValue(summary, "relative_humidity", "humidity", "meteorology.relative_humidity", "met.relative_humidity", "weather.humidity"))],
-    ["Pressure", formatPressure(getNestedValue(summary, "surface_pressure", "pressure", "meteorology.surface_pressure", "met.surface_pressure", "weather.pressure"))],
-    ["PBL height", `${formatNumber(getNestedValue(summary, "pbl_height", "meteorology.pbl_height", "met.pbl_height", "weather.pbl_height"), 1)} m`],
-    ["Source", sourceLocation ?? "Unavailable"],
-    ["Pollutant", pollutant],
-    ["Emission", emissionRate],
-    ["Release height", `${formatNumber(getNestedValue(summary, "release_height", "release.height", "scenario.release_height"))} m`]
-  ] as Array<[string, string]>;
-  const activeEvidenceRows = activeEvidenceCandidates.filter(([_, value]) => value !== "Unavailable" && value !== "Unavailable m").slice(0, 6);
   async function sendQuestion(question: string) {
     if (!question.trim() || !hasContext) return;
     setMessages((prev) => [...prev, { role: "user", content: question }]);
@@ -376,20 +349,15 @@ export function DecisionSupportPage() {
       <section className="panel decision-support-live-panel">
         <h3>Geospatial Conditions</h3>
         <div className="values-section">
-          <h4>Current Forecast</h4>
-          <div className="values-grid compact-values-grid">{currentForecastRows.map(([label, value]) => <div key={label} className="status-row"><strong>{label}</strong><span>{value}</span></div>)}</div>
-          {plumePresent ? <div className="values-grid compact-values-grid">{plumeDetailRows.map(([label, value]) => <div key={`plume-${label}`} className="status-row"><strong>{label}</strong><span>{value}</span></div>)}</div> : null}
+          <h4>Current Conditions</h4>
+          <div className="values-grid compact-values-grid">{currentConditionsRows.map(([label, value]) => <div key={label} className="status-row"><strong>{label}</strong><span>{value}</span></div>)}</div>
         </div>
 
         <div className="values-section">
-          <h4>Input Readiness</h4>
-          <div className="values-grid compact-values-grid">{inputReadinessRows.map(([label, value]) => <div key={label} className="status-row"><strong>{label}</strong><span>{value}</span></div>)}</div>
+          <h4>Forecast Result</h4>
+          <div className="values-grid compact-values-grid">{currentForecastRows.map(([label, value]) => <div key={label} className="status-row"><strong>{label}</strong><span>{value}</span></div>)}</div>
+          {plumePresent ? <div className="values-grid compact-values-grid">{plumeDetailRows.map(([label, value]) => <div key={`plume-${label}`} className="status-row"><strong>{label}</strong><span>{value}</span></div>)}</div> : null}
         </div>
-
-        {activeEvidenceRows.length > 0 ? <div className="values-section">
-          <h4>Active evidence</h4>
-          <div className="values-grid compact-values-grid">{activeEvidenceRows.map(([label, value]) => <div key={`evidence-${label}`} className="status-row"><strong>{label}</strong><span>{value}</span></div>)}</div>
-        </div> : null}
 
         <details className="technical-details">
           <summary>Details</summary>
