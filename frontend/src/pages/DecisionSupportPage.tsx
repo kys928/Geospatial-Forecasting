@@ -107,6 +107,16 @@ function formatDurationMinutes(value: unknown): string {
   if (typeof parsed !== "number" || Number.isNaN(parsed)) return "Unavailable";
   return `${formatNumber(parsed, 0)} min`;
 }
+function formatGridSize(value: unknown): string {
+  if (!isPresentValue(value)) return "Unavailable";
+  if (Array.isArray(value)) return value.join(" × ");
+  if (typeof value === "object") {
+    const rows = getNestedValue(value, "rows");
+    const cols = getNestedValue(value, "columns", "cols");
+    if (isPresentValue(rows) && isPresentValue(cols)) return `${rows} × ${cols}`;
+  }
+  return formatUnknown(value);
+}
 
 function formatUnknown(value: unknown): string {
   if (value == null) return "Unavailable";
@@ -287,19 +297,77 @@ export function DecisionSupportPage() {
     ]
     : [];
 
-  const pollutant = formatUnknown(getNestedValue(summary, "pollutant", "pollutant_type", "release.pollutant", "scenario.pollutant"));
-  const emissionRate = formatUnknown(getNestedValue(summary, "emission_rate", "release.emission_rate", "scenario.emission_rate"));
-  const releaseRows = [
-    ["Source latitude", formatCoordinate(getNestedValue(summary, "source.latitude", "source_latitude", "source.lat", "release.latitude", "scenario.source_latitude", "request.source_latitude"))],
-    ["Source longitude", formatCoordinate(getNestedValue(summary, "source.longitude", "source_longitude", "source.lon", "release.longitude", "scenario.source_longitude", "request.source_longitude"))],
-    ["Pollutant type", formatUnknown(getNestedValue(summary, "pollutant", "pollutant_type", "release.pollutant", "scenario.pollutant"))],
-    ["Emission rate", formatUnknown(getNestedValue(summary, "emission_rate", "release.emission_rate", "scenario.emission_rate"))],
-    ["Release height", `${formatNumber(getNestedValue(summary, "release_height", "release.height", "scenario.release_height"))} m`],
-    ["Duration", formatUnknown(getNestedValue(summary, "duration", "release.duration", "scenario.duration"))],
-    ["Start time", formatTimestamp(getNestedValue(summary, "start_time", "release.start_time", "scenario.start_time"))],
-    ["End time", formatTimestamp(getNestedValue(summary, "end_time", "release.end_time", "scenario.end_time"))],
-    ["Forecast horizon", formatUnknown(getNestedValue(summary, "forecast_horizon", "horizon", "scenario.forecast_horizon"))]
+  const inputDiagnosticsRows = [
+    ["Meteorology source", formatUnknown(getNestedValue(summary, "meteorology.source", "met.source", "weather.source", "source", "adapter.source", "runtime_metadata.meteorology_source"))],
+    ["Meteorology timestamp", formatTimestamp(getNestedValue(summary, "meteorology.timestamp", "met.timestamp", "weather.timestamp", "timestamp"))],
+    ["Input mode", formatUnknown(getNestedValue(summary, "input_mode", "runtime_metadata.input_mode", "inputs.mode"))],
+    ["Prediction trust", formatUnknown(getNestedValue(summary, "prediction_trust", "runtime_metadata.prediction_trust", "inputs.prediction_trust"))],
+    ["Missing channels", formatUnknown(getNestedValue(summary, "missing_channels", "runtime_metadata.missing_channels", "inputs.missing_channels"))],
+    ["Observed frame count", formatUnknown(getNestedValue(summary, "observed_frame_count", "observations.observed_frame_count", "runtime_metadata.observed_frame_count"))],
+    ["Required frame count", formatUnknown(getNestedValue(summary, "required_frame_count", "observations.required_frame_count", "runtime_metadata.required_frame_count"))],
+    ["Observation count", formatUnknown(getNestedValue(summary, "observation_count", "observations.count") ?? sessionState?.observation_count)]
   ] as Array<[string, string]>;
+  const runtimeDiagnosticsRows = [
+    ["Model name", formatUnknown(getNestedValue(summary, "model_name", "runtime.model_name") ?? session?.model_name)],
+    ["Model source", formatUnknown(getNestedValue(summary, "model_source", "runtime.model_source", "runtime_metadata.model_source"))],
+    ["Model version", formatUnknown(getNestedValue(summary, "model_version", "runtime.model_version", "runtime_metadata.model_version"))],
+    ["Output space", formatUnknown(getNestedValue(summary, "output_space", "runtime.output_space", "runtime_metadata.output_space"))],
+    ["Backend", formatUnknown(data?.forecast_backend ?? session?.backend_name)],
+    ["Fallback status", formatUnknown(getNestedValue(summary, "fallback_status", "runtime.fallback_status", "runtime_metadata.fallback_status"))],
+    ["Input shape", formatUnknown(getNestedValue(summary, "input_shape", "runtime.input_shape", "runtime_metadata.input_shape"))],
+    ["Contract version", formatUnknown(getNestedValue(summary, "contract_version", "runtime.contract_version", "runtime_metadata.contract_version"))]
+  ] as Array<[string, string]>;
+  const forecastDiagnosticsRows = [
+    ["Affected area", formatArea(affectedAreaM2)],
+    ["Affected area (ha)", formatNumber(getNestedValue(summary, "affected_area_hectares", "summary_statistics.affected_area_hectares") ?? getNestedValue(forecastEvidence, "affected_area_hectares"), 3)],
+    ["Affected cells", formatNumber(affectedCellsRaw, 0)],
+    ["Peak concentration", formatNumber(maxConcentration)],
+    ["Mean concentration", formatNumber(meanConcentration)],
+    ["Dominant spread direction", formatDirection(dominantSpreadDirection)],
+    ["Threshold used", formatUnknown(thresholdUsed)],
+    ["Grid size", formatGridSize(getNestedValue(summary, "grid_size", "grid_shape", "grid", "summary_statistics.grid_size"))],
+    ["Forecast time", formatTimestamp(forecastTime)]
+  ] as Array<[string, string]>;
+  const filterAvailableRows = (rows: Array<[string, string]>, { allowZero = true } = {}) =>
+    rows.filter(([, value]) => {
+      const normalized = value.trim().toLowerCase();
+      if (!allowZero && normalized === "0") return false;
+      return normalized !== "unavailable" && normalized !== "not available" && normalized !== "unavailable m";
+    });
+  const weatherContext = Object.fromEntries(meteorologyRows.filter(([, value]) => value !== "Unavailable"));
+  const rawContext = {
+    forecast: {
+      forecast_id: getNestedValue(summary, "forecast_id"),
+      issued_at: getNestedValue(summary, "issued_at"),
+      timestamp: getNestedValue(summary, "timestamp", "forecast_time", "time"),
+      risk_level: getNestedValue(summary, "risk_level") ?? data?.risk_level,
+      plume_status: plumeStatus,
+      summary_statistics: getNestedValue(summary, "summary_statistics"),
+      source: getNestedValue(summary, "source"),
+      grid: getNestedValue(summary, "grid", "grid_shape", "grid_size")
+    },
+    inputs: {
+      weather: weatherContext,
+      release: getNestedValue(summary, "release"),
+      observations: getNestedValue(summary, "observations")
+    },
+    runtime: {
+      model_name: getNestedValue(summary, "model_name", "runtime.model_name") ?? session?.model_name,
+      model_source: getNestedValue(summary, "model_source", "runtime.model_source", "runtime_metadata.model_source"),
+      model_version: getNestedValue(summary, "model_version", "runtime.model_version", "runtime_metadata.model_version"),
+      output_space: getNestedValue(summary, "output_space", "runtime.output_space", "runtime_metadata.output_space"),
+      input_mode: getNestedValue(summary, "input_mode", "runtime_metadata.input_mode", "inputs.mode"),
+      prediction_trust: getNestedValue(summary, "prediction_trust", "runtime_metadata.prediction_trust", "inputs.prediction_trust"),
+      missing_channels: getNestedValue(summary, "missing_channels", "runtime_metadata.missing_channels", "inputs.missing_channels")
+    },
+    raw: {
+      summary,
+      explanation,
+      decision_support: data,
+      session,
+      session_state: sessionState
+    }
+  };
   async function sendQuestion(question: string) {
     if (!question.trim() || !hasContext) return;
     setMessages((prev) => [...prev, { role: "user", content: question }]);
@@ -361,27 +429,22 @@ export function DecisionSupportPage() {
 
         <details className="technical-details">
           <summary>Details</summary>
-          <div className="values-grid compact-values-grid">
-            {[...meteorologyRows, ...releaseRows, ["Affected area", formatArea(affectedAreaM2)], ["Affected area (ha)", formatNumber(getNestedValue(summary, "affected_area_hectares", "summary_statistics.affected_area_hectares") ?? getNestedValue(forecastEvidence, "affected_area_hectares"), 3)], ["Affected cells", formatNumber(affectedCellsRaw, 0)], ["Peak concentration", formatNumber(maxConcentration)], ["Mean concentration", formatNumber(meanConcentration)], ["Dominant spread direction", formatDirection(dominantSpreadDirection)], ["Threshold used", formatUnknown(thresholdUsed)], ["Grid size", formatUnknown(getNestedValue(summary, "grid_size", "grid_shape", "grid.rows", "grid.columns"))], ["Forecast horizon", formatUnknown(getNestedValue(summary, "forecast_horizon", "horizon", "scenario.forecast_horizon"))], ["Forecast time", formatTimestamp(forecastTime)]].map(([label, value]) => <div key={`more-${label}`} className="status-row"><strong>{label}</strong><span>{value}</span></div>)}
+          <div className="values-section">
+            <h5>Forecast diagnostics</h5>
+            <div className="values-grid compact-values-grid">{filterAvailableRows(forecastDiagnosticsRows).map(([label, value]) => <div key={`forecast-${label}`} className="status-row"><strong>{label}</strong><span>{value}</span></div>)}</div>
           </div>
-          <pre>{JSON.stringify({
-            backend: data?.forecast_backend ?? session?.backend_name,
-            session_id: session?.session_id,
-            session_status: session?.status,
-            state_version: sessionState?.state_version,
-            observation_count: sessionState?.observation_count,
-            timestamps: {
-              last_update_time: sessionState?.last_update_time,
-              last_ingest_time: session?.runtime_metadata?.last_ingest_time,
-              last_observation_time: session?.runtime_metadata?.last_observation_time,
-              last_prediction_time: data?.last_forecast_time ?? session?.runtime_metadata?.last_prediction_time
-            },
-            internal_state: sessionState,
-            runtime_metadata: session?.runtime_metadata,
-            capabilities: session?.capabilities,
-            limitations: data?.limitations,
-            raw_state_json: { explanation, summary }
-          }, null, 2)}</pre>
+          <div className="values-section">
+            <h5>Input diagnostics</h5>
+            <div className="values-grid compact-values-grid">{filterAvailableRows(inputDiagnosticsRows).map(([label, value]) => <div key={`input-${label}`} className="status-row"><strong>{label}</strong><span>{value}</span></div>)}</div>
+          </div>
+          <div className="values-section">
+            <h5>Runtime diagnostics</h5>
+            <div className="values-grid compact-values-grid">{filterAvailableRows(runtimeDiagnosticsRows).map(([label, value]) => <div key={`runtime-${label}`} className="status-row"><strong>{label}</strong><span>{value}</span></div>)}</div>
+          </div>
+          <div className="values-section">
+            <h5>Raw context JSON</h5>
+            <pre>{JSON.stringify(rawContext, null, 2)}</pre>
+          </div>
         </details>
       </section>
     </div>
