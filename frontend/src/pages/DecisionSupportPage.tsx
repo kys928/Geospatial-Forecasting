@@ -356,17 +356,12 @@ export function DecisionSupportPage() {
     }
   }
 
-  return <AppShell title="Decision Support" subtitle="AI briefing and live forecast input visibility." metaItems={[{ label: `Explanation mode: ${modeLabel}` }]}>
+  return <AppShell title="Forecast Overview" subtitle="Forecast interpretation, current conditions, and plume result.">
     {error ? <section className="panel"><p>{error}</p></section> : null}
     <div className="decision-support-layout">
       <section className="panel decision-support-chat-panel polished-chat-panel">
         <header className="chat-panel-header">
           <h3>AI Decision Support</h3>
-          <div className="detail-inline-meta">
-            <span className="detail-chip">{modeLabel}</span>
-            <span className="detail-chip">Forecast mode: {formatUnknown(data?.runtime_mode ?? session?.model_name)}</span>
-            <span className="detail-chip">Last forecast: {formatTimestamp(data?.last_forecast_time)}</span>
-          </div>
         </header>
 
         <div className="chat-thread polished-chat-thread" ref={threadRef}>
