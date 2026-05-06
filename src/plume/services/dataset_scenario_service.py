@@ -20,6 +20,7 @@ class DatasetScenarioConfig:
     windows_dir: Path
     scan_limit: int
     activation_state_path: Path
+    online_subset_path: Path
 
 
 class DatasetScenarioService:
@@ -41,7 +42,14 @@ class DatasetScenarioService:
             mode = "disabled"
         scan_limit = int(os.getenv("PLUME_DATASET_SCENARIO_SCAN_LIMIT", "500"))
         activation = Path(os.getenv("PLUME_DATASET_SCENARIO_STATE_PATH", "runtime_state/active_dataset_scenario.json"))
-        return cls(DatasetScenarioConfig(mode, manifest, windows_manifest, windows_dir, scan_limit, activation))
+        online_subset_override = os.getenv("PLUME_ONLINE_SUBSET_PATH")
+        if online_subset_override:
+            online_subset = Path(online_subset_override)
+        elif str(root).startswith("/workspace/Dataset"):
+            online_subset = Path("/workspace/Dataset/online_learning_subset")
+        else:
+            online_subset = root / "online_learning_subset"
+        return cls(DatasetScenarioConfig(mode, manifest, windows_manifest, windows_dir, scan_limit, activation, online_subset))
 
     def is_enabled(self) -> bool:
         return self.config.mode == "enabled"
@@ -53,8 +61,8 @@ class DatasetScenarioService:
             "dataset_window_count": windows_count,
             "dataset_manifest_path": str(self.config.dataset_manifest_path),
             "windows_manifest_enriched_path": str(self.config.windows_manifest_enriched_path),
-            "online_subset_path": str(Path(self.config.windows_dir).parent / "online_subset"),
-            "online_subset_available": (Path(self.config.windows_dir).parent / "online_subset").exists(),
+            "online_subset_path": str(self.config.online_subset_path),
+            "online_subset_available": self.config.online_subset_path.exists(),
         }
 
     def list_scenarios(self) -> list[dict[str, Any]]:
@@ -116,13 +124,25 @@ class DatasetScenarioService:
             "dataset_strong_wind": strong_wind,
             "dataset_large_plume": large,
         }
+        strengths = np.array([float(s["plume_strength"]) for s in scored], dtype=float)
+        top_quartile = float(np.nanpercentile(strengths, 75)) if strengths.size else 0.0
+        for key, selected in picks.items():
+            plume_strength = float(selected["plume_strength"])
+            risk = "low"
+            if key == "dataset_large_plume" or plume_strength >= top_quartile > 0:
+                risk = "high"
+            elif key == "dataset_small_plume":
+                risk = "medium" if plume_strength > 0 else "low"
+            elif key == "dataset_strong_wind":
+                risk = "medium" if plume_strength > 0 else "low"
+            selected["payload"]["forecast"]["risk_level"] = risk
         return {k: {"payload": v["payload"], "risk": v["payload"]["forecast"]["risk_level"], "status": v["payload"]["forecast"]["status"]} for k, v in picks.items()}
 
     def _score_candidate(self, window_row: dict[str, str], manifest_row: dict[str, str], npz_path: Path) -> dict[str, Any] | None:
         arr = np.load(npz_path)
         input_data = arr["input"]
         target = arr["target"]
-        plume = target[0]
+        plume = self._extract_plume_channel(target)
         plume_strength = float(np.nanmean(plume))
         wind_speed = float(np.nanmedian(input_data[2, 3]))
         payload = self._build_payload(window_row, manifest_row, input_data, target, plume_strength)
@@ -133,14 +153,18 @@ class DatasetScenarioService:
         u10 = float(np.nanmedian(last[1])); v10 = float(np.nanmedian(last[2])); wspd = float(np.nanmedian(last[3]))
         sin_v = float(np.nanmedian(last[4])); cos_v = float(np.nanmedian(last[5]))
         direction = (math.degrees(math.atan2(sin_v, cos_v)) + 360.0) % 360.0 if not math.isnan(sin_v) and not math.isnan(cos_v) else (math.degrees(math.atan2(u10, v10))+360.0)%360.0
-        risk = "low" if plume_strength <= 0 else ("medium" if plume_strength < float(np.nanmax(target[0])) * 0.5 else "high")
+        risk = "low"
         start = datetime.fromisoformat(str(manifest_row["start_time"]).replace("Z", "+00:00"))
         if start.tzinfo is None:
             start = start.replace(tzinfo=timezone.utc)
         run_hours = float(manifest_row.get("run_hours", 0) or 0)
-        plume_channel = target[0]
+        plume_channel = self._extract_plume_channel(target)
         threshold = float(np.nanmax(plume_channel)) * 0.1 if float(np.nanmax(plume_channel)) > 0 else 0.0
         affected = int(np.count_nonzero(plume_channel > threshold)) if threshold > 0 else int(np.count_nonzero(plume_channel > 0))
+        if float(np.nanmax(plume_channel)) == 0.0 and affected == 0:
+            risk = "low"
+        elif plume_strength > 0:
+            risk = "medium"
         return {
             "forecast": {"forecast_id": f"dataset_{window_row.get('window_id')}", "timestamp": start.isoformat(), "issued_at": start.isoformat(), "status": "plume detected above threshold" if float(np.nanmax(plume_channel)) > 0 else "no meaningful plume above threshold", "risk_level": risk, "input_source": "dataset_playback", "scenario_id": f"{manifest_row.get('scenario_id')}:{window_row.get('window_id')}"},
             "conditions": {"u10m_ms": u10, "v10m_ms": v10, "wind_speed_ms": wspd, "wind_direction_deg": direction, "wind_direction_label": self._direction_label(direction), "pbl_height_m": float(np.nanmedian(last[6])), "surface_pressure_hpa": float(np.nanmedian(last[7])), "humidity_pct": float(np.nanmedian(last[8])), "temperature_c": float(np.nanmedian(last[9])) - 273.15, "meteorology_source": "kaggle_hysplit_enriched_npz", "meteorology_timestamp": start.isoformat()},
@@ -163,3 +187,13 @@ class DatasetScenarioService:
     def _direction_label(degrees: float) -> str:
         labels = ["N", "NE", "E", "SE", "S", "SW", "W", "NW", "N"]
         return labels[int((degrees + 22.5) // 45)]
+
+    @staticmethod
+    def _extract_plume_channel(target: np.ndarray) -> np.ndarray:
+        if target.ndim == 4:
+            return target[-1, 0]
+        if target.ndim == 3:
+            return target[0]
+        if target.ndim == 2:
+            return target
+        raise ValueError(f"Expected target ndim to be 2, 3, or 4; got shape {target.shape}.")
