@@ -58,6 +58,8 @@ def register_forecast_context_routes(app: FastAPI, *, forecast_context_service, 
         return dataset_scenario_service.update_playback_state(
             enabled=bool(payload.get("enabled", False)),
             active_scenario_id=payload.get("active_scenario_id") if isinstance(payload.get("active_scenario_id"), str) else None,
+            playback_running=payload.get("playback_running") if isinstance(payload.get("playback_running"), bool) else None,
+            playback_speed_seconds=payload.get("playback_speed_seconds") if isinstance(payload.get("playback_speed_seconds"), int) else None,
         )
 
     @app.post('/forecast-context/dataset-playback/start')

@@ -19,16 +19,20 @@ class ForecastContextService:
 
     def latest(self, session_id: str | None = None, source: Literal["auto", "dataset", "session"] = "auto") -> ForecastContextResponse:
         if source == "dataset":
-            dataset = self._dataset_fallback()
+            dataset = self._dataset_context(require_playback_enabled=False)
             if dataset is not None:
                 return ForecastContextResponse(payload=dataset)
             return ForecastContextResponse(payload=self._empty_context())
+        if source == "auto":
+            dataset = self._dataset_context(require_playback_enabled=True)
+            if dataset is not None:
+                return ForecastContextResponse(payload=dataset)
 
         if session_id is None:
             sessions = self.runtime_client.list_sessions()
             if not sessions:
                 if source == "auto":
-                    dataset = self._dataset_fallback()
+                    dataset = self._dataset_context(require_playback_enabled=True)
                     if dataset is not None:
                         return ForecastContextResponse(payload=dataset)
                 return ForecastContextResponse(payload=self._empty_context())
@@ -38,7 +42,7 @@ class ForecastContextService:
             result = self.runtime_client.get_latest_session_forecast_result(session_id)
         except (KeyError, ValueError):
             if source == "auto":
-                dataset = self._dataset_fallback()
+                dataset = self._dataset_context(require_playback_enabled=True)
                 if dataset is not None:
                     return ForecastContextResponse(payload=dataset)
             return ForecastContextResponse(payload=self._empty_context(session_id=session_id))
@@ -140,10 +144,14 @@ class ForecastContextService:
         return ForecastContextResponse(payload=context)
 
 
-    def _dataset_fallback(self) -> dict[str, object] | None:
+    def _dataset_context(self, *, require_playback_enabled: bool) -> dict[str, object] | None:
         service = self.dataset_scenario_service
         if service is None or not service.is_enabled():
             return None
+        if require_playback_enabled:
+            state = service.resolve_current_playback_state() if hasattr(service, "resolve_current_playback_state") else service.get_playback_state()
+            if not bool(state.get("enabled", False)):
+                return None
         scenarios = service.list_scenarios()
         if not scenarios:
             return None

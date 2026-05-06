@@ -170,6 +170,7 @@ export function DecisionSupportPage() {
   const [session, setSession] = useState<SessionDetail | null>(null);
   const [datasetScenarios, setDatasetScenarios] = useState<DatasetScenarioPreview[]>([]);
   const [activeScenario, setActiveScenario] = useState<string>("");
+  const [datasetModeEnabled, setDatasetModeEnabled] = useState(false);
   const [sessionState, setSessionState] = useState<SessionStateSummary | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [chatQuestion, setChatQuestion] = useState("");
@@ -177,8 +178,6 @@ export function DecisionSupportPage() {
   const threadRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
-    httpGet<DecisionSupportLatest>("/decision-support/latest").then(setData).catch((e) => setError(e instanceof Error ? e.message : "Unavailable"));
-    httpGet<ForecastContextResponse>("/forecast-context/latest").then(setContext).catch(() => setContext(null));
     Promise.all([
       httpGet<{ enabled: boolean; scenarios: DatasetScenarioPreview[] }>("/forecast-context/dataset-scenarios"),
       httpGet<ActiveDatasetScenarioResponse>("/forecast-context/dataset-scenarios/active"),
@@ -187,8 +186,12 @@ export function DecisionSupportPage() {
       .then(([listResp, activeResp, playback]) => {
         const scenarios = Array.isArray(listResp.scenarios) ? listResp.scenarios : [];
         setDatasetScenarios(scenarios);
+        setDatasetModeEnabled(Boolean(playback.enabled));
         const selectedId = playback.active_scenario_id ?? activeResp.selected_scenario_id ?? activeResp.active_scenario_id ?? scenarios[0]?.scenario_id ?? "";
         setActiveScenario(selectedId);
+        const contextUrl = playback.enabled ? "/forecast-context/latest?source=dataset" : "/forecast-context/latest";
+        void httpGet<ForecastContextResponse>(contextUrl).then(setContext).catch(() => setContext(null));
+        void httpGet<DecisionSupportLatest>("/decision-support/latest").then(setData).catch((e) => setError(e instanceof Error ? e.message : "Unavailable"));
       })
       .catch(() => setDatasetScenarios([]));
   }, []);
@@ -210,8 +213,8 @@ export function DecisionSupportPage() {
       });
   }, [activeSessionId]);
 
-  const explanation = latestForecastBundle?.explanation ?? {};
-  const summary = latestForecastBundle?.summary ?? {};
+  const explanation = datasetModeEnabled ? {} : (latestForecastBundle?.explanation ?? {});
+  const summary = datasetModeEnabled ? {} : (latestForecastBundle?.summary ?? {});
 
   const modeLabel = useMemo(() => {
     const usedLlm = data?.used_llm === true || explanation.used_llm === true;
@@ -334,13 +337,9 @@ export function DecisionSupportPage() {
 
   const detailsRows = [
     ["Forecast horizon", formatDurationMinutes(forecastHorizon)],
-    ["Affected cells", formatNumber(affectedCellsRaw, 0)],
-    ["Peak concentration", formatNumber(maxConcentration)],
     ["Mean concentration", formatNumber(meanConcentration)],
-    ["Direction", formatDirection(dominantSpreadDirection)],
     ["Threshold", formatUnknown(thresholdUsed)],
     ["Grid size", formatGridSize([ctxPlume.grid_rows, ctxPlume.grid_columns]) === "Unavailable" ? formatGridSize(gridSizeValue) : formatGridSize([ctxPlume.grid_rows, ctxPlume.grid_columns])],
-    ["Forecast time", formatTimestamp(forecastTime)]
   ] as Array<[string, string]>;
 
   const filterAvailableRows = (rows: Array<[string, string]>, { allowZero = true } = {}) =>
@@ -382,9 +381,12 @@ export function DecisionSupportPage() {
     setActiveScenario(scenarioId);
     try {
       await httpPost(`/forecast-context/dataset-scenarios/${scenarioId}/activate`, {});
-      await httpPost("/forecast-context/dataset-playback/state", { enabled: true, active_scenario_id: scenarioId });
+      await httpPost("/forecast-context/dataset-playback/state", { enabled: true, active_scenario_id: scenarioId, playback_running: true });
       const refreshed = await httpGet<ForecastContextResponse>("/forecast-context/latest?source=dataset");
       setContext(refreshed);
+      setDatasetModeEnabled(true);
+      const latest = await httpGet<DecisionSupportLatest>("/decision-support/latest");
+      setData(latest);
     } catch {
       // ignore
     }

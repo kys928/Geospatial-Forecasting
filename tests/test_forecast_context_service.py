@@ -69,9 +69,10 @@ class FakeExplain:
 
 
 class FakeDatasetService:
-    def __init__(self, enabled=True, active=None):
+    def __init__(self, enabled=True, active=None, playback_enabled=True):
         self.enabled = enabled
         self.active = active
+        self.playback_enabled = playback_enabled
 
     def is_enabled(self):
         return self.enabled
@@ -84,6 +85,10 @@ class FakeDatasetService:
 
     def get_scenario(self, scenario_id):
         return {"forecast": {"status": "plume detected above threshold", "input_source": "dataset_playback", "scenario_id": scenario_id}, "conditions": {}, "source": {}, "plume_metrics": {}, "runtime": {}, "raw": {}}
+    def get_playback_state(self):
+        return {"enabled": self.playback_enabled}
+    def resolve_current_playback_state(self):
+        return {"enabled": self.playback_enabled}
 
 def _result(summary_stats, summary=None):
     return ForecastRunResult(
@@ -150,8 +155,17 @@ def test_dataset_fallback_when_no_sessions():
 
 def test_real_session_forecast_wins_over_dataset():
     runtime = FakeRuntime(sessions=[type("S", (), {"session_id": "s1"})()], result=_result({"max_concentration": 0.1}), state={})
-    service = ForecastContextService(runtime_client=runtime, explain_service=FakeExplain(), dataset_scenario_service=FakeDatasetService())
+    service = ForecastContextService(runtime_client=runtime, explain_service=FakeExplain(), dataset_scenario_service=FakeDatasetService(playback_enabled=False))
     ctx = service.latest().payload
+    assert ctx["forecast"]["forecast_id"] == "f-1"
+
+
+def test_auto_prefers_session_when_dataset_playback_disabled():
+    runtime = FakeRuntime(sessions=[type("S", (), {"session_id": "s1"})()], result=_result({"max_concentration": 0.1}), state={})
+    dataset = FakeDatasetService()
+    dataset.resolve_current_playback_state = lambda: {"enabled": False}
+    service = ForecastContextService(runtime_client=runtime, explain_service=FakeExplain(), dataset_scenario_service=dataset)
+    ctx = service.latest(source="auto").payload
     assert ctx["forecast"]["forecast_id"] == "f-1"
 
 
