@@ -116,9 +116,9 @@ def create_app() -> FastAPI:
         forecast_store=forecast_store,
         explain_service=explain_service,
     )
-    decision_support_service = DecisionSupportService(runtime_client=runtime_client, explain_service=explain_service)
     dataset_scenario_service = DatasetScenarioService.from_env()
     forecast_context_service = ForecastContextService(runtime_client=runtime_client, explain_service=explain_service, dataset_scenario_service=dataset_scenario_service)
+    decision_support_service = DecisionSupportService(runtime_client=runtime_client, explain_service=explain_service, forecast_context_service=forecast_context_service)
 
     register_session_routes(
         app,

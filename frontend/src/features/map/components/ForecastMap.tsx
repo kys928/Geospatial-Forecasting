@@ -304,10 +304,10 @@ export function ForecastMap({
   }, [geojson]);
 
   useEffect(() => {
-    if (center && mapRef.current) {
+    if (center && mapRef.current && (!geojson || !geojson.features?.length)) {
       mapRef.current.flyTo({ center, zoom: 11, duration: 800 });
     }
-  }, [center]);
+  }, [center, geojson]);
 
   useEffect(() => {
     latestSelectedFeatureRef.current = selectedFeature;

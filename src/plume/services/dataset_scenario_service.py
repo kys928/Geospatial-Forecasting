@@ -100,7 +100,8 @@ class DatasetScenarioService:
         self._cache_signature = None
 
     def get_playback_state(self) -> dict[str, Any]:
-        defaults = {"enabled": False, "active_scenario_id": self.get_active(), "mode": "dataset_playback", "updated_at": datetime.now(timezone.utc).isoformat(), "playback_running": False, "playback_index": 0, "playback_speed_seconds": 3}
+        default_speed = int(os.getenv("PLUME_DATASET_PLAYBACK_SPEED_SECONDS", "3"))
+        defaults = {"enabled": False, "active_scenario_id": self.get_active(), "mode": "dataset_playback", "updated_at": datetime.now(timezone.utc).isoformat(), "playback_running": False, "playback_index": 0, "playback_speed_seconds": default_speed}
         path = self.config.playback_state_path
         if not path.exists():
             return defaults
@@ -141,6 +142,46 @@ class DatasetScenarioService:
         idx = ids.index(current) + 1 if current in ids else 0
         idx = idx % len(ids)
         return self.update_playback_state(enabled=True, active_scenario_id=ids[idx], playback_index=idx)
+
+    def resolve_current_playback_state(self) -> dict[str, Any]:
+        state = self.get_playback_state()
+        scenarios = self.list_scenarios()
+        ids = [s.get("scenario_id") for s in scenarios if isinstance(s.get("scenario_id"), str)]
+        if not ids:
+            return state
+        active = state.get("active_scenario_id")
+        if active not in ids:
+            active = ids[0]
+            state = self.update_playback_state(
+                enabled=bool(state.get("enabled", False)),
+                active_scenario_id=active,
+                playback_running=bool(state.get("playback_running", False)),
+                playback_index=0,
+                playback_speed_seconds=int(state.get("playback_speed_seconds") or 3),
+            )
+        if not (state.get("enabled") and state.get("playback_running")):
+            return state
+        speed = max(1, int(state.get("playback_speed_seconds") or 3))
+        updated_at_raw = state.get("updated_at")
+        try:
+            updated_at = datetime.fromisoformat(str(updated_at_raw))
+            if updated_at.tzinfo is None:
+                updated_at = updated_at.replace(tzinfo=timezone.utc)
+        except Exception:
+            updated_at = datetime.now(timezone.utc)
+        elapsed_seconds = (datetime.now(timezone.utc) - updated_at).total_seconds()
+        steps = int(elapsed_seconds // speed)
+        if steps <= 0:
+            return state
+        current_index = ids.index(state.get("active_scenario_id")) if state.get("active_scenario_id") in ids else 0
+        next_index = (current_index + steps) % len(ids)
+        return self.update_playback_state(
+            enabled=True,
+            active_scenario_id=ids[next_index],
+            playback_running=True,
+            playback_index=next_index,
+            playback_speed_seconds=speed,
+        )
 
     def _select_scenarios(self) -> dict[str, dict[str, Any]]:
         if not self.is_enabled():
@@ -235,6 +276,7 @@ class DatasetScenarioService:
 
 
     def get_active_payload(self) -> dict[str, Any]:
+        self.resolve_current_playback_state()
         scenarios = self.list_scenarios()
         available_ids = {item.get("scenario_id") for item in scenarios}
         active_id = self.get_active()
@@ -261,6 +303,7 @@ class DatasetScenarioService:
         return self._build_overlay(payload, plume)
 
     def overlay_active_geojson(self) -> dict[str, Any]:
+        self.resolve_current_playback_state()
         active = self.get_active_payload()
         scenario_id = active.get("selected_scenario_id")
         if not isinstance(scenario_id, str):

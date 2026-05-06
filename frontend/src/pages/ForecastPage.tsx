@@ -17,6 +17,7 @@ export function ForecastPage() {
 
   const [datasetOverlay, setDatasetOverlay] = useState<GeoJsonFeatureCollection | null>(null);
   const [datasetCenter, setDatasetCenter] = useState<[number, number] | null>(null);
+  const [datasetModeEnabled, setDatasetModeEnabled] = useState(false);
   const geojson = ((datasetOverlay ?? latestForecastBundle?.geojson) ?? null) as GeoJsonFeatureCollection | null;
 
   type ActiveDatasetScenarioResponse = {
@@ -44,38 +45,36 @@ export function ForecastPage() {
   };
 
   useEffect(() => {
-    void runLatestForecast();
-  }, []);
-
-  useEffect(() => {
-    httpGet<ActiveDatasetScenarioResponse>("/forecast-context/dataset-scenarios/active")
-      .then((active) => {
-        const hasActiveScenario = Boolean(active.active_scenario_id ?? active.selected_scenario_id);
-        if (!active.enabled || !active.available || !hasActiveScenario) {
+    httpGet<{ enabled: boolean }>("/forecast-context/dataset-playback/state")
+      .then((playback) => {
+        if (!playback.enabled) {
+          setDatasetModeEnabled(false);
           setDatasetOverlay(null);
           setDatasetCenter(null);
           void runLatestForecast();
           return;
         }
-
-        const lat = active?.scenario?.source?.latitude;
-        const lon = active?.scenario?.source?.longitude;
-        if (typeof lat === "number" && typeof lon === "number") {
-          setDatasetCenter([lon, lat]);
-        }
-
-        return httpGet<GeoJsonFeatureCollection>("/forecast-context/dataset-scenarios/active/overlay")
-          .then((overlay) => {
-            setDatasetOverlay(overlay);
-          })
-          .catch(() => {
+        setDatasetModeEnabled(true);
+        setLatestForecastBundle(null, null);
+        return httpGet<ActiveDatasetScenarioResponse>("/forecast-context/dataset-scenarios/active")
+          .then((active) => {
+            const lat = active?.scenario?.source?.latitude;
+            const lon = active?.scenario?.source?.longitude;
+            if (typeof lat === "number" && typeof lon === "number") {
+              setDatasetCenter([lon, lat]);
+            }
+            return httpGet<GeoJsonFeatureCollection>("/forecast-context/dataset-scenarios/active/overlay")
+              .then((overlay) => setDatasetOverlay(overlay))
+              .catch(() => setDatasetOverlay(null));
+          }).catch(() => {
             setDatasetOverlay(null);
-            void runLatestForecast();
+            setDatasetCenter(null);
           });
       })
       .catch(() => {
         setDatasetOverlay(null);
         setDatasetCenter(null);
+        setDatasetModeEnabled(false);
         void runLatestForecast();
       });
   }, []);
@@ -88,7 +87,7 @@ export function ForecastPage() {
     >
       <main className="map-column">
         <ForecastMap
-          geojson={geojson}
+          geojson={datasetModeEnabled ? datasetOverlay : geojson}
           selectedFeature={selectedFeature}
           onSelectFeature={setSelectedFeature}
           center={datasetCenter}
