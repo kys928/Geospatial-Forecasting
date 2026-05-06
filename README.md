@@ -16,7 +16,7 @@ Current deployment shape is a **modular monolith + worker boundary**:
 - **Runtime boundary (`src/plume/runtime`)**: `ForecastRuntimeClient` protocol with `LocalForecastRuntimeClient` implementation. Local runtime delegates to existing `ForecastService` (batch) and `OnlineForecastService` (session workflows).
 - **Forecast artifact boundary**: batch forecast artifacts are durably written to `artifacts/forecasts/<forecast_id>/...` and can be listed/retrieved by API.
 - **Retraining worker boundary (`src/plume/workers/retraining_worker.py`)**: API submits jobs; a dedicated worker process claims/executes jobs. Shared boundary is job store + model registry + operational state + event log.
-- **OpenRemote boundary (`src/plume/openremote`)**: optional service registration lifecycle and optional forecast attribute publishing; both are disabled by default.
+- **OpenRemote boundary (`src/plume/openremote`)**: optional external service registration lifecycle; disabled by default.
 - **Frontend workspaces (`frontend/src/pages`)**: React pages for Map/Forecast (`/forecast`), Sessions (`/sessions`), and Ops (`/ops`).
 
 ## What is implemented now
@@ -114,21 +114,7 @@ Backend/session behavior is configured in `configs/backend.yaml`:
 - `max_recent_observations`
 - `auto_update_on_ingest`
 
-OpenRemote publishing behavior is configured in `configs/openremote.yaml` (or env overrides):
-
-- `enabled`
-- `sink_mode` (`disabled`, `http`)
-- `base_url`
-- `realm`
-- `site_asset_id`
-- `parent_asset_id`
-- `geojson_public_base_url`
-- `access_token_env_var` (name of env var containing token)
-- `forecast_asset_id` (required for attribute publishing target)
-- `forecast_attribute_mode` (`single_asset_attributes`)
-- forecast attribute names (`forecastSummary`, `forecastGeoJson`, `forecastRasterMetadata`, `forecastRuntime`, `forecastRiskLevel`, `forecastIssuedAt`, `forecastId`)
-
-`POST /forecast` always stores the forecast locally first, then publishes if enabled. A `publishing` field in the response reports `disabled`, `succeeded`, or `failed`.
+OpenRemote integration is service-registration-focused. Configure via environment variables documented below; `configs/openremote.yaml` is a lightweight reference only.
 
 ### Persisted forecast artifacts
 
@@ -178,31 +164,12 @@ Environment variables:
 Notes:
 - Global service registration requires using the master realm API base and a super-user-capable service user.
 - Service registration lifecycle is implemented in the FastAPI lifespan startup/shutdown flow.
-- A provisional forecast asset/attribute contract is implemented in `src/plume/openremote/forecast_asset_contract.py` and used by forecast publishing.
-- Forecast publishing remains optional and disabled by default.
-- `PLUME_OPENREMOTE_FORECAST_ASSET_ID` is required to publish forecast attributes to a target asset.
-
-### OpenRemote publishing modes
-
-- **Disabled mode (safe default)**: no publish attempt.
-- **HTTP mode (provisional)**: uses real HTTP calls; endpoint shapes can vary by deployment. If token/base URL/asset ID is missing or request fails, forecast creation still succeeds and the response reports `skipped` or `failed`.
-
-Tests use isolated test doubles and do not require a live OpenRemote instance.
-
-Forecast attribute mapping currently targets:
-- `forecastId`
-- `forecastIssuedAt`
-- `forecastSummary`
-- `forecastGeoJson`
-- `forecastRasterMetadata`
-- `forecastRuntime`
-- `forecastRiskLevel`
-
 ### OpenRemote DB/schema note
 
 - OpenRemote uses PostgreSQL internally for Manager storage.
 - This project does **not** copy or mirror the OpenRemote database.
-- Integration should continue through OpenRemote APIs/service registration/attribute publishing only.
+- Integration should continue through OpenRemote APIs/service registration only.
+- Direct forecast asset/attribute publishing was removed from the main runtime path because the contract was provisional and not validated against a live OpenRemote deployment.
 - If local durable sessions are implemented, they should use this app's own CSV/JSON contract.
 - See `docs/openremote_schema_mapping.md` for mapping notes and the proposed local CSV session-store contract.
 

@@ -12,7 +12,6 @@ from plume.api.deps import (
     get_forecast_service,
     get_forecast_runtime_client,
     get_forecast_store,
-    get_openremote_publishing_runtime,
     get_openremote_service_registration_settings,
 )
 from plume.api.routes import (
@@ -79,7 +78,6 @@ def create_app() -> FastAPI:
     export_service = get_export_service()
     forecast_store = get_forecast_store()
     backend_config = forecast_service.config.load_backend()
-    app.state.openremote_publishing_runtime = get_openremote_publishing_runtime()
 
     def _runtime_status_payload() -> dict[str, object]:
         openremote_service_registration = app.state.openremote_service_registrar.status()
@@ -116,7 +114,6 @@ def create_app() -> FastAPI:
         app,
         runtime_client=runtime_client,
         forecast_store=forecast_store,
-        export_service=export_service,
         explain_service=explain_service,
     )
     decision_support_service = DecisionSupportService(runtime_client=runtime_client, explain_service=explain_service)

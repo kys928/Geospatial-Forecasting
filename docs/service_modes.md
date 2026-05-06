@@ -26,7 +26,7 @@ python -m uvicorn plume.api.main:app --host 0.0.0.0 --port 8000
 Responsibilities:
 - Submit forecast and retraining jobs.
 - Serve forecast artifacts and job status.
-- Own OpenRemote registration/publishing behavior where currently implemented.
+- Own OpenRemote external-service registration behavior where currently implemented.
 
 ## Execution worker mode
 

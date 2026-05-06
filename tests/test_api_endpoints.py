@@ -40,7 +40,6 @@ def test_api_forecast_create_and_retrieve():
     assert "model_version" in payload
     assert "artifacts" in payload
     assert "runtime" in payload
-    assert "publishing" in payload
 
     forecast_id = payload["forecast_id"]
 
