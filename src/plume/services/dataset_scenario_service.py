@@ -249,7 +249,7 @@ class DatasetScenarioService:
         plume_strength = float(np.nanmean(prediction))
         wind_speed = float(np.nanmedian(input_data[2, 3]))
         payload = self._build_payload(window_row, manifest_row, input_data, target, prediction, plume_strength)
-        window_sort_key = f"{manifest_row.get("start_time","")}_{window_row.get("window_id","")}"
+        window_sort_key = f"{manifest_row.get('start_time', '')}_{window_row.get('window_id', '')}"
         return {"plume_strength": plume_strength, "wind_speed": wind_speed, "payload": payload, "window_sort_key": window_sort_key}
 
     def _build_payload(self, window_row, manifest_row, input_data, target, prediction, plume_strength):
