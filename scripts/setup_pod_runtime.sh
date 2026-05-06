@@ -14,6 +14,18 @@ log() { echo "[setup] $*"; }
 warn() { echo "[setup][warn] $*"; }
 fail() { echo "[setup][error] $*"; exit 1; }
 
+if [[ "$(id -u)" -eq 0 ]]; then
+  APT_GET="apt-get"
+  SUDO=""
+else
+  if command -v sudo >/dev/null 2>&1; then
+    APT_GET="sudo apt-get"
+    SUDO="sudo"
+  else
+    fail "sudo is required when not running as root; rerun as root or install sudo"
+  fi
+fi
+
 if [[ ! -d "$REPO_DIR" ]]; then
   fail "Repository directory not found at $REPO_DIR"
 fi
@@ -25,10 +37,11 @@ if [[ "$0" != "$SETUP_TARGET" ]]; then
 fi
 
 log "Installing OS prerequisites"
-sudo apt-get update -y
-sudo apt-get install -y \
+$APT_GET update -y
+$APT_GET install -y \
   git curl ca-certificates gnupg unzip rsync \
-  build-essential cmake ccache python3-venv
+  build-essential cmake ccache python3-venv \
+  psmisc iproute2
 
 log "Installing/validating Node 20.x"
 if command -v node >/dev/null 2>&1; then
@@ -37,8 +50,12 @@ else
   NODE_MAJOR=""
 fi
 if [[ "$NODE_MAJOR" != "20" ]]; then
-  curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
-  sudo apt-get install -y nodejs
+  if [[ -n "$SUDO" ]]; then
+    curl -fsSL https://deb.nodesource.com/setup_20.x | $SUDO -E bash -
+  else
+    curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
+  fi
+  $APT_GET install -y nodejs
 fi
 
 cd "$REPO_DIR"
@@ -52,7 +69,7 @@ node --version
 npm --version
 
 log "Installing pinned Python dependencies"
-python3 -m pip install --upgrade pip
+python3 -m pip install --upgrade pip==26.1.1 setuptools wheel
 python3 -m pip install \
   fastapi==0.136.1 \
   uvicorn==0.46.0 \
@@ -86,6 +103,40 @@ PY
 
 log "Installing repo package editable"
 python3 -m pip install -e .
+python3 - <<'PY'
+import importlib.metadata as md
+import sys
+
+expected = {
+    "fastapi": "0.136.1",
+    "uvicorn": "0.46.0",
+    "pydantic": "2.13.4",
+    "numpy": "2.4.4",
+    "llama-cpp-python": "0.3.22",
+    "huggingface-hub": "0.36.2",
+    "openai": "1.109.1",
+    "scikit-learn": "1.8.0",
+    "pandas": "2.2.3",
+}
+
+errors = []
+for pkg, wanted in expected.items():
+    try:
+      got = md.version(pkg)
+    except md.PackageNotFoundError:
+      errors.append(f"{pkg} is not installed (expected {wanted})")
+      continue
+    if got != wanted:
+      errors.append(f"{pkg} version mismatch: expected {wanted}, got {got}")
+
+if errors:
+    print("Critical dependency version verification failed:", file=sys.stderr)
+    for err in errors:
+        print(f" - {err}", file=sys.stderr)
+    raise SystemExit(1)
+
+print("Critical dependency versions verified")
+PY
 
 log "Installing frontend dependencies"
 cd "$REPO_DIR/frontend"
@@ -129,9 +180,13 @@ fi
 
 if [[ "${PLUME_SETUP_KILL_EXISTING:-false}" == "true" ]]; then
   log "PLUME_SETUP_KILL_EXISTING=true, attempting to stop listeners on 8000 and 5173"
-  fuser -k 8000/tcp 5173/tcp || true
+  if command -v fuser >/dev/null 2>&1; then
+    fuser -k 8000/tcp 5173/tcp || true
+  else
+    warn "fuser not found; install psmisc or stop listeners on ports 8000/5173 manually"
+  fi
 else
-  if ss -ltn '( sport = :8000 or sport = :5173 )' | rg -q ':8000|:5173'; then
+  if command -v ss >/dev/null 2>&1 && ss -ltn | grep -E ':(8000|5173)\b' >/dev/null 2>&1; then
     warn "Port 8000 and/or 5173 appears in use. Set PLUME_SETUP_KILL_EXISTING=true to stop them."
   fi
 fi
