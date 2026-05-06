@@ -327,7 +327,7 @@ export function DecisionSupportPage() {
     ? [
       ["Impact extent", formatArea(affectedAreaM2) === "Unavailable" ? "Estimated from plume grid" : formatArea(affectedAreaM2)],
       ["Peak plume score", formatNumber(maxConcentration)],
-      ["Direction", formatDirection(dominantSpreadDirection)],
+      ["Predicted spread", formatDirection(dominantSpreadDirection)],
       ...(lastForecastLabel !== "Unavailable" ? [["Forecast time", lastForecastLabel] as [string, string]] : [])
     ]
     : [];

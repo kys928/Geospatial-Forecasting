@@ -29,6 +29,11 @@ class DatasetScenarioConfig:
 
 
 class DatasetScenarioService:
+    SCENARIO_ALIASES = {
+        "dataset_normal_stream": "dataset_normal",
+        "dataset_lowest_plume": "dataset_low_plume",
+        "dataset_small_plume": "dataset_medium_plume",
+    }
     CHANNELS = [
         "plume_concentration", "u10m_ms", "v10m_ms", "wspd10_ms", "wdir_sin", "wdir_cos", "pblh_m", "sfcp_hpa", "rh2m_pct", "t02m_k"
     ]
@@ -80,11 +85,13 @@ class DatasetScenarioService:
 
     def get_scenario(self, scenario_key: str) -> dict[str, Any]:
         selected = self._select_scenarios()
+        scenario_key = self.SCENARIO_ALIASES.get(scenario_key, scenario_key)
         if scenario_key not in selected:
             raise KeyError(scenario_key)
         return selected[scenario_key]["payload"]
 
     def activate(self, scenario_key: str) -> None:
+        scenario_key = self.SCENARIO_ALIASES.get(scenario_key, scenario_key)
         _ = self.get_scenario(scenario_key)
         self.config.activation_state_path.parent.mkdir(parents=True, exist_ok=True)
         self.config.activation_state_path.write_text(json.dumps({"scenario_id": scenario_key}), encoding="utf-8")
@@ -98,7 +105,9 @@ class DatasetScenarioService:
         except Exception:
             return None
         value = payload.get("scenario_id")
-        return value if isinstance(value, str) else None
+        if not isinstance(value, str):
+            return None
+        return self.SCENARIO_ALIASES.get(value, value)
 
 
     def refresh_cache(self) -> None:
@@ -195,9 +204,9 @@ class DatasetScenarioService:
             return {}
         scored.sort(key=lambda x: x["plume_strength"])
         lowest = scored[0]
-        nonzero = [s for s in scored if s["plume_strength"] > 0]
-        small = nonzero[0] if nonzero else lowest
-        large = max(scored, key=lambda x: x["plume_strength"])
+        medium = scored[len(scored)//2]
+        large_candidates = [s for s in scored if s.get("in_demo_bbox")]
+        large = max((large_candidates or scored), key=lambda x: x["plume_strength"])
         normal_stream = copy.deepcopy(sorted(scored, key=lambda x: x["window_sort_key"])[0])
         normal_stream["payload"]["forecast"]["status"] = "no meaningful plume above threshold"
         normal_stream["payload"]["forecast"]["risk_level"] = "low"
@@ -207,9 +216,9 @@ class DatasetScenarioService:
         normal_stream["payload"]["plume_metrics"]["threshold_used"] = 0.0
         normal_stream["payload"]["runtime"]["normal_baseline"] = "deterministic_zero_plume_from_dataset_window"
         picks = {
-            "dataset_normal_stream": normal_stream,
-            "dataset_lowest_plume": lowest,
-            "dataset_small_plume": small,
+            "dataset_normal": normal_stream,
+            "dataset_low_plume": lowest,
+            "dataset_medium_plume": medium,
             "dataset_large_plume": large,
         }
         strengths = np.array([float(s["plume_strength"]) for s in scored], dtype=float)
@@ -219,7 +228,7 @@ class DatasetScenarioService:
             risk = "low"
             if key == "dataset_large_plume" or plume_strength >= top_quartile > 0:
                 risk = "high"
-            elif key == "dataset_small_plume":
+            elif key == "dataset_medium_plume":
                 risk = "medium" if plume_strength > 0 else "low"
             selected["payload"]["forecast"]["risk_level"] = risk
         result = {k: {"payload": v["payload"], "risk": v["payload"]["forecast"]["risk_level"], "status": v["payload"]["forecast"]["status"]} for k, v in picks.items()}
@@ -261,7 +270,7 @@ class DatasetScenarioService:
             "source": {"latitude": float(manifest_row.get("lat", 0)), "longitude": float(manifest_row.get("lon", 0)), "pollutant": "demo_release", "emission_rate": float(manifest_row.get("emission_rate", 0)), "release_height_m": float(manifest_row.get("height_m", 0)), "duration_minutes": run_hours * 60, "start_time": start.isoformat(), "end_time": (start + timedelta(hours=run_hours)).isoformat()},
             "plume_metrics": {"max_concentration": float(np.nanmax(plume_channel)), "mean_concentration": float(np.nanmean(plume_channel)), "affected_cells_above_threshold": affected, "affected_area_m2": None, "affected_area_hectares": None, "dominant_spread_direction": None, "threshold_used": threshold, "grid_rows": int(plume_channel.shape[-2]), "grid_columns": int(plume_channel.shape[-1])},
             "runtime": {"backend": "dataset_playback", "model_name": "ridge_plume_baseline", "model_source": "dataset_input_inference", "model_version": str(self._get_ridge_artifact().get("model_version") or "ridge_baseline_pickle"), "output_space": "ridge_prediction", "input_mode": "dataset_stream_window", "missing_channels": [], "missing_frame_indices": [], "meteorology_available": True, "observations_available": False, "limitations": ["Dataset playback from Kaggle HYSPLIT/ConvLSTM dataset; not live OpenRemote data.", "Values are for demo/development playback.", "Plume values may be transformed dataset values unless model/output-space metadata defines physical units."]},
-            "raw": {"source_file": str(window_row.get("source_file")), "manifest_row": manifest_row, "window_row": window_row, "input_shape": list(input_data.shape), "target_shape": list(target.shape), "prediction_shape": list(prediction.shape), "target_usage": "optional_reference_only", "channel_order": self.CHANNELS},
+            "raw": {"source_file": str(window_row.get("source_file")), "manifest_row": manifest_row, "window_row": window_row, "input_shape": list(input_data.shape), "target_shape": list(target.shape), "prediction_shape": list(prediction.shape), "target_usage": "optional_reference_only", "channel_order": self.CHANNELS, "model_inference": {"artifact_path": str(self._get_ridge_artifact().get("artifact_path", self.config.ridge_model_path)), "input_shape": list(input_data.shape), "prediction_shape": list(prediction.shape), "used_ridge_model": True, "threshold_method": "relative_to_prediction_peak", "threshold_description": "Cutoff used to decide which predicted grid cells are rendered as plume. This is a model-display threshold, not a physical safety threshold."}},
         }
 
 
@@ -289,7 +298,7 @@ class DatasetScenarioService:
 
     def overlay_geojson(self, scenario_key: str) -> dict[str, Any]:
         payload = self.get_scenario(scenario_key)
-        if scenario_key == "dataset_normal_stream":
+        if scenario_key == "dataset_normal":
             plume = np.zeros((64, 64), dtype=float)
         else:
             plume = self._load_plume_channel(payload)
@@ -304,7 +313,7 @@ class DatasetScenarioService:
         return self.overlay_geojson(scenario_id)
     def _scenario_preview(self, key: str, value: dict[str, Any]) -> dict[str, Any]:
         p = value["payload"]
-        labels={"dataset_normal_stream":"Normal","dataset_lowest_plume":"Low plume","dataset_small_plume":"Small plume","dataset_large_plume":"Large plume"}
+        labels={"dataset_normal":"Normal","dataset_low_plume":"Low plume","dataset_medium_plume":"Medium plume","dataset_large_plume":"Large plume"}
         return {"scenario_id": key, "label": labels.get(key,key.replace("dataset_", "").replace("_", " ").title()), "status": p["forecast"]["status"], "risk_level": p["forecast"]["risk_level"], "wind_speed_ms": p["conditions"]["wind_speed_ms"], "max_concentration": p["plume_metrics"]["max_concentration"]}
 
     @staticmethod
@@ -366,7 +375,7 @@ class DatasetScenarioService:
         feats.append({"type":"Feature","geometry":{"type":"Point","coordinates":[lon0,lat0]},"properties":{"kind":"source","title":"Release source"}})
         raw = payload.get("raw", {})
         plume_feature_count = len([f for f in feats if f.get("geometry", {}).get("type") == "Polygon"])
-        return {"type":"FeatureCollection","features":feats,"metadata":{"source":"dataset_playback","feature_count":len(feats),"plume_features":plume_feature_count,"source_latitude":lat0,"source_longitude":lon0,"model_source":"ridge_plume_baseline","prediction_shape":raw.get("prediction_shape"),"input_shape":raw.get("input_shape"),"active_window_id":raw.get("window_row",{}).get("window_id"),"active_scenario_id":payload.get("forecast",{}).get("scenario_id"),"georeferencing":"approximate_source_centered_grid"}}
+        return {"type":"FeatureCollection","features":feats,"metadata":{"source":"dataset_playback","feature_count":len(feats),"plume_polygon_count":plume_feature_count,"source_latitude":lat0,"source_longitude":lon0,"model_source":"dataset_input_inference","output_space":"ridge_prediction","prediction_shape":raw.get("prediction_shape"),"input_shape":raw.get("input_shape"),"active_window_id":raw.get("window_row",{}).get("window_id"),"active_scenario_id":payload.get("forecast",{}).get("scenario_id"),"georeferencing":"approximate_source_centered_grid"}}
 
 
     def _get_ridge_artifact(self) -> dict[str, Any]:

@@ -156,7 +156,7 @@ class ForecastContextService:
         if not scenarios:
             return None
         active = service.get_active()
-        target = active if isinstance(active, str) else "dataset_normal_stream"
+        target = active if isinstance(active, str) else "dataset_normal"
         if target not in {item.get("scenario_id") for item in scenarios}:
             target = scenarios[0].get("scenario_id")
         if not isinstance(target, str):
