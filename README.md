@@ -195,6 +195,24 @@ Notes:
 - If local durable sessions are implemented, they should use this app's own CSV/JSON contract.
 - See `docs/openremote_schema_mapping.md` for mapping notes and the proposed local CSV session-store contract.
 
+## RunPod frozen runtime setup (reproducible)
+
+For a fresh RunPod pod, copy and run the repository setup script from `/workspace`:
+
+```bash
+cp /workspace/Geospatial-Forecasting/scripts/setup_pod_runtime.sh /workspace/setup_pod_runtime.sh
+bash /workspace/setup_pod_runtime.sh
+```
+
+Then launch the app stack:
+
+```bash
+cd /workspace/Geospatial-Forecasting
+python scripts/run_runpod_stack.py --api-base-url "<RunPod 8000 proxy URL>" --frontend-origin "<RunPod 5173 proxy URL>"
+```
+
+The setup script prepares dependencies, validates dataset + GGUF artifacts, writes `/workspace/geospatial_runtime_env.sh`, and does **not** start API/frontend/worker processes.
+
 ## Installation
 Use Python 3.11.
 
