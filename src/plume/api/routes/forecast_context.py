@@ -14,6 +14,11 @@ def register_forecast_context_routes(app: FastAPI, *, forecast_context_service, 
     def list_dataset_scenarios():
         return {"enabled": dataset_scenario_service.is_enabled(), "scenarios": dataset_scenario_service.list_scenarios()}
 
+
+    @app.get('/forecast-context/dataset-scenarios/active')
+    def get_active_dataset_scenario():
+        return dataset_scenario_service.get_active_payload()
+
     @app.get('/forecast-context/dataset-scenarios/{scenario_id}')
     def get_dataset_scenario(scenario_id: str):
         try:
@@ -28,3 +33,18 @@ def register_forecast_context_routes(app: FastAPI, *, forecast_context_service, 
         except KeyError as exc:
             raise HTTPException(status_code=404, detail="Unknown dataset scenario") from exc
         return {"ok": True, "active_scenario_id": scenario_id}
+
+
+    @app.get('/forecast-context/dataset-scenarios/{scenario_id}/overlay')
+    def get_dataset_scenario_overlay(scenario_id: str):
+        try:
+            return dataset_scenario_service.overlay_geojson(scenario_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="Dataset scenario overlay unavailable") from exc
+
+    @app.get('/forecast-context/dataset-scenarios/active/overlay')
+    def get_active_dataset_scenario_overlay():
+        try:
+            return dataset_scenario_service.overlay_active_geojson()
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="Dataset scenario overlay unavailable") from exc

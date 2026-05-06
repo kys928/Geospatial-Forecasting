@@ -22,6 +22,7 @@ type DecisionSupportLatest = {
   last_forecast_time?: string;
 };
 type DatasetScenarioPreview = { scenario_id: string; label: string; status?: string; risk_level?: string };
+type ActiveDatasetScenarioResponse = { enabled: boolean; available: boolean; active_scenario_id?: string | null; selected_scenario_id?: string | null; scenario?: ForecastContextResponse | null; };
 type ForecastContextResponse = {
   forecast: Record<string, unknown>;
   conditions: Record<string, unknown>;
@@ -177,11 +178,15 @@ export function DecisionSupportPage() {
   useEffect(() => {
     httpGet<DecisionSupportLatest>("/decision-support/latest").then(setData).catch((e) => setError(e instanceof Error ? e.message : "Unavailable"));
     httpGet<ForecastContextResponse>("/forecast-context/latest").then(setContext).catch(() => setContext(null));
-    httpGet<{ enabled: boolean; scenarios: DatasetScenarioPreview[] }>("/forecast-context/dataset-scenarios")
-      .then((resp) => {
-        const scenarios = Array.isArray(resp.scenarios) ? resp.scenarios : [];
+    Promise.all([
+      httpGet<{ enabled: boolean; scenarios: DatasetScenarioPreview[] }>("/forecast-context/dataset-scenarios"),
+      httpGet<ActiveDatasetScenarioResponse>("/forecast-context/dataset-scenarios/active")
+    ])
+      .then(([listResp, activeResp]) => {
+        const scenarios = Array.isArray(listResp.scenarios) ? listResp.scenarios : [];
         setDatasetScenarios(scenarios);
-        if (scenarios.length > 0) setActiveScenario(scenarios[0].scenario_id);
+        const selectedId = activeResp.selected_scenario_id ?? activeResp.active_scenario_id ?? scenarios[0]?.scenario_id ?? "";
+        setActiveScenario(selectedId);
       })
       .catch(() => setDatasetScenarios([]));
   }, []);
@@ -390,7 +395,11 @@ export function DecisionSupportPage() {
       const response = await httpPost<{ answer?: string }>("/decision-support/chat", { message: question });
       setMessages((prev) => [...prev, { role: "assistant", content: safeText(response.answer, "No answer available.") }]);
     } catch {
-      const fallback = `${safeText(explanation.summary)} Missing details remain unavailable in current context.`;
+      const statusText = safeText(ctxForecast.status, plumePresent ? "Plume detected above threshold" : "No meaningful plume above threshold");
+      const riskText = riskLevel;
+      const windText = windSpeed !== "Unavailable" || windDirection !== "Unavailable" ? `Wind ${windSpeed} ${windDirection}`.trim() : "Wind details unavailable";
+      const datasetNote = String(ctxForecast.input_source ?? "").toLowerCase() === "dataset_playback" ? "Dataset playback context is approximate and not live observations." : "Uses current forecast context only.";
+      const fallback = `${statusText}. Risk: ${riskText}. ${windText}. ${datasetNote}`;
       setMessages((prev) => [...prev, { role: "assistant", content: fallback }]);
     }
   }

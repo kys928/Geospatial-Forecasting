@@ -175,3 +175,9 @@ def test_dataset_source_returns_default_when_no_active_scenario():
     service = ForecastContextService(runtime_client=FakeRuntime(), explain_service=FakeExplain(), dataset_scenario_service=FakeDatasetService(active=None))
     ctx = service.latest(source="dataset").payload
     assert ctx["forecast"]["scenario_id"] == "dataset_strong_wind"
+
+
+def test_dataset_source_returns_active_scenario_after_activation():
+    service = ForecastContextService(runtime_client=FakeRuntime(), explain_service=FakeExplain(), dataset_scenario_service=FakeDatasetService(active="dataset_stable_night"))
+    ctx = service.latest(source="dataset").payload
+    assert ctx["forecast"]["scenario_id"] == "dataset_stable_night"
