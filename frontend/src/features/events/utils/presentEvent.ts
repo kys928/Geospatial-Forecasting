@@ -12,8 +12,11 @@ export interface PresentedEvent {
   summary: string;
   category: EventCategory;
   severity: EventSeverity;
+  activityLabel: string;
+  statusLabel: string;
   objectLabel: string | null;
   raw: EventRecord;
+  isPreview?: boolean;
 }
 
 const TITLE_MAP: Record<string, string> = {
@@ -28,6 +31,22 @@ const TITLE_MAP: Record<string, string> = {
   worker_heartbeat: "Worker heartbeat received",
   forecast_created: "Forecast created",
   forecast_failed: "Forecast failed"
+};
+
+const ACTIVITY_LABELS: Record<EventCategory, string> = {
+  training: "Training",
+  registry: "Registry",
+  worker: "Worker",
+  forecast: "Forecast",
+  system: "System",
+  unknown: "Other"
+};
+
+const STATUS_LABELS: Record<EventSeverity, string> = {
+  error: "Failed",
+  warning: "Warning",
+  success: "Completed",
+  info: "Normal"
 };
 
 function asString(value: unknown): string | null {
@@ -85,6 +104,8 @@ export function presentEvent(event: EventRecord, index: number): PresentedEvent 
     ? validDate.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit", hour12: false })
     : "Not available";
   const blob = `${eventType} ${JSON.stringify(payload).toLowerCase()}`;
+  const category = inferCategory(blob);
+  const severity = inferSeverity(blob);
 
   return {
     id: `${timestampRaw ?? "event"}-${index}`,
@@ -93,8 +114,10 @@ export function presentEvent(event: EventRecord, index: number): PresentedEvent 
     dateGroup,
     title: TITLE_MAP[eventType] ?? (eventType ? sentenceCase(eventType) : "Operational event"),
     summary: buildSummary(eventType, payload),
-    category: inferCategory(blob),
-    severity: inferSeverity(blob),
+    category,
+    severity,
+    activityLabel: ACTIVITY_LABELS[category],
+    statusLabel: STATUS_LABELS[severity],
     objectLabel:
       asString(payload.candidate_model_id) ??
       asString(payload.model_id) ??
