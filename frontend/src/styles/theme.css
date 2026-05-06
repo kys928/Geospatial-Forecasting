@@ -549,18 +549,23 @@ textarea {
 }
 
 .chat-thread {
-  max-height: 100%;
+  max-height: 360px;
   overflow-y: auto;
   overflow-x: hidden;
   display: grid;
   gap: 10px;
   min-height: 0;
+  height: auto;
   padding: 4px;
   scrollbar-width: thin;
   scrollbar-color: #cbd5e1 transparent;
 }
 
 .polished-chat-thread {
+  min-height: 0;
+  height: auto;
+  max-height: 360px;
+  overflow-y: auto;
   border: 1px solid #e2e8f0;
   border-radius: 16px;
   background: #f8fafc;
@@ -582,6 +587,8 @@ textarea {
 }
 
 .chat-message {
+  height: auto;
+  min-height: unset;
   border: 1px solid #e2e8f0;
   border-radius: 14px;
   padding: 10px 12px;
@@ -591,6 +598,9 @@ textarea {
 
 .chat-message.assistant {
   justify-self: start;
+  align-self: flex-start;
+  width: fit-content;
+  max-width: min(920px, 100%);
   color: #0f172a;
 }
 
@@ -627,7 +637,6 @@ textarea {
 .values-section h4, .values-section h5 { margin: 0; }
 .scenario-control { display: grid; gap: 8px; border: 1px solid #e2e8f0; border-radius: 14px; padding: 10px; background: #f8fafc; }
 .scenario-select select { width: 100%; border: 1px solid #d1d9e6; border-radius: 10px; padding: 8px 10px; background: #fff; font: inherit; color: #0f172a; }
-.scenario-meta { margin: 0; font-size: 0.82rem; color: #475569; }
 .compact-values-grid { display: grid; gap: 6px; }
 .status-row { display: flex; justify-content: space-between; gap: 10px; border-bottom: 1px solid #edf2f7; padding-bottom: 6px; }
 .status-row span { text-align: right; }

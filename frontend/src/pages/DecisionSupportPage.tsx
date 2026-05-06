@@ -35,9 +35,11 @@ type ForecastContextResponse = {
 
 type ChatMessage = { role: "assistant" | "user"; content: string };
 
+const CHAT_STORAGE_KEY = "geospatial.decisionSupport.chatMessages.v1";
+
 const SUGGESTED_PROMPTS = [
   "Summarize the current scenario",
-  "Why is this low risk?",
+  "Why is this the current risk level?",
   "What should an operator watch next?",
   "What are the main uncertainties?",
   "Explain the plume direction"
@@ -186,7 +188,26 @@ export function DecisionSupportPage() {
   const [sessionState, setSessionState] = useState<SessionStateSummary | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [chatQuestion, setChatQuestion] = useState("");
-  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [messages, setMessages] = useState<ChatMessage[]>(() => {
+    try {
+      const raw = sessionStorage.getItem(CHAT_STORAGE_KEY);
+      if (!raw) return [];
+      const parsed: unknown = JSON.parse(raw);
+      if (!Array.isArray(parsed)) return [];
+      return parsed
+        .filter((item): item is ChatMessage =>
+          Boolean(
+            item
+            && typeof item === "object"
+            && ((item as ChatMessage).role === "assistant" || (item as ChatMessage).role === "user")
+            && typeof (item as ChatMessage).content === "string"
+          )
+        )
+        .slice(-50);
+    } catch {
+      return [];
+    }
+  });
   const threadRef = useRef<HTMLDivElement | null>(null);
   const lastBriefingKeyRef = useRef<string | null>(null);
 
@@ -230,6 +251,11 @@ export function DecisionSupportPage() {
   const summary = datasetModeEnabled ? {} : (latestForecastBundle?.summary ?? {});
 
   useEffect(() => {
+    try {
+      sessionStorage.setItem(CHAT_STORAGE_KEY, JSON.stringify(messages.slice(-50)));
+    } catch {
+      // ignore storage failures
+    }
     const thread = threadRef.current;
     if (!thread) return;
     thread.scrollTop = thread.scrollHeight;
@@ -404,7 +430,6 @@ export function DecisionSupportPage() {
       setDatasetModeEnabled(true);
       const latest = await httpGet<DecisionSupportLatest>("/decision-support/latest");
       setData(latest);
-      setMessages((prev) => [...prev, { role: "assistant", content: buildOperatorBriefing(latest.briefing) }]);
     } catch {
       // ignore
     }
@@ -458,7 +483,7 @@ export function DecisionSupportPage() {
 
       <section className="panel decision-support-live-panel">
         <h3>Geospatial Conditions</h3>
-        {datasetScenarios.length > 0 ? <div className="scenario-control"><label htmlFor="scenario-select"><strong>Scenario</strong></label><div className="scenario-select"><select id="scenario-select" value={activeScenario} onChange={(e) => void activateDatasetScenario(e.target.value)}>{datasetScenarios.map((item) => <option key={item.scenario_id} value={item.scenario_id}>{item.label}</option>)}</select></div><p className="scenario-meta">Demo dataset scenario · {riskLevel} · {formatUnknown(ctxForecast.status)}</p></div> : null}
+        {datasetScenarios.length > 0 ? <div className="scenario-control"><label htmlFor="scenario-select"><strong>Scenario</strong></label><div className="scenario-select"><select id="scenario-select" value={activeScenario} onChange={(e) => void activateDatasetScenario(e.target.value)}>{datasetScenarios.map((item) => <option key={item.scenario_id} value={item.scenario_id}>{item.label}</option>)}</select></div></div> : null}
         <div className="values-section">
           <h4>Current Conditions</h4>
           <div className="values-grid compact-values-grid">{currentConditionsRows.map(([label, value]) => <div key={label} className="status-row"><strong>{label}</strong><span>{value}</span></div>)}</div>
