@@ -13,24 +13,30 @@ class FakeContextService:
 
 
 class FakeLlmResult:
-    def __init__(self, success=True):
+    def __init__(self, success=True, error="bad json", raw_text="not-json", provider="openai", model="gpt-test"):
         self.success = success
         self.summary = "LLM summary"
         self.risk_level = "high"
         self.recommendation = "Use controls"
         self.uncertainty_note = "Model uncertainty"
+        self.error = error
+        self.raw_text = raw_text
+        self.provider = provider
+        self.model = model
 
 
 class FakeLlmService:
-    def __init__(self, success=True, chat_answer="LLM chat answer"):
+    def __init__(self, success=True, chat_answer="LLM chat answer", error="bad json", raw_text="not-json"):
         self.success = success
         self.chat_answer = chat_answer
+        self.error = error
+        self.raw_text = raw_text
         self.client = self
 
     def interpret_context(self, *, system_prompt, context):
         assert "Return ONLY strict JSON" in system_prompt
         assert isinstance(context, dict)
-        return FakeLlmResult(success=self.success)
+        return FakeLlmResult(success=self.success, error=self.error, raw_text=self.raw_text)
 
     def chat_completion(self, **kwargs):
         if self.chat_answer == "RAISE":
@@ -56,6 +62,8 @@ def test_decision_support_latest_uses_llm_when_context_and_llm_available():
     payload = svc.latest().payload
     assert payload["mode"] == "llm"
     assert payload["runtime_metadata"]["used_llm"] is True
+    assert payload["runtime_metadata"]["llm_attempted"] is True
+    assert payload["runtime_metadata"]["llm_error"] is None
     assert payload["briefing"] == "LLM summary"
 
 
@@ -68,6 +76,8 @@ def test_decision_support_latest_falls_back_to_context_when_llm_fails():
     payload = svc.latest().payload
     assert payload["mode"] == "context"
     assert payload["runtime_metadata"]["used_llm"] is False
+    assert payload["runtime_metadata"]["llm_attempted"] is True
+    assert payload["runtime_metadata"]["llm_error"] == "bad json"
     assert "Plume is present" in payload["briefing"]
 
 

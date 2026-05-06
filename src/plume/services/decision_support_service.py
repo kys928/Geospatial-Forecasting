@@ -25,24 +25,41 @@ class DecisionSupportService:
             "summary, risk_level, recommendation, uncertainty_note."
         )
 
-    def _interpret_context_with_llm(self, context: dict) -> dict | None:
+    def _interpret_context_with_llm(self, context: dict) -> tuple[dict | None, bool, str | None]:
         llm_service = getattr(self.explain_service, "llm_service", None)
         if llm_service is None:
-            return None
+            print("[decision-support] no llm_service configured")
+            return None, False, None
 
-        llm_result = llm_service.interpret_context(
-            system_prompt=self._build_context_llm_prompt(context),
-            context=context,
-        )
+        try:
+            llm_result = llm_service.interpret_context(
+                system_prompt=self._build_context_llm_prompt(context),
+                context=context,
+            )
+        except Exception as exc:
+            error = str(exc).strip() or exc.__class__.__name__
+            print(f"[decision-support] LLM context interpretation failed with exception: {error}")
+            return None, True, error
+
         if not llm_result.success:
-            return None
+            provider = getattr(llm_result, "provider", None) or getattr(getattr(llm_service, "llm_config", None), "provider", "unknown")
+            model = getattr(llm_result, "model", None) or getattr(getattr(llm_service, "llm_config", None), "model", "unknown")
+            error = getattr(llm_result, "error", None)
+            raw_text = getattr(llm_result, "raw_text", None)
+            short_error = str(error).strip() if error else "LLM interpretation returned unsuccessful result"
+            print(
+                "[decision-support] LLM context interpretation unsuccessful "
+                f"provider={provider} model={model} error={short_error} raw_text={raw_text!r}"
+            )
+            return None, True, short_error
 
+        print("[decision-support] LLM context interpretation succeeded")
         return {
             "summary": llm_result.summary or "Unavailable",
             "risk_level": llm_result.risk_level or "unknown",
             "recommendation": llm_result.recommendation or "Continue monitoring current forecast context.",
             "uncertainty_note": llm_result.uncertainty_note or "Grounded only in current forecast context.",
-        }
+        }, True, None
 
     def latest(self, session_id: str | None = None) -> DecisionSupportResponse:
         if self.forecast_context_service is not None:
@@ -65,7 +82,7 @@ class DecisionSupportService:
             else:
                 briefing = "No meaningful plume is currently indicated by the active forecast context."
 
-            llm_explanation = self._interpret_context_with_llm(context if isinstance(context, dict) else {})
+            llm_explanation, llm_attempted, llm_error = self._interpret_context_with_llm(context if isinstance(context, dict) else {})
             if llm_explanation is not None:
                 return DecisionSupportResponse(payload={
                     "mode": "llm",
@@ -80,7 +97,7 @@ class DecisionSupportService:
                     "used_context_fields": ["forecast_context.latest"],
                     "limitations": ["Grounded only in current forecast/session context"],
                     "live_inputs": context.get("runtime", {}) if isinstance(context, dict) else {},
-                    "runtime_metadata": {"context_session_id": session_id, "used_llm": True},
+                    "runtime_metadata": {"context_session_id": session_id, "used_llm": True, "llm_attempted": llm_attempted, "llm_error": llm_error},
                 })
 
             return DecisionSupportResponse(payload={
@@ -96,7 +113,7 @@ class DecisionSupportService:
                 "used_context_fields": ["forecast_context.latest"],
                 "limitations": ["Grounded only in current forecast/session context"],
                 "live_inputs": context.get("runtime", {}) if isinstance(context, dict) else {},
-                "runtime_metadata": {"context_session_id": session_id, "used_llm": False},
+                "runtime_metadata": {"context_session_id": session_id, "used_llm": False, "llm_attempted": llm_attempted, "llm_error": llm_error},
             })
         if session_id is None:
             sessions = self.runtime_client.list_sessions()
