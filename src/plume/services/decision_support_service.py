@@ -16,6 +16,34 @@ class DecisionSupportService:
         self.explain_service = explain_service
         self.forecast_context_service = forecast_context_service
 
+    def _build_context_llm_prompt(self, context: dict) -> str:
+        return (
+            "You are an AI decision-support assistant for geospatial plume forecasts. "
+            "Use only the provided forecast context. "
+            "Do not invent casualties, evacuation orders, exact weather, exact emergency instructions, or certainty. "
+            "Return ONLY strict JSON with exactly these fields: "
+            "summary, risk_level, recommendation, uncertainty_note."
+        )
+
+    def _interpret_context_with_llm(self, context: dict) -> dict | None:
+        llm_service = getattr(self.explain_service, "llm_service", None)
+        if llm_service is None:
+            return None
+
+        llm_result = llm_service.interpret_context(
+            system_prompt=self._build_context_llm_prompt(context),
+            context=context,
+        )
+        if not llm_result.success:
+            return None
+
+        return {
+            "summary": llm_result.summary or "Unavailable",
+            "risk_level": llm_result.risk_level or "unknown",
+            "recommendation": llm_result.recommendation or "Continue monitoring current forecast context.",
+            "uncertainty_note": llm_result.uncertainty_note or "Grounded only in current forecast context.",
+        }
+
     def latest(self, session_id: str | None = None) -> DecisionSupportResponse:
         if self.forecast_context_service is not None:
             context = self.forecast_context_service.latest(session_id=session_id, source="auto").payload
@@ -26,11 +54,35 @@ class DecisionSupportService:
             status = str(forecast.get("status") or "forecast unavailable")
             wind = conditions.get("wind_direction_label") or conditions.get("wind_direction_deg") or "unknown"
             max_concentration = plume_metrics.get("max_concentration")
-            has_plume = ("plume detected" in status.lower()) or (risk.lower() in {"medium", "high"}) or (isinstance(max_concentration, (int, float)) and max_concentration > 0)
+            has_plume = ("plume detected" in status.lower()) or (risk.lower() in {"medium", "high"}) or (
+                isinstance(max_concentration, (int, float)) and max_concentration > 0
+            )
             if has_plume:
-                briefing = f"Plume is present with {risk} risk. Wind direction: {wind}. Use precautionary controls based on current forecast context."
+                briefing = (
+                    f"Plume is present with {risk} risk. Wind direction: {wind}. "
+                    "Use precautionary controls based on current forecast context."
+                )
             else:
                 briefing = "No meaningful plume is currently indicated by the active forecast context."
+
+            llm_explanation = self._interpret_context_with_llm(context if isinstance(context, dict) else {})
+            if llm_explanation is not None:
+                return DecisionSupportResponse(payload={
+                    "mode": "llm",
+                    "briefing": llm_explanation["summary"],
+                    "situation_summary": llm_explanation["summary"],
+                    "risk_level": llm_explanation["risk_level"],
+                    "recommended_action": llm_explanation["recommendation"],
+                    "uncertainty_limitations": llm_explanation["uncertainty_note"],
+                    "forecast_evidence": context,
+                    "system_honesty": "LLM-generated from current forecast context",
+                    "follow_up_questions": [],
+                    "used_context_fields": ["forecast_context.latest"],
+                    "limitations": ["Grounded only in current forecast/session context"],
+                    "live_inputs": context.get("runtime", {}) if isinstance(context, dict) else {},
+                    "runtime_metadata": {"context_session_id": session_id, "used_llm": True},
+                })
+
             return DecisionSupportResponse(payload={
                 "mode": "context",
                 "briefing": briefing,
@@ -73,6 +125,38 @@ class DecisionSupportService:
 
     def chat(self, message: str, session_id: str | None = None) -> dict[str, object]:
         latest = self.latest(session_id=session_id).payload
+        context = latest.get("forecast_evidence")
+        llm_service = getattr(self.explain_service, "llm_service", None)
+
+        if llm_service is not None and isinstance(context, dict):
+            try:
+                prompt = (
+                    "You are an AI decision-support assistant for geospatial plume forecasts. "
+                    "Answer the user's question using only the provided forecast context. "
+                    "Be concise and honest about uncertainty."
+                )
+                response = llm_service.client.chat_completion(
+                    messages=[
+                        {"role": "system", "content": prompt},
+                        {"role": "user", "content": f"Question: {message}\n\nForecast context:\n{context}"},
+                    ],
+                    max_tokens=300,
+                    temperature=0.2,
+                )
+                answer = llm_service._extract_chat_text(response).strip()
+                if answer:
+                    return {
+                        "mode": "llm",
+                        "answer": answer,
+                        "used_context_fields": latest.get("used_context_fields", []),
+                        "limitations": latest.get("limitations", []),
+                        "context_forecast_id": None,
+                        "context_session_id": latest.get("runtime_metadata", {}).get("context_session_id"),
+                        "runtime_metadata": {"used_llm": True},
+                    }
+            except Exception:
+                pass
+
         briefing = str(latest.get("briefing", "")).strip()
         if not briefing or briefing.lower() == "unavailable":
             answer = "I do not have enough forecast context to answer that specific question right now."
@@ -85,4 +169,5 @@ class DecisionSupportService:
             "limitations": latest.get("limitations", []),
             "context_forecast_id": None,
             "context_session_id": latest.get("runtime_metadata", {}).get("context_session_id"),
+            "runtime_metadata": {"used_llm": False},
         }
