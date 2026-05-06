@@ -113,6 +113,10 @@ Backend/session behavior is configured in `configs/backend.yaml`:
 - `state_store`
 - `max_recent_observations`
 - `auto_update_on_ingest`
+- `convlstm_prediction_engine` (`convlstm` default, optional temporary `ridge_baseline`)
+- `convlstm_ridge_model_path` (default `artifacts/models/ridge_plume_baseline.pkl`)
+
+Note: `convlstm_online` can temporarily run a Ridge plume baseline prediction engine via `convlstm_prediction_engine: ridge_baseline` while preserving the same API/session flow. This is not the final production ConvLSTM model.
 
 OpenRemote integration is service-registration-focused. Configure via environment variables documented below; `configs/openremote.yaml` is a lightweight reference only.
 
