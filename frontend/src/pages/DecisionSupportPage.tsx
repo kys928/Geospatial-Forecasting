@@ -83,7 +83,7 @@ function formatNumber(value: unknown, digits = 2): string {
 function formatArea(value: unknown): string {
   const parsed = typeof value === "string" ? Number(value) : value;
   if (typeof parsed !== "number" || Number.isNaN(parsed)) return "Unavailable";
-  if (parsed === 0) return "0 m²";
+  if (parsed <= 0) return "Unavailable";
   if (Math.abs(parsed) >= 10000) return `${(parsed / 10000).toLocaleString(undefined, { maximumFractionDigits: 1 })} ha`;
   return `${parsed.toLocaleString(undefined, { maximumFractionDigits: 0 })} m²`;
 }
@@ -322,7 +322,7 @@ export function DecisionSupportPage() {
   ] as Array<[string, string]>;
   const plumeDetailRows = plumePresent
     ? [
-      ["Affected area", formatArea(affectedAreaM2)],
+      ["Impact extent", formatArea(affectedAreaM2) === "Unavailable" ? "Estimated from plume grid" : formatArea(affectedAreaM2)],
       ["Peak concentration", formatNumber(maxConcentration)],
       ["Direction", formatDirection(dominantSpreadDirection)],
       ...(lastForecastLabel !== "Unavailable" ? [["Forecast time", lastForecastLabel] as [string, string]] : [])
@@ -334,7 +334,6 @@ export function DecisionSupportPage() {
 
   const detailsRows = [
     ["Forecast horizon", formatDurationMinutes(forecastHorizon)],
-    ["Affected area", formatArea(affectedAreaM2)],
     ["Affected cells", formatNumber(affectedCellsRaw, 0)],
     ["Peak concentration", formatNumber(maxConcentration)],
     ["Mean concentration", formatNumber(meanConcentration)],
@@ -398,7 +397,9 @@ export function DecisionSupportPage() {
       const response = await httpPost<{ answer?: string }>("/decision-support/chat", { message: question });
       setMessages((prev) => [...prev, { role: "assistant", content: safeText(response.answer, "No answer available.") }]);
     } catch {
-      const statusText = safeText(ctxForecast.status, plumePresent ? "Plume detected above threshold" : "No meaningful plume above threshold");
+      const statusText = plumePresent
+        ? "Plume detected above threshold"
+        : safeText(ctxForecast.status, "No meaningful plume above threshold");
       const riskText = riskLevel;
       const windText = windSpeed !== "Unavailable" || windDirection !== "Unavailable" ? `Wind ${windSpeed} ${windDirection}`.trim() : "Wind details unavailable";
       const datasetNote = String(ctxForecast.input_source ?? "").toLowerCase() === "dataset_playback" ? "Dataset playback context is approximate and not live observations." : "Uses current forecast context only.";
@@ -437,7 +438,7 @@ export function DecisionSupportPage() {
 
       <section className="panel decision-support-live-panel">
         <h3>Geospatial Conditions</h3>
-        {datasetScenarios.length > 0 ? <div className="values-section"><div className="status-row"><strong>Scenario</strong><span><select value={activeScenario} onChange={(e) => void activateDatasetScenario(e.target.value)}>{datasetScenarios.map((item) => <option key={item.scenario_id} value={item.scenario_id}>{item.label}</option>)}</select></span></div><p className="muted">Dataset playback · not live data</p></div> : null}
+        {datasetScenarios.length > 0 ? <div className="values-section"><div className="status-row"><strong>Scenario</strong><span><select value={activeScenario} onChange={(e) => void activateDatasetScenario(e.target.value)}>{datasetScenarios.map((item) => <option key={item.scenario_id} value={item.scenario_id}>{item.label}</option>)}</select></span></div></div> : null}
         <div className="values-section">
           <h4>Current Conditions</h4>
           <div className="values-grid compact-values-grid">{currentConditionsRows.map(([label, value]) => <div key={label} className="status-row"><strong>{label}</strong><span>{value}</span></div>)}</div>
