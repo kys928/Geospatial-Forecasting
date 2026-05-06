@@ -154,3 +154,43 @@ def test_playback_not_running_stays_on_selected_scenario(tmp_path: Path):
     cfg.playback_state_path.write_text(__import__("json").dumps(state), encoding="utf-8")
     resolved = svc.resolve_current_playback_state()
     assert resolved["active_scenario_id"] == "dataset_low_plume"
+
+def test_low_medium_large_are_distinct_when_candidates_available(tmp_path: Path, monkeypatch):
+    _write_dataset(tmp_path)
+    vals = iter([0.05, 0.25, 0.8])
+    monkeypatch.setattr("plume.services.dataset_scenario_service.predict_ridge_plume", lambda *_: np.full((64, 64), next(vals), dtype=float))
+    svc = DatasetScenarioService(DatasetScenarioConfig("enabled", tmp_path / "dataset_manifest.csv", tmp_path / "windows_manifest_enriched.csv", tmp_path / "windows", 10, tmp_path / "state.json", tmp_path / "online_learning_subset", tmp_path / "playback_state.json", tmp_path / "ridge.pkl"))
+    low = svc.get_scenario("dataset_low_plume")["forecast"]["scenario_id"]
+    med = svc.get_scenario("dataset_medium_plume")["forecast"]["scenario_id"]
+    large = svc.get_scenario("dataset_large_plume")["forecast"]["scenario_id"]
+    assert len({low, med, large}) == 3
+
+
+def test_demo_bbox_preferred_for_large(tmp_path: Path, monkeypatch):
+    _write_dataset(tmp_path)
+    # First two rows are outside configured bbox, third is inside and should be selected for large.
+    manifest = tmp_path / "dataset_manifest.csv"
+    rows = list(csv.DictReader(manifest.open("r", encoding="utf-8")))
+    rows[0]["lat"], rows[0]["lon"] = "10", "10"
+    rows[1]["lat"], rows[1]["lon"] = "20", "20"
+    rows[2]["lat"], rows[2]["lon"] = "52", "5"
+    with manifest.open("w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=rows[0].keys())
+        writer.writeheader(); writer.writerows(rows)
+    vals = iter([0.2, 0.4, 0.8])
+    monkeypatch.setattr("plume.services.dataset_scenario_service.predict_ridge_plume", lambda *_: np.full((64, 64), next(vals), dtype=float))
+    svc = DatasetScenarioService(DatasetScenarioConfig("enabled", manifest, tmp_path / "windows_manifest_enriched.csv", tmp_path / "windows", 10, tmp_path / "state.json", tmp_path / "online_learning_subset", tmp_path / "playback_state.json", tmp_path / "ridge.pkl"))
+    large = svc.get_scenario("dataset_large_plume")
+    assert large["source"]["latitude"] == 52.0
+    assert large["source"]["longitude"] == 5.0
+
+
+def test_compute_predicted_spread_direction_cardinals(tmp_path: Path):
+    _write_dataset(tmp_path)
+    svc = DatasetScenarioService(DatasetScenarioConfig("enabled", tmp_path / "dataset_manifest.csv", tmp_path / "windows_manifest_enriched.csv", tmp_path / "windows", 10, tmp_path / "state.json", tmp_path / "online_learning_subset", tmp_path / "playback_state.json", tmp_path / "ridge.pkl"))
+    east = np.zeros((8, 8), dtype=float); east[:, 6:] = 1.0
+    nw = np.zeros((8, 8), dtype=float); nw[:2, :2] = 1.0
+    none = np.zeros((8, 8), dtype=float)
+    assert svc._compute_predicted_spread_direction(east, 0.1) == "E"
+    assert svc._compute_predicted_spread_direction(nw, 0.1) == "NW"
+    assert svc._compute_predicted_spread_direction(none, 0.1) == "No plume"

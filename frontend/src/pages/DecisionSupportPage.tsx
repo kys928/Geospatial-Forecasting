@@ -349,30 +349,28 @@ export function DecisionSupportPage() {
       return normalized !== "unavailable" && normalized !== "not available" && normalized !== "unavailable m";
     });
   const weatherContext = Object.fromEntries(meteorologyRows.filter(([, value]) => value !== "Unavailable"));
+  const overlayMetadata = (context?.raw?.overlay_metadata as Record<string, unknown> | undefined) ?? {};
+  const overlayFeatures = (context?.raw?.overlay_features as Array<Record<string, unknown>> | undefined) ?? [];
   const rawContext = {
-    forecast: {
-      forecast_id: getNestedValue(summary, "forecast_id"),
-      issued_at: getNestedValue(summary, "issued_at"),
-      timestamp: getNestedValue(summary, "timestamp", "forecast_time", "time"),
-      risk_level: getNestedValue(summary, "risk_level") ?? data?.risk_level,
-      plume_status: plumeStatus,
-      summary_statistics: getNestedValue(summary, "summary_statistics"),
-      source: getNestedValue(summary, "source"),
-      grid: getNestedValue(summary, "grid", "grid_shape", "grid_size")
+    selected_scenario: activeScenario || ctxForecast.scenario_id,
+    forecast: ctxForecast,
+    conditions: ctxConditions,
+    source: ctxSource,
+    plume_metrics: ctxPlume,
+    model_inference: getNestedValue(context, "raw.model_inference", "raw.model_inference") ?? getNestedValue(context, "raw.model_inference"),
+    overlay_summary: {
+      endpoint_path: "/forecast-context/dataset-scenarios/active/overlay",
+      feature_count: overlayMetadata.feature_count,
+      plume_polygon_count: overlayMetadata.plume_polygon_count,
+      source_point_count: overlayMetadata.source_point_count,
+      bbox: overlayMetadata.bbox,
+      first_3_feature_properties: overlayFeatures.slice(0, 3).map((feature) => feature.properties ?? {})
     },
-    inputs: {
-      weather: weatherContext,
-      release: getNestedValue(summary, "release"),
-      observations: getNestedValue(summary, "observations")
-    },
-    raw: {
-      summary,
-      explanation,
-      decision_support: data,
-      session,
-      session_state: sessionState,
-      forecast_context: context,
-      runtime: ctxRuntime
+    raw_reference: {
+      source_file: getNestedValue(context, "raw.source_file"),
+      scenario_id: ctxForecast.scenario_id,
+      window_id: getNestedValue(context, "raw.window_row.window_id"),
+      target_usage: getNestedValue(context, "raw.target_usage")
     }
   };
 

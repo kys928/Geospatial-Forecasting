@@ -202,18 +202,34 @@ class DatasetScenarioService:
         scored = [s for s in scored if s is not None]
         if not scored:
             return {}
-        scored.sort(key=lambda x: x["plume_strength"])
-        lowest = scored[0]
-        medium = scored[len(scored)//2]
-        large_candidates = [s for s in scored if s.get("in_demo_bbox")]
-        large = max((large_candidates or scored), key=lambda x: x["plume_strength"])
+        plume_candidates = [s for s in scored if float(s["plume_metrics"]["max_plume_score"]) > 0 and int(s["plume_metrics"]["plume_cell_count"]) > 0]
+        sorted_plume = sorted(plume_candidates, key=lambda x: x["plume_strength"])
+        if sorted_plume:
+            low_idx = max(0, int(math.floor((len(sorted_plume) - 1) * 0.25)))
+            med_idx = max(0, int(math.floor((len(sorted_plume) - 1) * 0.50)))
+            high_idx = max(0, int(math.floor((len(sorted_plume) - 1) * 0.75)))
+            lowest = sorted_plume[low_idx]
+            medium = sorted_plume[med_idx]
+            large_pool = sorted([s for s in sorted_plume if s.get("in_demo_bbox")], key=lambda x: x["plume_strength"]) or sorted_plume
+            large = large_pool[high_idx if len(large_pool) > high_idx else -1]
+            if len(sorted_plume) >= 3:
+                picks_unique = []
+                seen: set[tuple[str, str]] = set()
+                for entry in (lowest, medium, large):
+                    pair = entry["candidate_key"]
+                    if pair in seen:
+                        entry = next((c for c in sorted_plume if c["candidate_key"] not in seen), entry)
+                        pair = entry["candidate_key"]
+                    seen.add(pair)
+                    picks_unique.append(entry)
+                lowest, medium, large = picks_unique
+        else:
+            scored.sort(key=lambda x: x["plume_strength"])
+            lowest = medium = large = scored[0]
         normal_stream = copy.deepcopy(sorted(scored, key=lambda x: x["window_sort_key"])[0])
         normal_stream["payload"]["forecast"]["status"] = "no meaningful plume above threshold"
         normal_stream["payload"]["forecast"]["risk_level"] = "low"
-        normal_stream["payload"]["plume_metrics"]["max_concentration"] = 0.0
-        normal_stream["payload"]["plume_metrics"]["mean_concentration"] = 0.0
-        normal_stream["payload"]["plume_metrics"]["affected_cells_above_threshold"] = 0
-        normal_stream["payload"]["plume_metrics"]["threshold_used"] = 0.0
+        normal_stream["payload"]["plume_metrics"].update({"max_plume_score": 0.0, "mean_plume_score": 0.0, "plume_cell_count": 0, "detection_threshold": 0.0, "plume_fraction": 0.0, "dominant_spread_direction": "No plume", "max_concentration": 0.0, "mean_concentration": 0.0, "affected_cells_above_threshold": 0, "threshold_used": 0.0})
         normal_stream["payload"]["runtime"]["normal_baseline"] = "deterministic_zero_plume_from_dataset_window"
         picks = {
             "dataset_normal": normal_stream,
@@ -231,6 +247,8 @@ class DatasetScenarioService:
             elif key == "dataset_medium_plume":
                 risk = "medium" if plume_strength > 0 else "low"
             selected["payload"]["forecast"]["risk_level"] = risk
+        if not large.get("in_demo_bbox"):
+            large["payload"].setdefault("runtime", {}).setdefault("limitations", []).append("Large plume scenario fell back to a candidate outside the configured demo bounding box.")
         result = {k: {"payload": v["payload"], "risk": v["payload"]["forecast"]["risk_level"], "status": v["payload"]["forecast"]["status"]} for k, v in picks.items()}
         self._scenario_cache = result
         self._cache_signature = signature
@@ -241,11 +259,21 @@ class DatasetScenarioService:
         input_data = arr["input"]
         target = arr["target"]
         prediction = predict_ridge_plume(input_data, self._get_ridge_artifact())
-        plume_strength = float(np.nanmean(prediction))
+        threshold = float(np.nanmax(prediction)) * 0.1 if float(np.nanmax(prediction)) > 0 else 0.0
+        plume_cell_count = int(np.count_nonzero(prediction > threshold)) if threshold > 0 else int(np.count_nonzero(prediction > 0))
+        plume_fraction = plume_cell_count / float(prediction.size or 1)
+        mean_score = float(np.nanmean(prediction))
+        max_score = float(np.nanmax(prediction))
+        plume_strength = max_score + mean_score + plume_fraction * 10.0
         wind_speed = float(np.nanmedian(input_data[2, 3]))
         payload = self._build_payload(window_row, manifest_row, input_data, target, prediction, plume_strength)
+        source_lat = float(manifest_row.get("lat", 0) or 0)
+        source_lon = float(manifest_row.get("lon", 0) or 0)
+        in_demo_bbox = self._in_demo_bbox(source_lat, source_lon)
+        forecast_id = str(payload["forecast"]["forecast_id"])
+        window_id = str(window_row.get("window_id", ""))
         window_sort_key = f"{manifest_row.get('start_time', '')}_{window_row.get('window_id', '')}"
-        return {"plume_strength": plume_strength, "wind_speed": wind_speed, "payload": payload, "window_sort_key": window_sort_key}
+        return {"plume_strength": plume_strength, "wind_speed": wind_speed, "payload": payload, "window_sort_key": window_sort_key, "plume_metrics": payload["plume_metrics"], "in_demo_bbox": in_demo_bbox, "candidate_key": (forecast_id, window_id)}
 
     def _build_payload(self, window_row, manifest_row, input_data, target, prediction, plume_strength):
         last = input_data[-1]
@@ -260,6 +288,10 @@ class DatasetScenarioService:
         plume_channel = prediction
         threshold = float(np.nanmax(plume_channel)) * 0.1 if float(np.nanmax(plume_channel)) > 0 else 0.0
         affected = int(np.count_nonzero(plume_channel > threshold)) if threshold > 0 else int(np.count_nonzero(plume_channel > 0))
+        plume_fraction = affected / float(plume_channel.size or 1)
+        spread_direction = self._compute_predicted_spread_direction(plume_channel, threshold)
+        if spread_direction is None:
+            spread_direction = self._direction_label(direction)
         if float(np.nanmax(plume_channel)) == 0.0 and affected == 0:
             risk = "low"
         elif plume_strength > 0:
@@ -268,10 +300,37 @@ class DatasetScenarioService:
             "forecast": {"forecast_id": f"dataset_{window_row.get('window_id')}", "timestamp": start.isoformat(), "issued_at": start.isoformat(), "status": "plume detected above threshold" if float(np.nanmax(plume_channel)) > 0 else "no meaningful plume above threshold", "risk_level": risk, "input_source": "dataset_playback", "scenario_id": f"{manifest_row.get('scenario_id')}:{window_row.get('window_id')}"},
             "conditions": {"u10m_ms": u10, "v10m_ms": v10, "wind_speed_ms": wspd, "wind_direction_deg": direction, "wind_direction_label": self._direction_label(direction), "pbl_height_m": float(np.nanmedian(last[6])), "surface_pressure_hpa": float(np.nanmedian(last[7])), "humidity_pct": float(np.nanmedian(last[8])), "temperature_c": float(np.nanmedian(last[9])) - 273.15, "meteorology_source": "kaggle_hysplit_enriched_npz", "meteorology_timestamp": start.isoformat()},
             "source": {"latitude": float(manifest_row.get("lat", 0)), "longitude": float(manifest_row.get("lon", 0)), "pollutant": "demo_release", "emission_rate": float(manifest_row.get("emission_rate", 0)), "release_height_m": float(manifest_row.get("height_m", 0)), "duration_minutes": run_hours * 60, "start_time": start.isoformat(), "end_time": (start + timedelta(hours=run_hours)).isoformat()},
-            "plume_metrics": {"max_concentration": float(np.nanmax(plume_channel)), "mean_concentration": float(np.nanmean(plume_channel)), "affected_cells_above_threshold": affected, "affected_area_m2": None, "affected_area_hectares": None, "dominant_spread_direction": None, "threshold_used": threshold, "grid_rows": int(plume_channel.shape[-2]), "grid_columns": int(plume_channel.shape[-1])},
+            "plume_metrics": {"max_plume_score": float(np.nanmax(plume_channel)), "mean_plume_score": float(np.nanmean(plume_channel)), "detection_threshold": threshold, "plume_cell_count": affected, "plume_fraction": plume_fraction, "dominant_spread_direction": spread_direction, "max_concentration": float(np.nanmax(plume_channel)), "mean_concentration": float(np.nanmean(plume_channel)), "affected_cells_above_threshold": affected, "affected_area_m2": None, "affected_area_hectares": None, "threshold_used": threshold, "grid_rows": int(plume_channel.shape[-2]), "grid_columns": int(plume_channel.shape[-1])},
             "runtime": {"backend": "dataset_playback", "model_name": "ridge_plume_baseline", "model_source": "dataset_input_inference", "model_version": str(self._get_ridge_artifact().get("model_version") or "ridge_baseline_pickle"), "output_space": "ridge_prediction", "input_mode": "dataset_stream_window", "missing_channels": [], "missing_frame_indices": [], "meteorology_available": True, "observations_available": False, "limitations": ["Dataset playback from Kaggle HYSPLIT/ConvLSTM dataset; not live OpenRemote data.", "Values are for demo/development playback.", "Plume values may be transformed dataset values unless model/output-space metadata defines physical units."]},
-            "raw": {"source_file": str(window_row.get("source_file")), "manifest_row": manifest_row, "window_row": window_row, "input_shape": list(input_data.shape), "target_shape": list(target.shape), "prediction_shape": list(prediction.shape), "target_usage": "optional_reference_only", "channel_order": self.CHANNELS, "model_inference": {"artifact_path": str(self._get_ridge_artifact().get("artifact_path", self.config.ridge_model_path)), "input_shape": list(input_data.shape), "prediction_shape": list(prediction.shape), "used_ridge_model": True, "threshold_method": "relative_to_prediction_peak", "threshold_description": "Cutoff used to decide which predicted grid cells are rendered as plume. This is a model-display threshold, not a physical safety threshold."}},
+            "raw": {"source_file": str(window_row.get("source_file")), "manifest_row": manifest_row, "window_row": window_row, "input_shape": list(input_data.shape), "target_shape": list(target.shape), "prediction_shape": list(prediction.shape), "target_usage": "optional_reference_only", "channel_order": self.CHANNELS, "model_inference": {"model_name": "ridge_plume_baseline", "artifact_path": str(self._get_ridge_artifact().get("artifact_path", self.config.ridge_model_path)), "input_shape": list(input_data.shape), "prediction_shape": list(prediction.shape), "used_ridge_model": True, "output_space": "ridge_prediction", "threshold_method": "relative_to_prediction_peak", "threshold_description": "Cutoff used to decide which predicted grid cells are rendered as plume. This is a model-display threshold, not a physical safety threshold."}},
         }
+
+    def _in_demo_bbox(self, lat: float, lon: float) -> bool:
+        min_lat = float(os.getenv("PLUME_DATASET_DEMO_MIN_LAT", "50.7"))
+        max_lat = float(os.getenv("PLUME_DATASET_DEMO_MAX_LAT", "53.5"))
+        min_lon = float(os.getenv("PLUME_DATASET_DEMO_MIN_LON", "4.3"))
+        max_lon = float(os.getenv("PLUME_DATASET_DEMO_MAX_LON", "7.3"))
+        return min_lat <= lat <= max_lat and min_lon <= lon <= max_lon
+
+    def _compute_predicted_spread_direction(self, prediction_grid: np.ndarray, threshold: float) -> str | None:
+        mask = prediction_grid > threshold
+        if not np.any(mask):
+            return "No plume"
+        rows, cols = np.where(mask)
+        weights = prediction_grid[mask].astype(float)
+        if weights.size == 0 or float(np.nansum(weights)) <= 0:
+            return None
+        centroid_row = float(np.average(rows, weights=weights))
+        centroid_col = float(np.average(cols, weights=weights))
+        center_row = (prediction_grid.shape[0] - 1) / 2.0
+        center_col = (prediction_grid.shape[1] - 1) / 2.0
+        dy = center_row - centroid_row
+        dx = centroid_col - center_col
+        if math.hypot(dx, dy) < 0.5:
+            return None
+        angle = (math.degrees(math.atan2(dy, dx)) + 360.0) % 360.0
+        labels = ["E", "NE", "N", "NW", "W", "SW", "S", "SE", "E"]
+        return labels[int((angle + 22.5) // 45)]
 
 
     def get_active_payload(self) -> dict[str, Any]:
