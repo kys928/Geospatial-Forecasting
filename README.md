@@ -149,19 +149,22 @@ When `PLUME_PERSIST_BATCH_EXPLANATION=true`, `POST /forecast` will generate an e
 If `explanation.json` is missing (for older forecasts or when persistence is disabled), the explanation endpoint returns the honest HTTP `409 Conflict` limitation that persisted artifact reconstruction is not implemented.
 
 
-LLM decision-support configuration (local GGUF via llama.cpp):
+LLM decision-support configuration (local GGUF via `llama-cpp-python`, in-process):
 
 ```bash
 export PLUME_EXPLANATION_BACKEND=llm
 export PLUME_LLM_PROVIDER=local-gguf
 export PLUME_LOCAL_LLM_GGUF_PATH="/workspace/llm_runtime/models/Qwen_Qwen2.5-7B-Instruct.Q4_K_M.gguf"
-export PLUME_LLAMA_CPP_BIN="/workspace/llm_runtime/tools/llama.cpp/build/bin/llama-cli"
+export PLUME_LOCAL_LLM_N_GPU_LAYERS=-1
+export PLUME_LOCAL_LLM_N_CTX=4096
 ```
 
 Notes:
 - `HF_TOKEN` is not required when `PLUME_LLM_PROVIDER=local-gguf`.
 - Keep GGUF model artifacts outside this repository.
-- Keep llama.cpp binaries/tools outside this repository.
+- `llama-cli` can still be used for one-off smoke tests, but app runtime inference is in-process via `llama-cpp-python`.
+- RunPod CUDA install command for local provider:
+  `CMAKE_ARGS="-DGGML_CUDA=on" FORCE_CMAKE=1 python -m pip install --force-reinstall --no-cache-dir llama-cpp-python`
 
 
 ### OpenRemote external service registration
