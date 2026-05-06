@@ -255,7 +255,8 @@ function applyGeojsonToMap(
 
   source.setData(normalized as GeoJSON.FeatureCollection);
 
-  const bounds = getFeatureCollectionBounds(normalized);
+  const plumeOnly: GeoJsonFeatureCollection = { ...normalized, features: normalized.features.filter((f) => f.geometry?.type === "Polygon") };
+  const bounds = getFeatureCollectionBounds(plumeOnly.features.length ? plumeOnly : normalized);
   if (bounds && !bounds.isEmpty()) {
     map.fitBounds(bounds, {
       padding: {
@@ -673,7 +674,7 @@ export function ForecastMap({
   }, [geojson]);
 
   useEffect(() => {
-    if (center && mapRef.current) {
+    if (center && mapRef.current && (!geojson || !geojson.features?.some((f) => f.geometry?.type === "Polygon"))) {
       mapRef.current.flyTo({ center, zoom: 11, duration: 800 });
     }
   }, [center]);

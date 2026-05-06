@@ -326,7 +326,7 @@ export function DecisionSupportPage() {
   const plumeDetailRows = plumePresent
     ? [
       ["Impact extent", formatArea(affectedAreaM2) === "Unavailable" ? "Estimated from plume grid" : formatArea(affectedAreaM2)],
-      ["Peak concentration", formatNumber(maxConcentration)],
+      ["Peak plume score", formatNumber(maxConcentration)],
       ["Direction", formatDirection(dominantSpreadDirection)],
       ...(lastForecastLabel !== "Unavailable" ? [["Forecast time", lastForecastLabel] as [string, string]] : [])
     ]
@@ -337,8 +337,8 @@ export function DecisionSupportPage() {
 
   const detailsRows = [
     ["Forecast horizon", formatDurationMinutes(forecastHorizon)],
-    ["Mean concentration", formatNumber(meanConcentration)],
-    ["Threshold", formatUnknown(thresholdUsed)],
+    ["Mean plume score", formatNumber(meanConcentration)],
+    ["Detection threshold", formatUnknown(thresholdUsed)],
     ["Grid size", formatGridSize([ctxPlume.grid_rows, ctxPlume.grid_columns]) === "Unavailable" ? formatGridSize(gridSizeValue) : formatGridSize([ctxPlume.grid_rows, ctxPlume.grid_columns])],
   ] as Array<[string, string]>;
 
@@ -381,7 +381,7 @@ export function DecisionSupportPage() {
     setActiveScenario(scenarioId);
     try {
       await httpPost(`/forecast-context/dataset-scenarios/${scenarioId}/activate`, {});
-      await httpPost("/forecast-context/dataset-playback/state", { enabled: true, active_scenario_id: scenarioId, playback_running: true });
+      await httpPost("/forecast-context/dataset-playback/state", { enabled: true, active_scenario_id: scenarioId, playback_running: false });
       const refreshed = await httpGet<ForecastContextResponse>("/forecast-context/latest?source=dataset");
       setContext(refreshed);
       setDatasetModeEnabled(true);
@@ -404,7 +404,7 @@ export function DecisionSupportPage() {
         : safeText(ctxForecast.status, "No meaningful plume above threshold");
       const riskText = riskLevel;
       const windText = windSpeed !== "Unavailable" || windDirection !== "Unavailable" ? `Wind ${windSpeed} ${windDirection}`.trim() : "Wind details unavailable";
-      const datasetNote = String(ctxForecast.input_source ?? "").toLowerCase() === "dataset_playback" ? "Dataset playback context is approximate and not live observations." : "Uses current forecast context only.";
+      const datasetNote = "Uses current forecast context only.";
       const fallback = `${statusText}. Risk: ${riskText}. ${windText}. ${datasetNote}`;
       setMessages((prev) => [...prev, { role: "assistant", content: fallback }]);
     }

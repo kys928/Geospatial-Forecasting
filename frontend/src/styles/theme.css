@@ -720,3 +720,7 @@ textarea {
 .ops-training-facts dt{font-weight:600;color:#334155;}
 .ops-training-facts dd{margin:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
 .ops-log-window-error{border-color:#efc7cd;background:#fff7f8;}
+
+.technical-details pre { max-height: 320px; overflow: auto; max-width: 100%; }
+.technical-details { overflow: hidden; }
+.values-grid.compact-values-grid { min-width: 0; }
