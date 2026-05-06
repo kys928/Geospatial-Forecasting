@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Literal
 
 from plume.services.explanation_payloads import build_explanation_payload
 
@@ -17,22 +17,30 @@ class ForecastContextService:
         self.explain_service = explain_service
         self.dataset_scenario_service = dataset_scenario_service
 
-    def latest(self, session_id: str | None = None) -> ForecastContextResponse:
+    def latest(self, session_id: str | None = None, source: Literal["auto", "dataset", "session"] = "auto") -> ForecastContextResponse:
+        if source == "dataset":
+            dataset = self._dataset_fallback()
+            if dataset is not None:
+                return ForecastContextResponse(payload=dataset)
+            return ForecastContextResponse(payload=self._empty_context())
+
         if session_id is None:
             sessions = self.runtime_client.list_sessions()
             if not sessions:
-                dataset = self._dataset_fallback()
-                if dataset is not None:
-                    return ForecastContextResponse(payload=dataset)
+                if source == "auto":
+                    dataset = self._dataset_fallback()
+                    if dataset is not None:
+                        return ForecastContextResponse(payload=dataset)
                 return ForecastContextResponse(payload=self._empty_context())
             session_id = sessions[-1].session_id
 
         try:
             result = self.runtime_client.get_latest_session_forecast_result(session_id)
         except (KeyError, ValueError):
-            dataset = self._dataset_fallback()
-            if dataset is not None:
-                return ForecastContextResponse(payload=dataset)
+            if source == "auto":
+                dataset = self._dataset_fallback()
+                if dataset is not None:
+                    return ForecastContextResponse(payload=dataset)
             return ForecastContextResponse(payload=self._empty_context(session_id=session_id))
 
         session_state = self._as_dict(self.runtime_client.get_session_state(session_id))

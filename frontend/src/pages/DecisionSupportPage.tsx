@@ -376,7 +376,7 @@ export function DecisionSupportPage() {
     setActiveScenario(scenarioId);
     try {
       await httpPost(`/forecast-context/dataset-scenarios/${scenarioId}/activate`, {});
-      const refreshed = await httpGet<ForecastContextResponse>("/forecast-context/latest");
+      const refreshed = await httpGet<ForecastContextResponse>("/forecast-context/latest?source=dataset");
       setContext(refreshed);
     } catch {
       // ignore
