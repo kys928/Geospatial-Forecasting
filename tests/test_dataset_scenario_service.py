@@ -52,11 +52,11 @@ def test_dataset_scenarios_and_selection(tmp_path: Path):
     svc = DatasetScenarioService(DatasetScenarioConfig("enabled", tmp_path / "dataset_manifest.csv", tmp_path / "windows_manifest_enriched.csv", tmp_path / "windows", 10, tmp_path / "state.json", tmp_path / "online_learning_subset", tmp_path / "playback_state.json", tmp_path / "ridge.pkl"))
     scenarios = svc.list_scenarios()
     ids = {s["scenario_id"] for s in scenarios}
-    assert "dataset_normal_stream" in ids
-    payload = svc.get_scenario("dataset_normal_stream")
+    assert "dataset_normal" in ids
+    payload = svc.get_scenario("dataset_normal")
     assert payload["runtime"]["backend"] == "dataset_playback"
     assert payload["conditions"]["wind_speed_ms"] == 1.0
-    zero = svc.get_scenario("dataset_lowest_plume")
+    zero = svc.get_scenario("dataset_low_plume")
     assert zero["plume_metrics"]["mean_concentration"] == 0.5
 
 
@@ -136,21 +136,21 @@ def test_playback_running_does_not_advance_by_elapsed_time(tmp_path: Path):
     _write_dataset(tmp_path)
     cfg = DatasetScenarioConfig("enabled", tmp_path / "dataset_manifest.csv", tmp_path / "windows_manifest_enriched.csv", tmp_path / "windows", 10, tmp_path / "state.json", tmp_path / "online_learning_subset", tmp_path / "playback_state.json", tmp_path / "ridge.pkl")
     svc = DatasetScenarioService(cfg)
-    svc.update_playback_state(enabled=True, active_scenario_id="dataset_lowest_plume", playback_running=True, playback_speed_seconds=1, playback_index=0)
+    svc.update_playback_state(enabled=True, active_scenario_id="dataset_low_plume", playback_running=True, playback_speed_seconds=1, playback_index=0)
     state = svc.get_playback_state()
     state["updated_at"] = (datetime.now(timezone.utc) - timedelta(seconds=2)).isoformat()
     cfg.playback_state_path.write_text(__import__("json").dumps(state), encoding="utf-8")
     resolved = svc.resolve_current_playback_state()
-    assert resolved["active_scenario_id"] == "dataset_lowest_plume"
+    assert resolved["active_scenario_id"] == "dataset_low_plume"
 
 
 def test_playback_not_running_stays_on_selected_scenario(tmp_path: Path):
     _write_dataset(tmp_path)
     cfg = DatasetScenarioConfig("enabled", tmp_path / "dataset_manifest.csv", tmp_path / "windows_manifest_enriched.csv", tmp_path / "windows", 10, tmp_path / "state.json", tmp_path / "online_learning_subset", tmp_path / "playback_state.json", tmp_path / "ridge.pkl")
     svc = DatasetScenarioService(cfg)
-    svc.update_playback_state(enabled=True, active_scenario_id="dataset_lowest_plume", playback_running=False, playback_speed_seconds=1, playback_index=0)
+    svc.update_playback_state(enabled=True, active_scenario_id="dataset_low_plume", playback_running=False, playback_speed_seconds=1, playback_index=0)
     state = svc.get_playback_state()
     state["updated_at"] = (datetime.now(timezone.utc) - timedelta(seconds=5)).isoformat()
     cfg.playback_state_path.write_text(__import__("json").dumps(state), encoding="utf-8")
     resolved = svc.resolve_current_playback_state()
-    assert resolved["active_scenario_id"] == "dataset_lowest_plume"
+    assert resolved["active_scenario_id"] == "dataset_low_plume"
