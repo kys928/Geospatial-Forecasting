@@ -1,12 +1,14 @@
 from __future__ import annotations
 
+from typing import Literal
+
 from fastapi import FastAPI, HTTPException
 
 
 def register_forecast_context_routes(app: FastAPI, *, forecast_context_service, dataset_scenario_service) -> None:
     @app.get('/forecast-context/latest')
-    def latest_forecast_context(session_id: str | None = None):
-        return forecast_context_service.latest(session_id=session_id).payload
+    def latest_forecast_context(session_id: str | None = None, source: Literal["auto", "dataset", "session"] = "auto"):
+        return forecast_context_service.latest(session_id=session_id, source=source).payload
 
     @app.get('/forecast-context/dataset-scenarios')
     def list_dataset_scenarios():

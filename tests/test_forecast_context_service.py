@@ -69,20 +69,21 @@ class FakeExplain:
 
 
 class FakeDatasetService:
-    def __init__(self, enabled=True):
+    def __init__(self, enabled=True, active=None):
         self.enabled = enabled
+        self.active = active
 
     def is_enabled(self):
         return self.enabled
 
     def list_scenarios(self):
-        return [{"scenario_id": "dataset_strong_wind"}] if self.enabled else []
+        return [{"scenario_id": "dataset_strong_wind"}, {"scenario_id": "dataset_stable_night"}] if self.enabled else []
 
     def get_active(self):
-        return None
+        return self.active
 
     def get_scenario(self, scenario_id):
-        return {"forecast": {"status": "plume detected above threshold", "input_source": "dataset_playback"}, "conditions": {}, "source": {}, "plume_metrics": {}, "runtime": {}, "raw": {}}
+        return {"forecast": {"status": "plume detected above threshold", "input_source": "dataset_playback", "scenario_id": scenario_id}, "conditions": {}, "source": {}, "plume_metrics": {}, "runtime": {}, "raw": {}}
 
 def _result(summary_stats, summary=None):
     return ForecastRunResult(
@@ -152,3 +153,25 @@ def test_real_session_forecast_wins_over_dataset():
     service = ForecastContextService(runtime_client=runtime, explain_service=FakeExplain(), dataset_scenario_service=FakeDatasetService())
     ctx = service.latest().payload
     assert ctx["forecast"]["forecast_id"] == "f-1"
+
+
+def test_dataset_source_forces_dataset_when_session_exists():
+    runtime = FakeRuntime(sessions=[type("S", (), {"session_id": "s1"})()], result=_result({"max_concentration": 0.1}), state={})
+    service = ForecastContextService(runtime_client=runtime, explain_service=FakeExplain(), dataset_scenario_service=FakeDatasetService(active="dataset_stable_night"))
+    ctx = service.latest(source="dataset").payload
+    assert ctx["forecast"]["input_source"] == "dataset_playback"
+    assert ctx["forecast"]["scenario_id"] == "dataset_stable_night"
+
+
+def test_session_source_does_not_fallback_to_dataset():
+    runtime = FakeRuntime(sessions=[type("S", (), {"session_id": "s1"})()], result=None, state={})
+    service = ForecastContextService(runtime_client=runtime, explain_service=FakeExplain(), dataset_scenario_service=FakeDatasetService())
+    ctx = service.latest(source="session").payload
+    assert ctx["forecast"]["status"] == "forecast unavailable"
+    assert ctx["forecast"]["input_source"] == "unknown"
+
+
+def test_dataset_source_returns_default_when_no_active_scenario():
+    service = ForecastContextService(runtime_client=FakeRuntime(), explain_service=FakeExplain(), dataset_scenario_service=FakeDatasetService(active=None))
+    ctx = service.latest(source="dataset").payload
+    assert ctx["forecast"]["scenario_id"] == "dataset_strong_wind"
