@@ -16,9 +16,21 @@ export function ForecastPage() {
   } = useSessionForecastView();
 
   const [datasetOverlay, setDatasetOverlay] = useState<GeoJsonFeatureCollection | null>(null);
-  const [datasetOverlayNote, setDatasetOverlayNote] = useState<string>("");
   const [datasetCenter, setDatasetCenter] = useState<[number, number] | null>(null);
   const geojson = ((datasetOverlay ?? latestForecastBundle?.geojson) ?? null) as GeoJsonFeatureCollection | null;
+
+  type ActiveDatasetScenarioResponse = {
+    enabled: boolean;
+    available: boolean;
+    active_scenario_id?: string | null;
+    selected_scenario_id?: string | null;
+    scenario?: {
+      source?: {
+        latitude?: number;
+        longitude?: number;
+      };
+    } | null;
+  };
 
   const runLatestForecast = async () => {
     try {
@@ -36,30 +48,35 @@ export function ForecastPage() {
   }, []);
 
   useEffect(() => {
-    httpGet<{ enabled: boolean; available: boolean }>("/forecast-context/dataset-scenarios/active")
+    httpGet<ActiveDatasetScenarioResponse>("/forecast-context/dataset-scenarios/active")
       .then((active) => {
-        if (!active.enabled || !active.available) {
+        const hasActiveScenario = Boolean(active.active_scenario_id ?? active.selected_scenario_id);
+        if (!active.enabled || !active.available || !hasActiveScenario) {
           setDatasetOverlay(null);
-          setDatasetOverlayNote("");
+          setDatasetCenter(null);
+          void runLatestForecast();
           return;
         }
+
+        const lat = active?.scenario?.source?.latitude;
+        const lon = active?.scenario?.source?.longitude;
+        if (typeof lat === "number" && typeof lon === "number") {
+          setDatasetCenter([lon, lat]);
+        }
+
         return httpGet<GeoJsonFeatureCollection>("/forecast-context/dataset-scenarios/active/overlay")
-          .then(async (overlay) => {
+          .then((overlay) => {
             setDatasetOverlay(overlay);
-            const activeCtx = await httpGet<any>("/forecast-context/dataset-scenarios/active");
-            const lat = activeCtx?.scenario?.source?.latitude;
-            const lon = activeCtx?.scenario?.source?.longitude;
-            if (typeof lat === "number" && typeof lon === "number") setDatasetCenter([lon, lat]);
-            setDatasetOverlayNote("Dataset playback plume · Approximate source-centered grid · Not live data");
           })
           .catch(() => {
             setDatasetOverlay(null);
-            setDatasetOverlayNote("Dataset plume overlay unavailable.");
+            void runLatestForecast();
           });
       })
       .catch(() => {
         setDatasetOverlay(null);
-        setDatasetOverlayNote("");
+        setDatasetCenter(null);
+        void runLatestForecast();
       });
   }, []);
 
@@ -76,7 +93,6 @@ export function ForecastPage() {
           onSelectFeature={setSelectedFeature}
           center={datasetCenter}
         />
-        {datasetOverlayNote ? <p className="muted" style={{ marginTop: 8 }}>{datasetOverlayNote}</p> : null}
       </main>
     </AppShell>
   );
