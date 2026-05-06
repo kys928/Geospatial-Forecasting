@@ -41,7 +41,6 @@ export function OpsOverviewTab() {
   const gpu = status?.gpu ?? {};
   const worker = status?.worker_status ?? {};
   const jobs = status?.jobs ?? {};
-  const recentEvents = Array.isArray(status?.recent_events) ? status?.recent_events : [];
 
   const cpuPercent = percent(host.cpu_percent);
   const memoryPercent = percent(host.memory_percent);
@@ -71,42 +70,41 @@ export function OpsOverviewTab() {
           <BarCard label="Disk usage" percent={diskPercent} value={formatPercent(diskPercent)} detail={`${formatBytesGiB(host.disk_used_bytes)} / ${formatBytesGiB(host.disk_total_bytes)}`} />
           <BarCard label="Volume usage" percent={volumePercent} value={formatPercent(volumePercent)} detail={`${formatBytesGiB(host.volume_used_bytes)} / ${formatBytesGiB(host.volume_total_bytes)}`} />
           <BarCard label="Uptime" percent={null} value={formatDuration(host.uptime_seconds)} detail={`Processes: ${String(host.process_count ?? "Not reported")}`} />
-          <BarCard label="GPU details" percent={null} value={`Temp: ${String(gpu.temperature_c ?? "Not reported")}`} detail={`Power: ${String(gpu.power_w ?? "Not reported")} W, Driver: ${String(gpu.driver_version ?? "Not reported")}, CUDA: ${String(gpu.cuda_version ?? "Not reported")}`} />
-        </div>
-      </section>
-
-      <section className="panel ops-service-grid">
-        <div>
-          <h3>Worker status</h3>
-          <p>{workerSummary(worker)}</p>
-          <p className="muted">Forecast worker: {String(worker.forecast_worker_status ?? "Not reported")}</p>
-          <p className="muted">Retraining worker: {String(worker.retraining_worker_status ?? "Not reported")}</p>
-        </div>
-        <div>
-          <h3>Job activity</h3>
-          <p>Queued: {String(retraining.queued ?? "Not reported")}</p>
-          <p>Running: {String(retraining.running ?? "Not reported")}</p>
-          <p>Failed: {String(retraining.failed ?? "Not reported")}</p>
+          <BarCard label="GPU details" percent={null} value={gpu.available ? (gpuPercent === null ? "Available" : formatPercent(gpuPercent)) : "Not reported"} detail={buildGpuDetail(gpu)} />
         </div>
       </section>
 
       <section className="panel">
-        <h3>Recent activity</h3>
-        {recentEvents.length === 0 ? <p className="muted">No recent activity reported.</p> : null}
-        {recentEvents.length > 0 ? (
-          <div className="ops-events-list">
-            {recentEvents.map((event, index) => (
-              <div className="ops-event-row" key={`${String(event.timestamp ?? "event")}-${index}`}>
-                <span>{formatTimestamp(event.timestamp)}</span>
-                <strong>{String(event.event_type ?? "Not reported")}</strong>
-                <span>{typeof event.payload === "object" && event.payload ? JSON.stringify(event.payload) : "Not reported"}</span>
-              </div>
-            ))}
+        <h3>Workspace status</h3>
+        <p>Forecast workspace is available.</p>
+        <p>Training worker is {String(worker.retraining_worker_status ?? "not reported").toLowerCase()}.</p>
+        <p>No retraining jobs are currently running.</p>
+        <details>
+          <summary>Technical worker/job details</summary>
+          <div className="ops-service-grid" style={{ marginTop: 10 }}>
+            <div>
+              <p>{workerSummary(worker)}</p>
+              <p className="muted">Forecast worker: {String(worker.forecast_worker_status ?? "Not reported")}</p>
+              <p className="muted">Retraining worker: {String(worker.retraining_worker_status ?? "Not reported")}</p>
+            </div>
+            <div>
+              <p>Queued: {String(retraining.queued ?? "Not reported")}</p>
+              <p>Running: {String(retraining.running ?? "Not reported")}</p>
+              <p>Failed: {String(retraining.failed ?? "Not reported")}</p>
+            </div>
           </div>
-        ) : null}
+        </details>
       </section>
     </div>
   );
+}
+
+function buildGpuDetail(gpu: Record<string, unknown>): string {
+  if (!gpu.available) return String(gpu.reason ?? "Not reported");
+  const detail: string[] = [];
+  if (typeof gpu.driver_version === "string" && gpu.driver_version) detail.push(`Driver: ${gpu.driver_version}`);
+  if (typeof gpu.cuda_version === "string" && gpu.cuda_version) detail.push(`CUDA: ${gpu.cuda_version}`);
+  return detail.length ? detail.join(" · ") : "Driver/CUDA details unavailable";
 }
 
 function GaugeCard({ label, percent, value, detail }: { label: string; percent: number | null; value: string; detail: string }) {

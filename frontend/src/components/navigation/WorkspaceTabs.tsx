@@ -3,7 +3,7 @@ import { NavLink } from "react-router-dom";
 const tabs = [
   { label: "Map", to: "/forecast" },
   { label: "Forecast Overview", to: "/decision-support" },
-  { label: "Ops", to: "/ops" }
+  { label: "Workspace", to: "/ops" }
 ];
 
 export function WorkspaceTabs() {

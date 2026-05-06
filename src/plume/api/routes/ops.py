@@ -7,6 +7,7 @@ from pathlib import Path
 import shutil
 import subprocess
 import platform
+import re
 
 from fastapi import Depends, FastAPI, Header, HTTPException
 import yaml
@@ -224,9 +225,25 @@ def _collect_gpu_metrics() -> dict[str, object]:
         return {"available": False, "reason": "GPU not available"}
     cmd = [
         "nvidia-smi",
-        "--query-gpu=name,utilization.gpu,memory.used,memory.total,temperature.gpu,power.draw,driver_version,cuda_version",
+        "--query-gpu=name,utilization.gpu,memory.used,memory.total,temperature.gpu,power.draw,driver_version",
         "--format=csv,noheader,nounits",
     ]
+
+    def _parse_optional_float(value: str) -> float | None:
+        cleaned = value.strip()
+        if cleaned in {"", "N/A", "Not Supported"}:
+            return None
+        try:
+            return float(cleaned)
+        except ValueError:
+            return None
+
+    def _parse_optional_str(value: str) -> str | None:
+        cleaned = value.strip()
+        if cleaned in {"", "N/A", "Not Supported"}:
+            return None
+        return cleaned
+
     try:
         out = subprocess.check_output(cmd, text=True, timeout=2).strip()
     except Exception:
@@ -235,19 +252,35 @@ def _collect_gpu_metrics() -> dict[str, object]:
         return {"available": False, "reason": "GPU metrics not reported"}
     first = out.splitlines()[0]
     parts = [p.strip() for p in first.split(",")]
-    if len(parts) < 8:
+    if len(parts) < 7:
         return {"available": False, "reason": "GPU metrics not reported"}
+    utilization = _parse_optional_float(parts[1])
+    memory_used = _parse_optional_float(parts[2])
+    memory_total = _parse_optional_float(parts[3])
+    temperature = _parse_optional_float(parts[4])
+    power = _parse_optional_float(parts[5])
+    driver_version = _parse_optional_str(parts[6])
+    cuda_version = None
+    try:
+        smi_text = subprocess.check_output(["nvidia-smi"], text=True, timeout=2)
+        match = re.search(r"CUDA Version:\s*([0-9]+(?:\.[0-9]+)?)", smi_text)
+        if match:
+            cuda_version = match.group(1)
+    except Exception:
+        cuda_version = None
+
+    available = bool(parts[0].strip()) and utilization is not None and memory_used is not None and memory_total is not None
     return {
-        "available": True,
+        "available": available,
         "name": parts[0],
-        "utilization_percent": float(parts[1]),
-        "memory_used_mib": float(parts[2]),
-        "memory_total_mib": float(parts[3]),
-        "vram_percent": (float(parts[2]) / float(parts[3]) * 100.0) if float(parts[3]) > 0 else None,
-        "temperature_c": float(parts[4]),
-        "power_w": float(parts[5]),
-        "driver_version": parts[6],
-        "cuda_version": parts[7],
+        "utilization_percent": utilization,
+        "memory_used_mib": memory_used,
+        "memory_total_mib": memory_total,
+        "vram_percent": (memory_used / memory_total * 100.0) if memory_used is not None and memory_total is not None and memory_total > 0 else None,
+        "temperature_c": temperature,
+        "power_w": power,
+        "driver_version": driver_version,
+        "cuda_version": cuda_version,
     }
 
 
