@@ -3,11 +3,13 @@ from plume.api.routes.ops import register_ops_routes
 from plume.api.routes.service import register_service_routes
 from plume.api.routes.sessions import register_session_routes
 from plume.api.routes.decision_support import register_decision_support_routes
+from plume.api.routes.forecast_context import register_forecast_context_routes
 
 __all__ = [
     "register_service_routes",
     "register_forecast_routes",
     "register_session_routes",
     "register_decision_support_routes",
+    "register_forecast_context_routes",
     "register_ops_routes",
 ]
