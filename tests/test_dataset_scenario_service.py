@@ -31,7 +31,7 @@ def _write_dataset(root: Path):
 
 def test_dataset_scenarios_and_selection(tmp_path: Path):
     _write_dataset(tmp_path)
-    svc = DatasetScenarioService(DatasetScenarioConfig("enabled", tmp_path / "dataset_manifest.csv", tmp_path / "windows_manifest_enriched.csv", tmp_path / "windows", 10, tmp_path / "state.json"))
+    svc = DatasetScenarioService(DatasetScenarioConfig("enabled", tmp_path / "dataset_manifest.csv", tmp_path / "windows_manifest_enriched.csv", tmp_path / "windows", 10, tmp_path / "state.json", tmp_path / "online_learning_subset"))
     scenarios = svc.list_scenarios()
     ids = {s["scenario_id"] for s in scenarios}
     assert "dataset_strong_wind" in ids
@@ -43,5 +43,30 @@ def test_dataset_scenarios_and_selection(tmp_path: Path):
 
 
 def test_disabled_or_missing_returns_empty(tmp_path: Path):
-    svc = DatasetScenarioService(DatasetScenarioConfig("enabled", tmp_path / "missing.csv", tmp_path / "missing2.csv", tmp_path / "missing", 10, tmp_path / "state.json"))
+    svc = DatasetScenarioService(DatasetScenarioConfig("enabled", tmp_path / "missing.csv", tmp_path / "missing2.csv", tmp_path / "missing", 10, tmp_path / "state.json", tmp_path / "online_learning_subset"))
     assert svc.list_scenarios() == []
+
+
+def test_plume_metrics_use_plume_channel_not_temperature_channel(tmp_path: Path):
+    windows = tmp_path / "windows"
+    windows.mkdir(parents=True)
+
+    with (tmp_path / "dataset_manifest.csv").open("w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=["scenario_id", "start_time", "lat", "lon", "height_m", "run_hours", "emission_rate", "sample_path"])
+        writer.writeheader()
+        writer.writerow({"scenario_id": "s1", "start_time": "2026-01-01T00:00:00Z", "lat": "1", "lon": "2", "height_m": "10", "run_hours": "1", "emission_rate": "5", "sample_path": "windows/w1.npz"})
+
+    with (tmp_path / "windows_manifest_enriched.csv").open("w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=["window_id", "scenario_id", "sample_path", "input_shape_new", "ok", "source_file"])
+        writer.writeheader()
+        writer.writerow({"window_id": "w1", "scenario_id": "s1", "sample_path": "w1.npz", "input_shape_new": "(3, 10, 64, 64)", "ok": "true", "source_file": "demo"})
+
+    input_data = np.zeros((3, 10, 64, 64), dtype=np.float32)
+    target = np.zeros((1, 10, 64, 64), dtype=np.float32)
+    target[0, 0, :, :] = 0.25
+    target[0, 9, :, :] = 290.0
+    np.savez(windows / "w1.npz", input=input_data, target=target)
+
+    svc = DatasetScenarioService(DatasetScenarioConfig("enabled", tmp_path / "dataset_manifest.csv", tmp_path / "windows_manifest_enriched.csv", windows, 10, tmp_path / "state.json", tmp_path / "online_learning_subset"))
+    payload = svc.get_scenario("dataset_large_plume")
+    assert payload["plume_metrics"]["max_concentration"] == 0.25
