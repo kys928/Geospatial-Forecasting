@@ -195,3 +195,13 @@ def test_dataset_source_returns_active_scenario_after_activation():
     service = ForecastContextService(runtime_client=FakeRuntime(), explain_service=FakeExplain(), dataset_scenario_service=FakeDatasetService(active="dataset_stable_night"))
     ctx = service.latest(source="dataset").payload
     assert ctx["forecast"]["scenario_id"] == "dataset_stable_night"
+
+def test_dataset_calls_preserve_active_scenario_across_endpoints_style_calls():
+    dataset = FakeDatasetService(active="dataset_stable_night")
+    service = ForecastContextService(runtime_client=FakeRuntime(), explain_service=FakeExplain(), dataset_scenario_service=dataset)
+    latest1 = service.latest(source="dataset").payload
+    latest2 = service.latest(source="dataset").payload
+    active = service._dataset_context(require_playback_enabled=False)
+    assert latest1["forecast"]["scenario_id"] == "dataset_stable_night"
+    assert latest2["forecast"]["scenario_id"] == "dataset_stable_night"
+    assert active["forecast"]["scenario_id"] == "dataset_stable_night"
