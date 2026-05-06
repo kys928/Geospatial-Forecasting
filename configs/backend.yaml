@@ -9,3 +9,6 @@ convlstm_input_mode: degraded
 
 use_model_registry: false
 model_registry_path: null
+
+convlstm_prediction_engine: convlstm
+convlstm_ridge_model_path: artifacts/models/ridge_plume_baseline.pkl

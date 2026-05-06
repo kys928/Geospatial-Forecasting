@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import pickle
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -392,3 +393,51 @@ def test_convlstm_backend_follows_approved_activation_and_rollback_lifecycle(tmp
     session_after_rollback = backend_after_rollback.create_session()
     assert session_after_rollback.runtime_metadata["model_version"] == "active-1"
     assert session_after_rollback.runtime_metadata["model_load"]["resolved_active_model"]["checkpoint_path"] == str(active_checkpoint)
+
+
+class _PickleFakeRidgeModel:
+    def predict(self, features: np.ndarray) -> np.ndarray:
+        return np.linspace(0.0, 1.0, 256, dtype=float)[None, :]
+
+
+def test_convlstm_backend_ridge_engine_predicts_with_same_backend_name(tmp_path: Path):
+    artifact_path = tmp_path / "ridge.pkl"
+    artifact_path.write_bytes(pickle.dumps({"model": _PickleFakeRidgeModel(), "downsample_factor": 4}))
+    _write_backend_yaml(
+        tmp_path,
+        {
+            "default_backend": "convlstm_online",
+            "fallback_backend": "gaussian_fallback",
+            "state_store": "in_memory",
+            "convlstm_sequence_length": 3,
+            "convlstm_input_channels": 10,
+            "convlstm_prediction_engine": "ridge_baseline",
+            "convlstm_ridge_model_path": str(artifact_path),
+        },
+    )
+    backend = ConvLSTMBackend(config=Config(config_dir=tmp_path))
+    session = backend.create_session()
+    state = backend.initialize_state(session)
+    request = PredictionRequest(session_id=session.session_id, grid_spec=_contract_grid_spec(), scenario=Config().load_scenario())
+    forecast = backend.predict(state, request)
+
+    assert session.backend_name == "convlstm_online"
+    assert state.internal_state["prediction_engine"] == "ridge_baseline"
+    assert forecast.concentration_grid.shape == (64, 64)
+
+
+def test_convlstm_backend_ridge_engine_missing_artifact_raises(tmp_path: Path):
+    _write_backend_yaml(
+        tmp_path,
+        {
+            "default_backend": "convlstm_online",
+            "fallback_backend": "gaussian_fallback",
+            "state_store": "in_memory",
+            "convlstm_sequence_length": 3,
+            "convlstm_input_channels": 10,
+            "convlstm_prediction_engine": "ridge_baseline",
+            "convlstm_ridge_model_path": str(tmp_path / "missing.pkl"),
+        },
+    )
+    with pytest.raises(FileNotFoundError, match="model artifact was not found"):
+        ConvLSTMBackend(config=Config(config_dir=tmp_path))

@@ -8,6 +8,7 @@ from uuid import uuid4
 from plume.adapters.convlstm_input_adapter import ConvLSTMInputAdapter
 from plume.backends.base import BaseBackend
 from plume.models.convlstm import MinimalConvLSTMModel
+from plume.models.ridge_plume_baseline import load_ridge_artifact, predict_ridge_plume
 from plume.models.convlstm_contract import (
     CONVLSTM_CHANNEL_MANIFEST,
     CONVLSTM_CONTRACT_VERSION,
@@ -48,6 +49,12 @@ class ConvLSTMBackend(BaseBackend):
             input_channels=self.input_channels,
             input_mode=self.input_mode,
         )
+        self.prediction_engine = str(self.backend_config.get("convlstm_prediction_engine", "convlstm")).strip().lower()
+        if self.prediction_engine not in {"convlstm", "ridge_baseline"}:
+            raise ValueError(f"Unsupported convlstm_prediction_engine: {self.prediction_engine}")
+        self.ridge_model_path = self.backend_config.get("convlstm_ridge_model_path", "artifacts/models/ridge_plume_baseline.pkl")
+        self.ridge_artifact: dict[str, object] | None = None
+
         self.model = MinimalConvLSTMModel(
             input_channels=self.input_channels,
             hidden_channels=hidden_channels,
@@ -76,7 +83,6 @@ class ConvLSTMBackend(BaseBackend):
             "load_status": "not_attempted",
         }
         self._initialize_model_weights()
-
 
     def _require_contract_value(self, key: str, expected: int) -> int:
         configured = self.backend_config.get(key, expected)
@@ -128,23 +134,50 @@ class ConvLSTMBackend(BaseBackend):
                 "checkpoint_path": str(Path(checkpoint)),
                 "checkpoint_metadata": metadata,
             }
-            return
 
-        if self.init_mode == "checkpoint_required":
-            raise ValueError("ConvLSTM init_mode=checkpoint_required but convlstm_checkpoint_path was not provided")
-        if self.init_mode != "random_init":
-            raise ValueError(f"Unsupported convlstm_init_mode: {self.init_mode}")
+        else:
+            if self.init_mode == "checkpoint_required":
+                raise ValueError("ConvLSTM init_mode=checkpoint_required but convlstm_checkpoint_path was not provided")
+            if self.init_mode != "random_init":
+                raise ValueError(f"Unsupported convlstm_init_mode: {self.init_mode}")
 
-        self.model_source = "random_init"
-        self.model_version = f"random_seed_{self.backend_config.get('convlstm_random_seed', 7)}"
-        self.output_space = "demo_raw_physical"
-        self.load_metadata = {
-            **self.load_metadata,
-            "load_status": "random_init",
-            "model_source": self.model_source,
-            "model_version": self.model_version,
-            "output_space": self.output_space,
-        }
+            self.model_source = "random_init"
+            self.model_version = f"random_seed_{self.backend_config.get('convlstm_random_seed', 7)}"
+            self.output_space = "demo_raw_physical"
+            self.load_metadata = {
+                **self.load_metadata,
+                "load_status": "random_init",
+                "model_source": self.model_source,
+                "model_version": self.model_version,
+                "output_space": self.output_space,
+            }
+
+        if self.prediction_engine == "ridge_baseline":
+            resolved = Path(str(self.ridge_model_path)).expanduser()
+            if not resolved.is_absolute():
+                resolved = Path.cwd() / resolved
+            resolved = resolved.resolve()
+            self.ridge_artifact = load_ridge_artifact(resolved)
+            self.model_source = "ridge_baseline_temporary"
+            self.model_version = str(self.ridge_artifact.get("model_version") or "ridge_baseline_pickle")
+            self.output_space = "demo_raw_physical"
+            self.load_metadata = {
+                **self.load_metadata,
+                "model_source": self.model_source,
+                "model_version": self.model_version,
+                "output_space": self.output_space,
+                "prediction_engine": self.prediction_engine,
+                "ridge_model_path": str(resolved),
+                "ridge_load_status": "loaded",
+                "ridge_downsample_factor": int(self.ridge_artifact.get("downsample_factor", 4)),
+                "temporary_model_substitution": True,
+            }
+        else:
+            self.load_metadata = {
+                **self.load_metadata,
+                "prediction_engine": self.prediction_engine,
+                "temporary_model_substitution": False,
+            }
 
     def create_session(self, *, model_name: str | None = None, metadata: dict[str, object] | None = None) -> BackendSession:
         now = datetime.now(timezone.utc)
@@ -166,9 +199,12 @@ class ConvLSTMBackend(BaseBackend):
                 "model_load": self.load_metadata,
                 "output_space": self.output_space,
                 "input_mode": self.input_mode,
+                "prediction_engine": self.prediction_engine,
+                "temporary_model_substitution": self.prediction_engine == "ridge_baseline",
                 "backend_limitations": (
-                    "ConvLSTM runs inference with current state; "
-                    "gradient-based online training is not implemented."
+                    "ConvLSTM backend API is active, but prediction is temporarily served by a Ridge plume baseline artifact. This is not the final ConvLSTM model."
+                    if self.prediction_engine == "ridge_baseline"
+                    else "ConvLSTM runs inference with current state; gradient-based online training is not implemented."
                 )
             },
         )
@@ -189,6 +225,9 @@ class ConvLSTMBackend(BaseBackend):
                 "sequence_length": self.sequence_length,
                 "expected_input_shape": (self.sequence_length, self.input_channels, 0, 0),
                 "inference_input_mode": self.input_mode,
+                "prediction_engine": self.prediction_engine,
+                "temporary_model_substitution": self.prediction_engine == "ridge_baseline",
+                "ridge_model_path": str(self.ridge_model_path),
                 "inference_contract": {
                     "contract_version": CONVLSTM_CONTRACT_VERSION,
                     "input_shape_order": "(T, C, H, W)",
@@ -248,13 +287,23 @@ class ConvLSTMBackend(BaseBackend):
         adapter_result = self.input_adapter.prepare(state=state, scenario=scenario, grid_spec=grid_spec)
         state.internal_state["expected_input_shape"] = adapter_result.tensor.shape
         state.internal_state["last_input_adapter_metadata"] = adapter_result.metadata
-        concentration_grid = self.model.forward(adapter_result.tensor)
+        if self.prediction_engine == "ridge_baseline":
+            concentration_grid = self._predict_with_ridge(adapter_result.tensor)
+        else:
+            concentration_grid = self.model.forward(adapter_result.tensor)
         return Forecast(
             concentration_grid=concentration_grid,
             timestamp=datetime.now(timezone.utc),
             scenario=scenario,
             grid_spec=grid_spec,
         )
+
+    def _predict_with_ridge(self, input_tensor) -> object:
+        if self.ridge_artifact is None:
+            raise RuntimeError("Ridge baseline prediction engine is enabled, but artifact is not loaded")
+        if input_tensor.shape != (3, 10, 64, 64):
+            raise ValueError(f"Ridge baseline expects input shape (3, 10, 64, 64), got {input_tensor.shape}")
+        return predict_ridge_plume(input_tensor, self.ridge_artifact)
 
     def summarize_state(self, state: BackendState) -> dict[str, object]:
         return {
