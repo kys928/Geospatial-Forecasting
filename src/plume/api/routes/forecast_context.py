@@ -19,6 +19,13 @@ def register_forecast_context_routes(app: FastAPI, *, forecast_context_service, 
     def get_active_dataset_scenario():
         return dataset_scenario_service.get_active_payload()
 
+    @app.get('/forecast-context/dataset-scenarios/active/overlay')
+    def get_active_dataset_scenario_overlay():
+        try:
+            return dataset_scenario_service.overlay_active_geojson()
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="Dataset scenario overlay unavailable") from exc
+
     @app.get('/forecast-context/dataset-scenarios/{scenario_id}')
     def get_dataset_scenario(scenario_id: str):
         try:
@@ -42,9 +49,35 @@ def register_forecast_context_routes(app: FastAPI, *, forecast_context_service, 
         except KeyError as exc:
             raise HTTPException(status_code=404, detail="Dataset scenario overlay unavailable") from exc
 
-    @app.get('/forecast-context/dataset-scenarios/active/overlay')
-    def get_active_dataset_scenario_overlay():
-        try:
-            return dataset_scenario_service.overlay_active_geojson()
-        except KeyError as exc:
-            raise HTTPException(status_code=404, detail="Dataset scenario overlay unavailable") from exc
+    @app.get('/forecast-context/dataset-playback/state')
+    def get_dataset_playback_state():
+        return dataset_scenario_service.get_playback_state()
+
+    @app.post('/forecast-context/dataset-playback/state')
+    def set_dataset_playback_state(payload: dict[str, object]):
+        return dataset_scenario_service.update_playback_state(
+            enabled=bool(payload.get("enabled", False)),
+            active_scenario_id=payload.get("active_scenario_id") if isinstance(payload.get("active_scenario_id"), str) else None,
+        )
+
+    @app.post('/forecast-context/dataset-playback/start')
+    def start_dataset_playback():
+        state = dataset_scenario_service.get_playback_state()
+        return dataset_scenario_service.update_playback_state(
+            enabled=True,
+            active_scenario_id=state.get("active_scenario_id") if isinstance(state.get("active_scenario_id"), str) else None,
+            playback_running=True,
+        )
+
+    @app.post('/forecast-context/dataset-playback/stop')
+    def stop_dataset_playback():
+        state = dataset_scenario_service.get_playback_state()
+        return dataset_scenario_service.update_playback_state(
+            enabled=bool(state.get("enabled", False)),
+            active_scenario_id=state.get("active_scenario_id") if isinstance(state.get("active_scenario_id"), str) else None,
+            playback_running=False,
+        )
+
+    @app.post('/forecast-context/dataset-playback/next')
+    def next_dataset_playback_step():
+        return dataset_scenario_service.playback_next()

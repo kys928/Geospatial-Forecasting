@@ -500,3 +500,27 @@ def test_ops_worker_status_requires_read_access(monkeypatch, tmp_path: Path):
 
     response = client.get("/ops/workers/status")
     assert response.status_code == 401
+
+def test_ops_system_status_handles_missing_worker_status(monkeypatch, tmp_path: Path):
+    for key, value in _seed_ops_files(tmp_path).items():
+        monkeypatch.setenv(key, value)
+    monkeypatch.setenv("PLUME_OPS_AUTH_ENABLED", "false")
+    monkeypatch.setenv("PLUME_WORKER_STATUS_PATH", str(tmp_path / "missing" / "worker.json"))
+    client = TestClient(create_app())
+    response = client.get("/ops/system/status")
+    assert response.status_code == 200
+    assert response.json()["worker_status"] == {}
+
+
+def test_ops_system_status_reads_worker_status_file(monkeypatch, tmp_path: Path):
+    for key, value in _seed_ops_files(tmp_path).items():
+        monkeypatch.setenv(key, value)
+    monkeypatch.setenv("PLUME_OPS_AUTH_ENABLED", "false")
+    worker_path = tmp_path / "worker" / "status.json"
+    worker_path.parent.mkdir(parents=True, exist_ok=True)
+    worker_path.write_text(json.dumps({"state": "running"}), encoding="utf-8")
+    monkeypatch.setenv("PLUME_WORKER_STATUS_PATH", str(worker_path))
+    client = TestClient(create_app())
+    response = client.get("/ops/system/status")
+    assert response.status_code == 200
+    assert response.json()["worker_status"]["state"] == "running"

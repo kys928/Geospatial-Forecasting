@@ -298,7 +298,7 @@ def register_ops_routes(app: FastAPI, *, forecast_service, dispatch_worker=dispa
         jobs_store = RetrainingJobStore(paths["jobs"])
         jobs = jobs_store.list_jobs()
         events = _load_recent_events(paths["events"], limit=8)
-        worker_status = WorkerStatusStore(_worker_status_path()).read()
+        worker_status = WorkerStatusStore(_worker_status_path()).read_status()
 
         forecast_jobs = {"queued": 0, "running": 0}
         retraining_jobs = {"queued": 0, "running": 0, "failed": 0}

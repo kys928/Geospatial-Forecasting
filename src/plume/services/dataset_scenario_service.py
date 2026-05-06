@@ -21,6 +21,7 @@ class DatasetScenarioConfig:
     scan_limit: int
     activation_state_path: Path
     online_subset_path: Path
+    playback_state_path: Path
 
 
 class DatasetScenarioService:
@@ -30,6 +31,8 @@ class DatasetScenarioService:
 
     def __init__(self, config: DatasetScenarioConfig):
         self.config = config
+        self._scenario_cache: dict[str, dict[str, Any]] | None = None
+        self._cache_signature: tuple[str, ...] | None = None
 
     @classmethod
     def from_env(cls) -> "DatasetScenarioService":
@@ -49,7 +52,8 @@ class DatasetScenarioService:
             online_subset = Path("/workspace/Dataset/online_learning_subset")
         else:
             online_subset = root / "online_learning_subset"
-        return cls(DatasetScenarioConfig(mode, manifest, windows_manifest, windows_dir, scan_limit, activation, online_subset))
+        playback_state = Path(os.getenv("PLUME_DATASET_PLAYBACK_STATE_PATH", "runtime_state/dataset_playback_state.json"))
+        return cls(DatasetScenarioConfig(mode, manifest, windows_manifest, windows_dir, scan_limit, activation, online_subset, playback_state))
 
     def is_enabled(self) -> bool:
         return self.config.mode == "enabled"
@@ -78,6 +82,7 @@ class DatasetScenarioService:
         _ = self.get_scenario(scenario_key)
         self.config.activation_state_path.parent.mkdir(parents=True, exist_ok=True)
         self.config.activation_state_path.write_text(json.dumps({"scenario_id": scenario_key}), encoding="utf-8")
+        self.update_playback_state(enabled=True, active_scenario_id=scenario_key)
 
     def get_active(self) -> str | None:
         if not self.config.activation_state_path.exists():
@@ -89,9 +94,60 @@ class DatasetScenarioService:
         value = payload.get("scenario_id")
         return value if isinstance(value, str) else None
 
+
+    def refresh_cache(self) -> None:
+        self._scenario_cache = None
+        self._cache_signature = None
+
+    def get_playback_state(self) -> dict[str, Any]:
+        defaults = {"enabled": False, "active_scenario_id": self.get_active(), "mode": "dataset_playback", "updated_at": datetime.now(timezone.utc).isoformat(), "playback_running": False, "playback_index": 0, "playback_speed_seconds": 3}
+        path = self.config.playback_state_path
+        if not path.exists():
+            return defaults
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            return defaults
+        if not isinstance(payload, dict):
+            return defaults
+        return {**defaults, **payload}
+
+    def update_playback_state(self, *, enabled: bool, active_scenario_id: str | None = None, playback_running: bool | None = None, playback_index: int | None = None, playback_speed_seconds: int | None = None) -> dict[str, Any]:
+        state = self.get_playback_state()
+        state["enabled"] = bool(enabled)
+        if active_scenario_id is not None:
+            state["active_scenario_id"] = active_scenario_id
+            self.config.activation_state_path.parent.mkdir(parents=True, exist_ok=True)
+            self.config.activation_state_path.write_text(json.dumps({"scenario_id": active_scenario_id}), encoding="utf-8")
+        if playback_running is not None:
+            state["playback_running"] = bool(playback_running)
+        if playback_index is not None:
+            state["playback_index"] = int(playback_index)
+        if playback_speed_seconds is not None:
+            state["playback_speed_seconds"] = int(playback_speed_seconds)
+        state["mode"] = "dataset_playback"
+        state["updated_at"] = datetime.now(timezone.utc).isoformat()
+        self.config.playback_state_path.parent.mkdir(parents=True, exist_ok=True)
+        self.config.playback_state_path.write_text(json.dumps(state), encoding="utf-8")
+        return state
+
+    def playback_next(self) -> dict[str, Any]:
+        scenarios = self.list_scenarios()
+        ids = [s.get("scenario_id") for s in scenarios if isinstance(s.get("scenario_id"), str)]
+        state = self.get_playback_state()
+        if not ids:
+            return state
+        current = state.get("active_scenario_id")
+        idx = ids.index(current) + 1 if current in ids else 0
+        idx = idx % len(ids)
+        return self.update_playback_state(enabled=True, active_scenario_id=ids[idx], playback_index=idx)
+
     def _select_scenarios(self) -> dict[str, dict[str, Any]]:
         if not self.is_enabled():
             return {}
+        signature = (str(self.config.dataset_manifest_path), str(self.config.windows_manifest_enriched_path), str(self.config.windows_dir), str(self.config.scan_limit))
+        if self._scenario_cache is not None and self._cache_signature == signature:
+            return self._scenario_cache
         if not (self.config.dataset_manifest_path.exists() and self.config.windows_manifest_enriched_path.exists() and self.config.windows_dir.exists()):
             return {}
         manifests = {r["scenario_id"]: r for r in self._read_csv(self.config.dataset_manifest_path)}
@@ -136,7 +192,10 @@ class DatasetScenarioService:
             elif key == "dataset_strong_wind":
                 risk = "medium" if plume_strength > 0 else "low"
             selected["payload"]["forecast"]["risk_level"] = risk
-        return {k: {"payload": v["payload"], "risk": v["payload"]["forecast"]["risk_level"], "status": v["payload"]["forecast"]["status"]} for k, v in picks.items()}
+        result = {k: {"payload": v["payload"], "risk": v["payload"]["forecast"]["risk_level"], "status": v["payload"]["forecast"]["status"]} for k, v in picks.items()}
+        self._scenario_cache = result
+        self._cache_signature = signature
+        return result
 
     def _score_candidate(self, window_row: dict[str, str], manifest_row: dict[str, str], npz_path: Path) -> dict[str, Any] | None:
         arr = np.load(npz_path)

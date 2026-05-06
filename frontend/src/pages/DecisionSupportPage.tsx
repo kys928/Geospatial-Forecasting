@@ -23,6 +23,7 @@ type DecisionSupportLatest = {
 };
 type DatasetScenarioPreview = { scenario_id: string; label: string; status?: string; risk_level?: string };
 type ActiveDatasetScenarioResponse = { enabled: boolean; available: boolean; active_scenario_id?: string | null; selected_scenario_id?: string | null; scenario?: ForecastContextResponse | null; };
+type DatasetPlaybackState = { enabled: boolean; active_scenario_id?: string | null; mode?: string };
 type ForecastContextResponse = {
   forecast: Record<string, unknown>;
   conditions: Record<string, unknown>;
@@ -180,12 +181,13 @@ export function DecisionSupportPage() {
     httpGet<ForecastContextResponse>("/forecast-context/latest").then(setContext).catch(() => setContext(null));
     Promise.all([
       httpGet<{ enabled: boolean; scenarios: DatasetScenarioPreview[] }>("/forecast-context/dataset-scenarios"),
-      httpGet<ActiveDatasetScenarioResponse>("/forecast-context/dataset-scenarios/active")
+      httpGet<ActiveDatasetScenarioResponse>("/forecast-context/dataset-scenarios/active"),
+      httpGet<DatasetPlaybackState>("/forecast-context/dataset-playback/state")
     ])
-      .then(([listResp, activeResp]) => {
+      .then(([listResp, activeResp, playback]) => {
         const scenarios = Array.isArray(listResp.scenarios) ? listResp.scenarios : [];
         setDatasetScenarios(scenarios);
-        const selectedId = activeResp.selected_scenario_id ?? activeResp.active_scenario_id ?? scenarios[0]?.scenario_id ?? "";
+        const selectedId = playback.active_scenario_id ?? activeResp.selected_scenario_id ?? activeResp.active_scenario_id ?? scenarios[0]?.scenario_id ?? "";
         setActiveScenario(selectedId);
       })
       .catch(() => setDatasetScenarios([]));
@@ -381,6 +383,7 @@ export function DecisionSupportPage() {
     setActiveScenario(scenarioId);
     try {
       await httpPost(`/forecast-context/dataset-scenarios/${scenarioId}/activate`, {});
+      await httpPost("/forecast-context/dataset-playback/state", { enabled: true, active_scenario_id: scenarioId });
       const refreshed = await httpGet<ForecastContextResponse>("/forecast-context/latest?source=dataset");
       setContext(refreshed);
     } catch {
@@ -434,7 +437,7 @@ export function DecisionSupportPage() {
 
       <section className="panel decision-support-live-panel">
         <h3>Geospatial Conditions</h3>
-        {datasetScenarios.length > 0 ? <div className="values-section"><div className="status-row"><strong>Scenario source</strong><span>Dataset playback</span></div><label>Scenario<select value={activeScenario} onChange={(e) => void activateDatasetScenario(e.target.value)}>{datasetScenarios.map((item) => <option key={item.scenario_id} value={item.scenario_id}>{item.label}</option>)}</select></label></div> : null}
+        {datasetScenarios.length > 0 ? <div className="values-section"><div className="status-row"><strong>Scenario</strong><span><select value={activeScenario} onChange={(e) => void activateDatasetScenario(e.target.value)}>{datasetScenarios.map((item) => <option key={item.scenario_id} value={item.scenario_id}>{item.label}</option>)}</select></span></div><p className="muted">Dataset playback · not live data</p></div> : null}
         <div className="values-section">
           <h4>Current Conditions</h4>
           <div className="values-grid compact-values-grid">{currentConditionsRows.map(([label, value]) => <div key={label} className="status-row"><strong>{label}</strong><span>{value}</span></div>)}</div>

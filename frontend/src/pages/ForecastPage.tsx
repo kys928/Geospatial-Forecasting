@@ -17,6 +17,7 @@ export function ForecastPage() {
 
   const [datasetOverlay, setDatasetOverlay] = useState<GeoJsonFeatureCollection | null>(null);
   const [datasetOverlayNote, setDatasetOverlayNote] = useState<string>("");
+  const [datasetCenter, setDatasetCenter] = useState<[number, number] | null>(null);
   const geojson = ((datasetOverlay ?? latestForecastBundle?.geojson) ?? null) as GeoJsonFeatureCollection | null;
 
   const runLatestForecast = async () => {
@@ -43,13 +44,17 @@ export function ForecastPage() {
           return;
         }
         return httpGet<GeoJsonFeatureCollection>("/forecast-context/dataset-scenarios/active/overlay")
-          .then((overlay) => {
+          .then(async (overlay) => {
             setDatasetOverlay(overlay);
+            const activeCtx = await httpGet<any>("/forecast-context/dataset-scenarios/active");
+            const lat = activeCtx?.scenario?.source?.latitude;
+            const lon = activeCtx?.scenario?.source?.longitude;
+            if (typeof lat === "number" && typeof lon === "number") setDatasetCenter([lon, lat]);
             setDatasetOverlayNote("Dataset playback plume · Approximate source-centered grid · Not live data");
           })
           .catch(() => {
             setDatasetOverlay(null);
-            setDatasetOverlayNote("No dataset plume overlay available.");
+            setDatasetOverlayNote("Dataset plume overlay unavailable.");
           });
       })
       .catch(() => {
@@ -69,6 +74,7 @@ export function ForecastPage() {
           geojson={geojson}
           selectedFeature={selectedFeature}
           onSelectFeature={setSelectedFeature}
+          center={datasetCenter}
         />
         {datasetOverlayNote ? <p className="muted" style={{ marginTop: 8 }}>{datasetOverlayNote}</p> : null}
       </main>
