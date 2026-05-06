@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
-import subprocess
-import tempfile
+import time
 from pathlib import Path
 from typing import Any, Iterator
 
@@ -16,6 +16,7 @@ from ..schemas.LLMInterpretationResult import LLMInterpretationResult
 from ..schemas.grid import GridSpec
 from ..schemas.scenario import Scenario
 
+logger = logging.getLogger(__name__)
 
 def load_llm_config(config_path: str | Path) -> LLMConfig:
     path = Path(config_path)
@@ -46,7 +47,7 @@ class LLMService:
         }
         self.provider = provider_aliases.get(raw_provider, raw_provider)
         self.local_gguf_path: str | None = None
-        self.llama_cpp_bin: str | None = None
+        self.local_llm: Any | None = None
         self.model_name = llm_config.model
         self.temperature = temperature
         self.max_output_tokens = max_output_tokens
@@ -66,24 +67,39 @@ class LLMService:
             )
 
         if self.provider == "local-gguf":
-            self.local_gguf_path = os.getenv(
+            self.local_gguf_path = str(Path(os.getenv(
                 "PLUME_LOCAL_LLM_GGUF_PATH",
                 "/workspace/llm_runtime/models/Qwen_Qwen2.5-7B-Instruct.Q4_K_M.gguf",
-            )
-            self.llama_cpp_bin = os.getenv(
-                "PLUME_LLAMA_CPP_BIN",
-                "/workspace/llm_runtime/tools/llama.cpp/build/bin/llama-cli",
-            )
+            )).expanduser())
             gguf = Path(self.local_gguf_path)
-            llama_bin = Path(self.llama_cpp_bin)
             if not gguf.exists():
                 raise ValueError(f"Local GGUF path does not exist: {gguf}")
-            if not llama_bin.exists():
-                raise ValueError(f"llama.cpp binary does not exist: {llama_bin}")
-            if not os.access(llama_bin, os.X_OK):
-                raise ValueError(f"llama.cpp binary is not executable: {llama_bin}")
+            n_ctx = int(os.getenv("PLUME_LOCAL_LLM_N_CTX", "4096"))
+            n_gpu_layers = int(os.getenv("PLUME_LOCAL_LLM_N_GPU_LAYERS", "-1"))
+            n_threads = int(os.getenv("PLUME_LOCAL_LLM_N_THREADS", str(os.cpu_count() or 1)))
+            n_batch = int(os.getenv("PLUME_LOCAL_LLM_N_BATCH", "512"))
+            self.local_max_tokens = int(os.getenv("PLUME_LOCAL_LLM_MAX_TOKENS", "300"))
+            self.local_temperature = float(os.getenv("PLUME_LOCAL_LLM_TEMPERATURE", "0.1"))
+            self.local_top_p = float(os.getenv("PLUME_LOCAL_LLM_TOP_P", "0.9"))
+            chat_format = os.getenv("PLUME_LOCAL_LLM_CHAT_FORMAT", "chatml")
+            verbose = os.getenv("PLUME_LOCAL_LLM_VERBOSE", "false").lower() in {"1", "true", "yes", "on"}
+            try:
+                from llama_cpp import Llama
+            except ImportError as exc:
+                raise ValueError("llama-cpp-python is required for local-gguf provider.") from exc
+            logger.info("[llm] loading local GGUF model: %s", gguf)
+            self.local_llm = Llama(
+                model_path=str(gguf),
+                n_ctx=n_ctx,
+                n_gpu_layers=n_gpu_layers,
+                n_threads=n_threads,
+                n_batch=n_batch,
+                chat_format=chat_format,
+                verbose=verbose,
+            )
             self.model_name = os.getenv("PLUME_LOCAL_LLM_MODEL_NAME") or gguf.name
             self.client = None
+            logger.info("[llm] local GGUF loaded: provider=local-gguf model=%s", self.model_name)
         else:
             resolved_api_key = (
                 api_key
@@ -125,17 +141,16 @@ class LLMService:
         try:
             system_prompt = self._build_instructions()
             user_input = self._build_user_input(forecast_summary)
-
-            completion = self.client.chat_completion(
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_input},
-                ],
-                max_tokens=self.max_output_tokens,
-                temperature=self.temperature,
-            )
-
-            raw_text = self._extract_chat_text(completion).strip()
+            messages = [{"role": "system", "content": system_prompt}, {"role": "user", "content": user_input}]
+            if self.provider == "local-gguf":
+                raw_text = self._run_local_chat(messages).strip()
+            else:
+                completion = self.client.chat_completion(
+                    messages=messages,
+                    max_tokens=self.max_output_tokens,
+                    temperature=self.temperature,
+                )
+                raw_text = self._extract_chat_text(completion).strip()
 
             if not raw_text:
                 return LLMInterpretationResult(
@@ -194,7 +209,9 @@ class LLMService:
         try:
             user_prompt = "Forecast context:\n" + json.dumps(context, indent=2)
             if self.provider == "local-gguf":
-                raw_text = self._run_local_gguf_prompt(system_prompt, user_prompt).strip()
+                raw_text = self._run_local_chat(
+                    [{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}]
+                ).strip()
             else:
                 completion = self.client.chat_completion(
                     messages=[
@@ -233,6 +250,21 @@ class LLMService:
                     model=self.model_name,
                 )
 
+            required_fields = {"summary", "risk_level", "recommendation", "uncertainty_note"}
+            missing_fields = [field for field in required_fields if not self._safe_get_str(parsed, field)]
+            if missing_fields:
+                return LLMInterpretationResult(
+                    success=False,
+                    summary=None,
+                    risk_level=None,
+                    recommendation=None,
+                    uncertainty_note=None,
+                    raw_text=raw_text,
+                    error=f"Missing required JSON fields: {', '.join(sorted(missing_fields))}",
+                    provider=self.provider,
+                    model=self.model_name,
+                )
+
             return LLMInterpretationResult(
                 success=True,
                 summary=self._safe_get_str(parsed, "summary"),
@@ -261,7 +293,9 @@ class LLMService:
         try:
             user_prompt = f"Question: {question}\n\nForecast context:\n{json.dumps(context, indent=2)}"
             if self.provider == "local-gguf":
-                answer = self._run_local_gguf_prompt(system_prompt, user_prompt).strip()
+                answer = self._run_local_chat(
+                    [{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}]
+                ).strip()
             else:
                 response = self.client.chat_completion(
                     messages=[
@@ -283,6 +317,8 @@ class LLMService:
     ) -> Iterator[str]:
         system_prompt = self._build_instructions()
         user_input = self._build_user_input(forecast_summary)
+        if self.provider == "local-gguf":
+            raise RuntimeError("interpret_forecast_stream is not supported for local-gguf provider.")
 
         stream = self.client.chat_completion(
             messages=[
@@ -411,52 +447,31 @@ class LLMService:
         except json.JSONDecodeError:
             return None
 
-    def _run_local_gguf_prompt(self, system_prompt: str, user_prompt: str) -> str:
-        if not self.local_gguf_path or not self.llama_cpp_bin:
+    def _run_local_chat(
+        self,
+        messages: list[dict[str, str]],
+        *,
+        max_tokens: int | None = None,
+        temperature: float | None = None,
+    ) -> str:
+        if self.local_llm is None:
             raise RuntimeError("Local GGUF provider is not initialized.")
-        prompt_file_path = None
-        max_tokens = int(os.getenv("PLUME_LOCAL_LLM_MAX_TOKENS", str(self.max_output_tokens)))
-        temperature = float(os.getenv("PLUME_LOCAL_LLM_TEMPERATURE", str(self.temperature)))
-        top_p = float(os.getenv("PLUME_LOCAL_LLM_TOP_P", "0.9"))
-        timeout_seconds = float(os.getenv("PLUME_LOCAL_LLM_TIMEOUT_SECONDS", "240"))
-        try:
-            with tempfile.NamedTemporaryFile(delete=False, suffix=".txt", mode="w", encoding="utf-8") as prompt_file:
-                prompt_file.write(
-                    "<|im_start|>system\n"
-                    f"{system_prompt}\n"
-                    "<|im_end|>\n"
-                    "<|im_start|>user\n"
-                    f"{user_prompt}\n"
-                    "<|im_end|>\n"
-                    "<|im_start|>assistant\n"
-                )
-                prompt_file_path = prompt_file.name
-            proc = subprocess.run(
-                [
-                    self.llama_cpp_bin,
-                    "-m", self.local_gguf_path,
-                    "-f", prompt_file_path,
-                    "-no-cnv",
-                    "-n", str(max_tokens),
-                    "--temp", str(temperature),
-                    "--top-p", str(top_p),
-                    "--repeat-penalty", "1.05",
-                    "--no-display-prompt",
-                    "--no-show-timings",
-                ],
-                capture_output=True,
-                text=True,
-                timeout=timeout_seconds,
-            )
-            if proc.returncode != 0:
-                raise RuntimeError(proc.stderr.strip() or "local GGUF process failed")
-            stdout = proc.stdout.strip()
-            if not stdout:
-                raise RuntimeError("local GGUF produced empty output")
-            return stdout
-        finally:
-            if prompt_file_path:
-                Path(prompt_file_path).unlink(missing_ok=True)
+        started = time.perf_counter()
+        output = self.local_llm.create_chat_completion(
+            messages=messages,
+            max_tokens=max_tokens or self.local_max_tokens,
+            temperature=temperature or self.local_temperature,
+            top_p=self.local_top_p,
+        )
+        elapsed = time.perf_counter() - started
+        logger.info("[llm] local generation completed in %.2fs", elapsed)
+        content = (((output or {}).get("choices") or [{}])[0].get("message") or {}).get("content", "")
+        if not isinstance(content, str):
+            content = str(content or "")
+        content = content.strip()
+        if not content:
+            raise RuntimeError("local GGUF produced empty output")
+        return content
 
     @staticmethod
     def _safe_get_str(data: dict[str, Any], key: str) -> str | None:
