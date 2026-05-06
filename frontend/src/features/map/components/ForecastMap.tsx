@@ -19,6 +19,7 @@ interface ForecastMapProps {
   geojson: GeoJsonFeatureCollection | null;
   selectedFeature: SelectedFeatureState | null;
   onSelectFeature: (feature: SelectedFeatureState | null) => void;
+  center?: [number, number] | null;
 }
 
 const FORECAST_SOURCE_ID = "forecast-source";
@@ -287,7 +288,8 @@ function getExistingInteractiveLayers(map: Map): string[] {
 export function ForecastMap({
   geojson,
   selectedFeature,
-  onSelectFeature
+  onSelectFeature,
+  center = null
 }: ForecastMapProps) {
   const mapContainerRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<Map | null>(null);
@@ -298,6 +300,12 @@ export function ForecastMap({
   useEffect(() => {
     latestGeojsonRef.current = geojson;
   }, [geojson]);
+
+  useEffect(() => {
+    if (center && mapRef.current) {
+      mapRef.current.flyTo({ center, zoom: 11, duration: 800 });
+    }
+  }, [center]);
 
   useEffect(() => {
     latestSelectedFeatureRef.current = selectedFeature;
@@ -311,7 +319,7 @@ export function ForecastMap({
     const map = new maplibregl.Map({
       container: mapContainerRef.current,
       style: MAP_STYLE_URL,
-      center: [5.1214, 52.0907],
+      center: center ?? [5.1214, 52.0907],
       zoom: 15,
       pitch: 58,
       bearing: -18,
@@ -630,6 +638,12 @@ export function ForecastMap({
 
     applyGeojsonToMap(map, geojson, hasFittedRef);
   }, [geojson]);
+
+  useEffect(() => {
+    if (center && mapRef.current) {
+      mapRef.current.flyTo({ center, zoom: 11, duration: 800 });
+    }
+  }, [center]);
 
   useEffect(() => {
     const map = mapRef.current;

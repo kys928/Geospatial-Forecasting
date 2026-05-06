@@ -31,7 +31,7 @@ def _write_dataset(root: Path):
 
 def test_dataset_scenarios_and_selection(tmp_path: Path):
     _write_dataset(tmp_path)
-    svc = DatasetScenarioService(DatasetScenarioConfig("enabled", tmp_path / "dataset_manifest.csv", tmp_path / "windows_manifest_enriched.csv", tmp_path / "windows", 10, tmp_path / "state.json", tmp_path / "online_learning_subset"))
+    svc = DatasetScenarioService(DatasetScenarioConfig("enabled", tmp_path / "dataset_manifest.csv", tmp_path / "windows_manifest_enriched.csv", tmp_path / "windows", 10, tmp_path / "state.json", tmp_path / "online_learning_subset", tmp_path / "playback_state.json"))
     scenarios = svc.list_scenarios()
     ids = {s["scenario_id"] for s in scenarios}
     assert "dataset_strong_wind" in ids
@@ -43,7 +43,7 @@ def test_dataset_scenarios_and_selection(tmp_path: Path):
 
 
 def test_disabled_or_missing_returns_empty(tmp_path: Path):
-    svc = DatasetScenarioService(DatasetScenarioConfig("enabled", tmp_path / "missing.csv", tmp_path / "missing2.csv", tmp_path / "missing", 10, tmp_path / "state.json", tmp_path / "online_learning_subset"))
+    svc = DatasetScenarioService(DatasetScenarioConfig("enabled", tmp_path / "missing.csv", tmp_path / "missing2.csv", tmp_path / "missing", 10, tmp_path / "state.json", tmp_path / "online_learning_subset", tmp_path / "playback_state.json"))
     assert svc.list_scenarios() == []
 
 
@@ -67,13 +67,13 @@ def test_plume_metrics_use_plume_channel_not_temperature_channel(tmp_path: Path)
     target[0, 9, :, :] = 290.0
     np.savez(windows / "w1.npz", input=input_data, target=target)
 
-    svc = DatasetScenarioService(DatasetScenarioConfig("enabled", tmp_path / "dataset_manifest.csv", tmp_path / "windows_manifest_enriched.csv", windows, 10, tmp_path / "state.json", tmp_path / "online_learning_subset"))
+    svc = DatasetScenarioService(DatasetScenarioConfig("enabled", tmp_path / "dataset_manifest.csv", tmp_path / "windows_manifest_enriched.csv", windows, 10, tmp_path / "state.json", tmp_path / "online_learning_subset", tmp_path / "playback_state.json"))
     payload = svc.get_scenario("dataset_large_plume")
     assert payload["plume_metrics"]["max_concentration"] == 0.25
 
 def test_activation_persists_across_service_instances(tmp_path: Path):
     _write_dataset(tmp_path)
-    cfg = DatasetScenarioConfig("enabled", tmp_path / "dataset_manifest.csv", tmp_path / "windows_manifest_enriched.csv", tmp_path / "windows", 10, tmp_path / "state.json", tmp_path / "online_learning_subset")
+    cfg = DatasetScenarioConfig("enabled", tmp_path / "dataset_manifest.csv", tmp_path / "windows_manifest_enriched.csv", tmp_path / "windows", 10, tmp_path / "state.json", tmp_path / "online_learning_subset", tmp_path / "playback_state.json")
     svc = DatasetScenarioService(cfg)
     svc.activate("dataset_large_plume")
     reloaded = DatasetScenarioService(cfg)
@@ -82,7 +82,7 @@ def test_activation_persists_across_service_instances(tmp_path: Path):
 
 def test_overlay_geojson_uses_target_channel_zero_and_metadata(tmp_path: Path):
     _write_dataset(tmp_path)
-    svc = DatasetScenarioService(DatasetScenarioConfig("enabled", tmp_path / "dataset_manifest.csv", tmp_path / "windows_manifest_enriched.csv", tmp_path / "windows", 10, tmp_path / "state.json", tmp_path / "online_learning_subset"))
+    svc = DatasetScenarioService(DatasetScenarioConfig("enabled", tmp_path / "dataset_manifest.csv", tmp_path / "windows_manifest_enriched.csv", tmp_path / "windows", 10, tmp_path / "state.json", tmp_path / "online_learning_subset", tmp_path / "playback_state.json"))
     overlay = svc.overlay_geojson("dataset_large_plume")
     assert overlay["type"] == "FeatureCollection"
     assert overlay["metadata"]["georeferencing"] == "approximate_source_centered_grid"
@@ -105,6 +105,6 @@ def test_overlay_ignores_non_plume_target_channels(tmp_path: Path):
     target[0, 0, 10, 10] = 0.2
     target[0, 1, 10, 10] = 99.0
     np.savez(windows / "w1.npz", input=input_data, target=target)
-    svc = DatasetScenarioService(DatasetScenarioConfig("enabled", tmp_path / "dataset_manifest.csv", tmp_path / "windows_manifest_enriched.csv", windows, 10, tmp_path / "state.json", tmp_path / "online_learning_subset"))
+    svc = DatasetScenarioService(DatasetScenarioConfig("enabled", tmp_path / "dataset_manifest.csv", tmp_path / "windows_manifest_enriched.csv", windows, 10, tmp_path / "state.json", tmp_path / "online_learning_subset", tmp_path / "playback_state.json"))
     overlay = svc.overlay_geojson("dataset_large_plume")
     assert max(f["properties"]["value"] for f in overlay["features"]) < 0.21
