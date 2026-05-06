@@ -79,7 +79,7 @@ OpenRemote's database remains internal to OpenRemote.
 Use OpenRemote through API/service boundaries only:
 
 - keep service registration and heartbeat lifecycle in the existing OpenRemote integration path,
-- publish forecast/attribute payloads through OpenRemote APIs,
+- use OpenRemote service registration for external-service discovery/navigation,
 - keep this repository's domain/runtime state independent from OpenRemote internal storage.
 
 This preserves separation of concerns and avoids coupling this app to OpenRemote internal schema evolution.

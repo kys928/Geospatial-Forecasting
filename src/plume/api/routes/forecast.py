@@ -28,7 +28,7 @@ def _env_flag(name: str, *, default: bool) -> bool:
     return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
-def register_forecast_routes(app: FastAPI, *, runtime_client, forecast_store, export_service, explain_service) -> None:
+def register_forecast_routes(app: FastAPI, *, runtime_client, forecast_store, explain_service) -> None:
     logger = logging.getLogger(__name__)
 
     @app.get("/forecasts", response_model=ForecastListResponse)
@@ -74,33 +74,6 @@ def register_forecast_routes(app: FastAPI, *, runtime_client, forecast_store, ex
             "runtime": artifact_metadata.get("runtime"),
         }
         logger.info("forecast.created", extra={"forecast_id": result.forecast_id})
-        publishing_runtime = getattr(app.state, "openremote_publishing_runtime", None) or {}
-        if not publishing_runtime.get("enabled", False):
-            response["publishing"] = {"enabled": False, "status": "disabled"}
-            return response
-        publishing_service = publishing_runtime.get("service")
-        if publishing_service is None:
-            response["publishing"] = {
-                "enabled": True,
-                "status": "failed",
-                "error": publishing_runtime.get("error")
-                or "OpenRemote publishing is enabled but no publishing service is configured",
-            }
-            return response
-        try:
-            publish_result = await publishing_service.publish_forecast_attributes(
-                result,
-                geojson=export_service.to_geojson(result),
-            )
-            status = "skipped" if publish_result.get("skipped") else "succeeded"
-            response["publishing"] = {"enabled": True, "status": status, **publish_result}
-        except Exception as exc:
-            response["publishing"] = {
-                "enabled": True,
-                "status": "failed",
-                "mode": "forecast_asset_attributes",
-                "error": str(exc),
-            }
         return response
 
 

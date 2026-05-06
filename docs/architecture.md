@@ -77,4 +77,4 @@ The Gaussian plume baseline remains useful, but the architecture centers on back
 - No databases/Redis/background workers/WebSockets.
 - No live OpenRemote integration client.
 - No claim of real online learning yet.
-- OpenRemote payload remains a provisional generic translation.
+- OpenRemote integration support is external service registration only in the runtime path.
