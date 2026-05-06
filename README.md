@@ -149,6 +149,15 @@ When `PLUME_PERSIST_BATCH_EXPLANATION=true`, `POST /forecast` will generate an e
 If `explanation.json` is missing (for older forecasts or when persistence is disabled), the explanation endpoint returns the honest HTTP `409 Conflict` limitation that persisted artifact reconstruction is not implemented.
 
 
+LLM decision-support configuration (Hugging Face Inference API):
+
+```bash
+export HF_TOKEN=<your-token>
+export PLUME_EXPLANATION_BACKEND=llm
+export PLUME_LLM_PROVIDER=auto
+```
+
+
 ### OpenRemote external service registration
 
 External service registration is **optional** and **disabled by default**. This lifecycle only registers this FastAPI/React service with OpenRemote and maintains heartbeat/deregistration; it does **not** publish plume assets.

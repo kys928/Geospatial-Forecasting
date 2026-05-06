@@ -163,6 +163,69 @@ class LLMService:
                 model=self.model_name,
             )
 
+
+    def interpret_context(self, *, system_prompt: str, context: dict[str, Any]) -> LLMInterpretationResult:
+        try:
+            completion = self.client.chat_completion(
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": json.dumps(context, indent=2)},
+                ],
+                max_tokens=self.max_output_tokens,
+                temperature=self.temperature,
+            )
+
+            raw_text = self._extract_chat_text(completion).strip()
+            if not raw_text:
+                return LLMInterpretationResult(
+                    success=False,
+                    summary=None,
+                    risk_level=None,
+                    recommendation=None,
+                    uncertainty_note=None,
+                    raw_text=None,
+                    error="The model returned an empty response.",
+                    provider=self.provider,
+                    model=self.model_name,
+                )
+
+            parsed = self._safe_parse_json(raw_text)
+            if parsed is None:
+                return LLMInterpretationResult(
+                    success=False,
+                    summary=None,
+                    risk_level=None,
+                    recommendation=None,
+                    uncertainty_note=None,
+                    raw_text=raw_text,
+                    error="Model returned text, but not valid JSON in the expected format.",
+                    provider=self.provider,
+                    model=self.model_name,
+                )
+
+            return LLMInterpretationResult(
+                success=True,
+                summary=self._safe_get_str(parsed, "summary"),
+                risk_level=self._safe_get_str(parsed, "risk_level"),
+                recommendation=self._safe_get_str(parsed, "recommendation"),
+                uncertainty_note=self._safe_get_str(parsed, "uncertainty_note"),
+                raw_text=raw_text,
+                error=None,
+                provider=self.provider,
+                model=self.model_name,
+            )
+        except Exception as e:
+            return LLMInterpretationResult(
+                success=False,
+                summary=None,
+                risk_level=None,
+                recommendation=None,
+                uncertainty_note=None,
+                raw_text=None,
+                error=str(e),
+                provider=self.provider,
+                model=self.model_name,
+            )
     def interpret_forecast_stream(
         self,
         forecast_summary: ForecastSummary,
