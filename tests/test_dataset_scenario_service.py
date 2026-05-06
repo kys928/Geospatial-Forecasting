@@ -132,7 +132,7 @@ def test_overlay_ignores_non_plume_target_channels(tmp_path: Path):
     assert max(f["properties"]["value"] for f in overlay["features"] if f["geometry"]["type"]=="Polygon") <= 0.2
 
 
-def test_playback_running_advances_by_elapsed_time(tmp_path: Path):
+def test_playback_running_does_not_advance_by_elapsed_time(tmp_path: Path):
     _write_dataset(tmp_path)
     cfg = DatasetScenarioConfig("enabled", tmp_path / "dataset_manifest.csv", tmp_path / "windows_manifest_enriched.csv", tmp_path / "windows", 10, tmp_path / "state.json", tmp_path / "online_learning_subset", tmp_path / "playback_state.json", tmp_path / "ridge.pkl")
     svc = DatasetScenarioService(cfg)
@@ -141,7 +141,7 @@ def test_playback_running_advances_by_elapsed_time(tmp_path: Path):
     state["updated_at"] = (datetime.now(timezone.utc) - timedelta(seconds=2)).isoformat()
     cfg.playback_state_path.write_text(__import__("json").dumps(state), encoding="utf-8")
     resolved = svc.resolve_current_playback_state()
-    assert resolved["active_scenario_id"] != "dataset_lowest_plume"
+    assert resolved["active_scenario_id"] == "dataset_lowest_plume"
 
 
 def test_playback_not_running_stays_on_selected_scenario(tmp_path: Path):

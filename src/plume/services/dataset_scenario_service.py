@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import csv
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -164,29 +165,7 @@ class DatasetScenarioService:
                 playback_index=0,
                 playback_speed_seconds=int(state.get("playback_speed_seconds") or 3),
             )
-        if not (state.get("enabled") and state.get("playback_running")):
-            return state
-        speed = max(1, int(state.get("playback_speed_seconds") or 3))
-        updated_at_raw = state.get("updated_at")
-        try:
-            updated_at = datetime.fromisoformat(str(updated_at_raw))
-            if updated_at.tzinfo is None:
-                updated_at = updated_at.replace(tzinfo=timezone.utc)
-        except Exception:
-            updated_at = datetime.now(timezone.utc)
-        elapsed_seconds = (datetime.now(timezone.utc) - updated_at).total_seconds()
-        steps = int(elapsed_seconds // speed)
-        if steps <= 0:
-            return state
-        current_index = ids.index(state.get("active_scenario_id")) if state.get("active_scenario_id") in ids else 0
-        next_index = (current_index + steps) % len(ids)
-        return self.update_playback_state(
-            enabled=True,
-            active_scenario_id=ids[next_index],
-            playback_running=True,
-            playback_index=next_index,
-            playback_speed_seconds=speed,
-        )
+        return state
 
     def _select_scenarios(self) -> dict[str, dict[str, Any]]:
         if not self.is_enabled():
@@ -219,7 +198,14 @@ class DatasetScenarioService:
         nonzero = [s for s in scored if s["plume_strength"] > 0]
         small = nonzero[0] if nonzero else lowest
         large = max(scored, key=lambda x: x["plume_strength"])
-        normal_stream = sorted(scored, key=lambda x: x["window_sort_key"])[0]
+        normal_stream = copy.deepcopy(sorted(scored, key=lambda x: x["window_sort_key"])[0])
+        normal_stream["payload"]["forecast"]["status"] = "no meaningful plume above threshold"
+        normal_stream["payload"]["forecast"]["risk_level"] = "low"
+        normal_stream["payload"]["plume_metrics"]["max_concentration"] = 0.0
+        normal_stream["payload"]["plume_metrics"]["mean_concentration"] = 0.0
+        normal_stream["payload"]["plume_metrics"]["affected_cells_above_threshold"] = 0
+        normal_stream["payload"]["plume_metrics"]["threshold_used"] = 0.0
+        normal_stream["payload"]["runtime"]["normal_baseline"] = "deterministic_zero_plume_from_dataset_window"
         picks = {
             "dataset_normal_stream": normal_stream,
             "dataset_lowest_plume": lowest,
@@ -303,7 +289,10 @@ class DatasetScenarioService:
 
     def overlay_geojson(self, scenario_key: str) -> dict[str, Any]:
         payload = self.get_scenario(scenario_key)
-        plume = self._load_plume_channel(payload)
+        if scenario_key == "dataset_normal_stream":
+            plume = np.zeros((64, 64), dtype=float)
+        else:
+            plume = self._load_plume_channel(payload)
         return self._build_overlay(payload, plume)
 
     def overlay_active_geojson(self) -> dict[str, Any]:
@@ -316,7 +305,7 @@ class DatasetScenarioService:
     def _scenario_preview(self, key: str, value: dict[str, Any]) -> dict[str, Any]:
         p = value["payload"]
         labels={"dataset_normal_stream":"Normal","dataset_lowest_plume":"Low plume","dataset_small_plume":"Small plume","dataset_large_plume":"Large plume"}
-        return {"scenario_id": key, "label": labels.get(key,key.replace("dataset_", "").replace("_", " ").title()), "status": value["status"], "risk_level": value["risk"], "wind_speed_ms": p["conditions"]["wind_speed_ms"], "max_concentration": p["plume_metrics"]["max_concentration"]}
+        return {"scenario_id": key, "label": labels.get(key,key.replace("dataset_", "").replace("_", " ").title()), "status": p["forecast"]["status"], "risk_level": p["forecast"]["risk_level"], "wind_speed_ms": p["conditions"]["wind_speed_ms"], "max_concentration": p["plume_metrics"]["max_concentration"]}
 
     @staticmethod
     def _read_csv(path: Path) -> list[dict[str, str]]:
@@ -376,7 +365,8 @@ class DatasetScenarioService:
             feats.append({"type":"Feature","geometry":{"type":"Polygon","coordinates":[[[lon_min,lat_min],[lon_max,lat_min],[lon_max,lat_max],[lon_min,lat_max],[lon_min,lat_min]]]},"properties":{"kind":kind,"value":v,"row":r,"col":c,"normalized_value":nv,"threshold":float(threshold),"source":"dataset_playback","model_source":"ridge_plume_baseline"}})
         feats.append({"type":"Feature","geometry":{"type":"Point","coordinates":[lon0,lat0]},"properties":{"kind":"source","title":"Release source"}})
         raw = payload.get("raw", {})
-        return {"type":"FeatureCollection","features":feats,"metadata":{"source":"dataset_playback","feature_count":len(feats),"source_latitude":lat0,"source_longitude":lon0,"model_source":"ridge_plume_baseline","prediction_shape":raw.get("prediction_shape"),"input_shape":raw.get("input_shape"),"active_window_id":raw.get("window_row",{}).get("window_id"),"active_scenario_id":payload.get("forecast",{}).get("scenario_id"),"georeferencing":"approximate_source_centered_grid"}}
+        plume_feature_count = len([f for f in feats if f.get("geometry", {}).get("type") == "Polygon"])
+        return {"type":"FeatureCollection","features":feats,"metadata":{"source":"dataset_playback","feature_count":len(feats),"plume_features":plume_feature_count,"source_latitude":lat0,"source_longitude":lon0,"model_source":"ridge_plume_baseline","prediction_shape":raw.get("prediction_shape"),"input_shape":raw.get("input_shape"),"active_window_id":raw.get("window_row",{}).get("window_id"),"active_scenario_id":payload.get("forecast",{}).get("scenario_id"),"georeferencing":"approximate_source_centered_grid"}}
 
 
     def _get_ridge_artifact(self) -> dict[str, Any]:
