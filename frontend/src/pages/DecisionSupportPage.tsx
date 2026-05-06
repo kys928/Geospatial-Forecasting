@@ -21,6 +21,14 @@ type DecisionSupportLatest = {
   forecast_backend?: string;
   last_forecast_time?: string;
 };
+type ForecastContextResponse = {
+  forecast: Record<string, unknown>;
+  conditions: Record<string, unknown>;
+  source: Record<string, unknown>;
+  plume_metrics: Record<string, unknown>;
+  runtime: Record<string, unknown>;
+  raw: Record<string, unknown>;
+};
 
 type ChatMessage = { role: "assistant" | "user"; content: string };
 
@@ -155,6 +163,7 @@ function hasMeaningfulPlume(params: {
 export function DecisionSupportPage() {
   const { activeSessionId, latestForecastBundle } = useSessionForecastView();
   const [data, setData] = useState<DecisionSupportLatest | null>(null);
+  const [context, setContext] = useState<ForecastContextResponse | null>(null);
   const [session, setSession] = useState<SessionDetail | null>(null);
   const [sessionState, setSessionState] = useState<SessionStateSummary | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -164,6 +173,7 @@ export function DecisionSupportPage() {
 
   useEffect(() => {
     httpGet<DecisionSupportLatest>("/decision-support/latest").then(setData).catch((e) => setError(e instanceof Error ? e.message : "Unavailable"));
+    httpGet<ForecastContextResponse>("/forecast-context/latest").then(setContext).catch(() => setContext(null));
   }, []);
 
   useEffect(() => {
@@ -218,37 +228,42 @@ export function DecisionSupportPage() {
 
   const hasContext = Boolean(latestForecastBundle || data);
   const values = summary as Record<string, unknown>;
+  const ctxForecast = context?.forecast ?? {};
+  const ctxConditions = context?.conditions ?? {};
+  const ctxSource = context?.source ?? {};
+  const ctxPlume = context?.plume_metrics ?? {};
+  const ctxRuntime = context?.runtime ?? {};
 
-  const riskLevel = formatRiskLevel(data?.risk_level ?? explanation.risk_level ?? values.risk_level);
+  const riskLevel = formatRiskLevel(ctxForecast.risk_level ?? data?.risk_level ?? explanation.risk_level ?? values.risk_level);
   const forecastEvidence = getNestedValue(data, "forecast_evidence") as Record<string, unknown> | undefined;
   const forecastEvidenceStats = getNestedValue(forecastEvidence, "summary_statistics") as Record<string, unknown> | undefined;
-  const affectedAreaM2 = getNestedValue(summary, "affected_area_m2", "affected_area", "summary_statistics.affected_area_m2", "summary_statistics.affected_area") ?? getNestedValue(forecastEvidence, "affected_area_m2", "affected_area") ?? getNestedValue(forecastEvidenceStats, "affected_area_m2", "affected_area");
-  const affectedCellsRaw = getNestedValue(summary, "affected_cells_above_threshold", "summary_statistics.affected_cells_above_threshold") ?? getNestedValue(forecastEvidence, "affected_cells_above_threshold") ?? getNestedValue(forecastEvidenceStats, "affected_cells_above_threshold");
-  const maxConcentration = getNestedValue(summary, "max_concentration", "summary_statistics.max_concentration") ?? getNestedValue(forecastEvidence, "max_concentration") ?? getNestedValue(forecastEvidenceStats, "max_concentration");
-  const meanConcentration = getNestedValue(summary, "mean_concentration", "summary_statistics.mean_concentration") ?? getNestedValue(forecastEvidence, "mean_concentration") ?? getNestedValue(forecastEvidenceStats, "mean_concentration");
-  const dominantSpreadDirection = getNestedValue(summary, "dominant_spread_direction", "summary_statistics.dominant_spread_direction", "wind_direction", "direction") ?? getNestedValue(forecastEvidence, "dominant_spread_direction") ?? getNestedValue(forecastEvidenceStats, "dominant_spread_direction");
-  const thresholdUsed = getNestedValue(summary, "threshold_used", "threshold", "summary_statistics.threshold_used") ?? getNestedValue(forecastEvidence, "threshold_used") ?? getNestedValue(forecastEvidenceStats, "threshold_used");
-  const forecastTime = getNestedValue(data, "last_forecast_time") ?? getNestedValue(summary, "timestamp", "issued_at");
+  const affectedAreaM2 = ctxPlume.affected_area_m2 ?? getNestedValue(summary, "affected_area_m2", "affected_area", "summary_statistics.affected_area_m2", "summary_statistics.affected_area") ?? getNestedValue(forecastEvidence, "affected_area_m2", "affected_area") ?? getNestedValue(forecastEvidenceStats, "affected_area_m2", "affected_area");
+  const affectedCellsRaw = ctxPlume.affected_cells_above_threshold ?? getNestedValue(summary, "affected_cells_above_threshold", "summary_statistics.affected_cells_above_threshold") ?? getNestedValue(forecastEvidence, "affected_cells_above_threshold") ?? getNestedValue(forecastEvidenceStats, "affected_cells_above_threshold");
+  const maxConcentration = ctxPlume.max_concentration ?? getNestedValue(summary, "max_concentration", "summary_statistics.max_concentration") ?? getNestedValue(forecastEvidence, "max_concentration") ?? getNestedValue(forecastEvidenceStats, "max_concentration");
+  const meanConcentration = ctxPlume.mean_concentration ?? getNestedValue(summary, "mean_concentration", "summary_statistics.mean_concentration") ?? getNestedValue(forecastEvidence, "mean_concentration") ?? getNestedValue(forecastEvidenceStats, "mean_concentration");
+  const dominantSpreadDirection = ctxPlume.dominant_spread_direction ?? getNestedValue(summary, "dominant_spread_direction", "summary_statistics.dominant_spread_direction", "wind_direction", "direction") ?? getNestedValue(forecastEvidence, "dominant_spread_direction") ?? getNestedValue(forecastEvidenceStats, "dominant_spread_direction");
+  const thresholdUsed = ctxPlume.threshold_used ?? getNestedValue(summary, "threshold_used", "threshold", "summary_statistics.threshold_used") ?? getNestedValue(forecastEvidence, "threshold_used") ?? getNestedValue(forecastEvidenceStats, "threshold_used");
+  const forecastTime = ctxForecast.timestamp ?? ctxForecast.issued_at ?? getNestedValue(data, "last_forecast_time") ?? getNestedValue(summary, "timestamp", "issued_at");
   const plumePresent = hasMeaningfulPlume({ affectedAreaM2, affectedCellsAboveThreshold: affectedCellsRaw, maxConcentration, explanationSummary: explanation.summary, riskLevel });
   const hasThreatSignal = safeText(data?.situation_summary ?? explanation.summary, "").toLowerCase().includes("threat");
   const explicitNoPlumeSignal = Number(affectedAreaM2) === 0 || Number(affectedCellsRaw) === 0 || Number(maxConcentration) === 0 || safeText(explanation.summary, "").toLowerCase().includes("no meaningful plume");
   const plumeStatus = plumePresent ? (hasThreatSignal ? "Threat detected" : "Plume detected above threshold") : (explicitNoPlumeSignal ? "No meaningful plume above threshold" : "Forecast unavailable");
 
-  const windSpeedValue = getNestedValue(summary, "wind_speed", "meteorology.wind_speed", "met.wind_speed", "inputs.wind_speed", "weather.wind_speed", "u10_speed", "wind.speed", "meteo.wind_speed", "source_inputs.wind_speed", "request.wind_speed", "runtime_metadata.wind_speed");
-  const windDirectionValue = getNestedValue(summary, "wind_direction", "meteorology.wind_direction", "met.wind_direction", "inputs.wind_direction", "weather.wind_direction", "wind.direction", "meteo.wind_direction");
-  const uWindValue = getNestedValue(summary, "u_wind", "u", "meteorology.u_wind", "met.u_wind", "wind.u");
-  const vWindValue = getNestedValue(summary, "v_wind", "v", "meteorology.v_wind", "met.v_wind", "wind.v");
+  const windSpeedValue = ctxConditions.wind_speed_ms;
+  const windDirectionValue = ctxConditions.wind_direction_label ?? ctxConditions.wind_direction_deg;
+  const uWindValue = ctxConditions.u10m_ms;
+  const vWindValue = ctxConditions.v10m_ms;
   const meteorologyRows = [
     ["Wind speed", formatSpeed(windSpeedValue)],
     ["Wind direction", formatDirection(windDirectionValue)],
     ["U wind", formatSpeed(uWindValue)],
     ["V wind", formatSpeed(vWindValue)],
-    ["Temperature", formatTemperature(getNestedValue(summary, "temperature", "meteorology.temperature", "met.temperature", "weather.temperature"))],
-    ["Relative humidity", formatPercent(getNestedValue(summary, "relative_humidity", "humidity", "meteorology.relative_humidity", "met.relative_humidity", "weather.humidity"))],
-    ["Surface pressure", formatPressure(getNestedValue(summary, "surface_pressure", "pressure", "meteorology.surface_pressure", "met.surface_pressure", "weather.pressure"))],
-    ["PBL height", `${formatNumber(getNestedValue(summary, "pbl_height", "meteorology.pbl_height", "met.pbl_height", "weather.pbl_height"), 1)} m`],
-    ["Meteorology timestamp", formatTimestamp(getNestedValue(summary, "meteorology.timestamp", "met.timestamp", "weather.timestamp", "timestamp"))],
-    ["Meteorology source", formatUnknown(getNestedValue(summary, "meteorology.source", "met.source", "weather.source", "source", "adapter.source", "runtime_metadata.meteorology_source"))]
+    ["Temperature", formatTemperature(ctxConditions.temperature_c)],
+    ["Relative humidity", formatPercent(ctxConditions.humidity_pct)],
+    ["Surface pressure", formatPressure(ctxConditions.surface_pressure_hpa)],
+    ["PBL height", `${formatNumber(ctxConditions.pbl_height_m, 1)} m`],
+    ["Meteorology timestamp", formatTimestamp(ctxConditions.meteorology_timestamp)],
+    ["Meteorology source", formatUnknown(ctxConditions.meteorology_source)]
   ] as Array<[string, string]>;
 
   const windSpeed = formatSpeed(windSpeedValue);
@@ -264,18 +279,18 @@ export function DecisionSupportPage() {
 
   const weatherCompactRows = [
     ["Wind", displayValue(windSummary)],
-    ["Temperature", displayValue(formatTemperature(getNestedValue(summary, "temperature", "meteorology.temperature", "met.temperature", "weather.temperature")))],
-    ["Humidity", displayValue(formatPercent(getNestedValue(summary, "relative_humidity", "humidity", "meteorology.relative_humidity", "met.relative_humidity", "weather.humidity")))],
+    ["Temperature", displayValue(formatTemperature(ctxConditions.temperature_c))],
+    ["Humidity", displayValue(formatPercent(ctxConditions.humidity_pct))],
     ["Pressure / PBL", (() => {
-      const pressure = formatPressure(getNestedValue(summary, "surface_pressure", "pressure", "meteorology.surface_pressure", "met.surface_pressure", "weather.pressure"));
-      const pbl = `${formatNumber(getNestedValue(summary, "pbl_height", "meteorology.pbl_height", "met.pbl_height", "weather.pbl_height"), 1)} m`;
+      const pressure = formatPressure(ctxConditions.surface_pressure_hpa);
+      const pbl = `${formatNumber(ctxConditions.pbl_height_m, 1)} m`;
       if (pressure === "Unavailable" && pbl === "Unavailable m") return "Not available";
       if (pressure !== "Unavailable" && pbl !== "Unavailable m") return `${pressure} / ${pbl}`;
       return pressure !== "Unavailable" ? pressure : pbl;
     })()]
   ] as Array<[string, string]>;
-  const sourceLatitude = formatCoordinate(getNestedValue(summary, "source.latitude", "source_latitude", "source.lat", "release.latitude", "scenario.source_latitude", "request.source_latitude"));
-  const sourceLongitude = formatCoordinate(getNestedValue(summary, "source.longitude", "source_longitude", "source.lon", "release.longitude", "scenario.source_longitude", "request.source_longitude"));
+  const sourceLatitude = formatCoordinate(ctxSource.latitude);
+  const sourceLongitude = formatCoordinate(ctxSource.longitude);
   const sourceLocation = sourceLatitude !== "Unavailable" && sourceLongitude !== "Unavailable" ? `${sourceLatitude}, ${sourceLongitude}` : null;
   const currentConditionsRows = [
     ...weatherCompactRows,
@@ -284,7 +299,7 @@ export function DecisionSupportPage() {
 
   const lastForecastLabel = formatTimestamp(forecastTime);
   const currentForecastRows = [
-    ["Status", plumeStatus],
+    ["Status", formatUnknown(ctxForecast.status) || plumeStatus],
     ["Risk", riskLevel]
   ] as Array<[string, string]>;
   const plumeDetailRows = plumePresent
@@ -307,7 +322,7 @@ export function DecisionSupportPage() {
     ["Mean concentration", formatNumber(meanConcentration)],
     ["Direction", formatDirection(dominantSpreadDirection)],
     ["Threshold", formatUnknown(thresholdUsed)],
-    ["Grid size", formatGridSize(gridSizeValue)],
+    ["Grid size", formatGridSize([ctxPlume.grid_rows, ctxPlume.grid_columns]) === "Unavailable" ? formatGridSize(gridSizeValue) : formatGridSize([ctxPlume.grid_rows, ctxPlume.grid_columns])],
     ["Forecast time", formatTimestamp(forecastTime)]
   ] as Array<[string, string]>;
 
@@ -339,7 +354,9 @@ export function DecisionSupportPage() {
       explanation,
       decision_support: data,
       session,
-      session_state: sessionState
+      session_state: sessionState,
+      forecast_context: context,
+      runtime: ctxRuntime
     }
   };
 
