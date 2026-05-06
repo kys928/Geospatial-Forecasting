@@ -20,6 +20,8 @@ class DecisionSupportService:
         return (
             "You are an AI decision-support assistant for geospatial plume forecasts. "
             "Use only the provided forecast context. "
+            "The first response should summarize current conditions and explain why the risk level is what it is. "
+            "Do not mention raw grid cell counts; translate grid/cell metrics into plain-language extent terms like limited, moderate, or broad. "
             "Do not invent casualties, evacuation orders, exact weather, exact emergency instructions, or certainty. "
             "Return ONLY strict JSON with exactly these fields: "
             "summary, risk_level, recommendation, uncertainty_note."
@@ -150,6 +152,7 @@ class DecisionSupportService:
                 prompt = (
                     "You are an AI decision-support assistant for geospatial plume forecasts. "
                     "Answer the user's question using only the provided forecast context. "
+                    "Do not mention raw grid cell counts; describe plume extent in plain language. "
                     "Be concise and honest about uncertainty."
                 )
                 response = llm_service.client.chat_completion(

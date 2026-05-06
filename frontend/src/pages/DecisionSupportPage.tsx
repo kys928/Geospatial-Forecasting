@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
+import { useEffect, useRef, useState, type KeyboardEvent } from "react";
 import { AppShell } from "../app/AppShell";
 import { useSessionForecastView } from "../features/sessions/context/SessionForecastViewContext";
 import { sessionClient } from "../features/sessions/api/sessionClient";
@@ -36,12 +36,24 @@ type ForecastContextResponse = {
 type ChatMessage = { role: "assistant" | "user"; content: string };
 
 const SUGGESTED_PROMPTS = [
-  "Why is the risk low?",
-  "What live inputs are missing?",
-  "How reliable is this forecast?",
-  "What changed since the previous forecast?"
+  "Summarize the current scenario",
+  "Why is this low risk?",
+  "What should an operator watch next?",
+  "What are the main uncertainties?",
+  "Explain the plume direction"
 ];
 
+
+
+function cleanAssistantText(text: string): string {
+  const withoutCellCounts = text
+    .replace(/\b\d+[\d,]*\s+grid cells?\b/gi, "a broader part of the model grid")
+    .replace(/grid cells?\s+(?:are|is)\s+above\s+threshold/gi, "a wider predicted plume area is above threshold")
+    .replace(/affected_cells_above_threshold\s*[:=]\s*\d+[\d,]*/gi, "predicted plume extent is available in technical details");
+  const thresholdOnly = /^\s*(?:the\s+)?threshold\s*(?:is|=|used)?\s*[0-9.]+\s*\.?\s*$/i;
+  if (thresholdOnly.test(withoutCellCounts)) return "The threshold is only one technical indicator; use plume extent, risk, and wind context together.";
+  return withoutCellCounts.trim();
+}
 function safeText(value: unknown, fallback = "Unavailable"): string {
   return typeof value === "string" && value.trim().length > 0 ? value : fallback;
 }
@@ -176,6 +188,7 @@ export function DecisionSupportPage() {
   const [chatQuestion, setChatQuestion] = useState("");
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const threadRef = useRef<HTMLDivElement | null>(null);
+  const lastBriefingKeyRef = useRef<string | null>(null);
 
   useEffect(() => {
     Promise.all([
@@ -215,30 +228,6 @@ export function DecisionSupportPage() {
 
   const explanation = datasetModeEnabled ? {} : (latestForecastBundle?.explanation ?? {});
   const summary = datasetModeEnabled ? {} : (latestForecastBundle?.summary ?? {});
-
-  const modeLabel = useMemo(() => {
-    const usedLlm = data?.used_llm === true || explanation.used_llm === true;
-    if (usedLlm || data?.mode === "llm") return "LLM-generated explanation";
-    return "Stub/development explanation";
-  }, [data, explanation]);
-
-  const firstBriefing = useMemo(() => {
-    if (data?.briefing) return data.briefing;
-    const parts = [
-      `Situation summary: ${safeText(data?.situation_summary ?? explanation.summary)}`,
-      `Risk level: ${formatRiskLevel(data?.risk_level ?? explanation.risk_level)}`,
-      `Recommended action: ${safeText(data?.recommended_action ?? explanation.recommendation)}`,
-      `Uncertainty/limitations: ${safeText(data?.uncertainty_limitations ?? explanation.uncertainty_note)}`,
-      `Forecast evidence: ${safeText(data?.forecast_evidence ?? summary.evidence)}`,
-      `System honesty: ${safeText(data?.system_honesty ?? explanation.system_honesty, modeLabel)}`
-    ];
-    return parts.join("\n\n").replace(/^Grounded response:\s*/i, "");
-  }, [data, explanation, summary, modeLabel]);
-
-  useEffect(() => {
-    if (!firstBriefing) return;
-    setMessages([{ role: "assistant", content: firstBriefing }]);
-  }, [firstBriefing]);
 
   useEffect(() => {
     const thread = threadRef.current;
@@ -375,6 +364,36 @@ export function DecisionSupportPage() {
   };
 
 
+  const buildOperatorBriefing = (briefingText?: string): string => {
+    const candidateBriefing = safeText(briefingText, "");
+    if (candidateBriefing && candidateBriefing.length > 40 && !/\b\d+[\d,]*\s+grid cells?\b/i.test(candidateBriefing)) return cleanAssistantText(candidateBriefing);
+    const status = formatUnknown(ctxForecast.status) || plumeStatus;
+    const scenarioName = datasetScenarios.find((item) => item.scenario_id === activeScenario)?.label ?? safeText(ctxForecast.scenario_id, "current scenario");
+    const windLine = windSpeed !== "Unavailable" && windDirection !== "Unavailable" ? `Wind is ${windDirection} at ${windSpeed}.` : "Wind details are partially available from current context.";
+    const sourceLine = sourceLocation ? `The modeled source location is ${sourceLocation}.` : "Source location is not fully configured in this context.";
+    const plumeLine = plumePresent ? `Predicted plume intensity remains limited with peak score near ${formatNumber(maxConcentration)} and spread trending ${formatDirection(dominantSpreadDirection)}.` : "The plume signal remains limited in this forecast window.";
+    const limitationLine = "This is demo dataset playback and model-based guidance, not live sensor-confirmed field truth.";
+    return cleanAssistantText(`Scenario ${scenarioName} is currently ${riskLevel.toLowerCase()} risk with status ${status}. ${windLine} ${plumeLine} ${sourceLine} ${limitationLine}`);
+  };
+
+  const briefingKey = String(activeScenario || ctxForecast.scenario_id || ctxForecast.forecast_id || forecastTime || "default");
+  const scenarioLabel = datasetScenarios.find((item) => item.scenario_id === activeScenario)?.label ?? safeText(ctxForecast.scenario_id, "Scenario");
+
+  useEffect(() => {
+    if (!hasContext) return;
+    const summaryText = buildOperatorBriefing(data?.briefing);
+    setMessages((prev) => {
+      if (prev.length === 0) {
+        lastBriefingKeyRef.current = briefingKey;
+        return [{ role: "assistant", content: summaryText }];
+      }
+      if (lastBriefingKeyRef.current === briefingKey) return prev;
+      lastBriefingKeyRef.current = briefingKey;
+      return [...prev, { role: "assistant", content: `Scenario changed: ${scenarioLabel}. ${summaryText}` }];
+    });
+  }, [briefingKey, hasContext, data?.briefing, scenarioLabel]);
+
+
   async function activateDatasetScenario(scenarioId: string) {
     setActiveScenario(scenarioId);
     try {
@@ -385,6 +404,7 @@ export function DecisionSupportPage() {
       setDatasetModeEnabled(true);
       const latest = await httpGet<DecisionSupportLatest>("/decision-support/latest");
       setData(latest);
+      setMessages((prev) => [...prev, { role: "assistant", content: buildOperatorBriefing(latest.briefing) }]);
     } catch {
       // ignore
     }
@@ -395,7 +415,7 @@ export function DecisionSupportPage() {
     setChatQuestion("");
     try {
       const response = await httpPost<{ answer?: string }>("/decision-support/chat", { message: question });
-      setMessages((prev) => [...prev, { role: "assistant", content: safeText(response.answer, "No answer available.") }]);
+      setMessages((prev) => [...prev, { role: "assistant", content: cleanAssistantText(safeText(response.answer, "No answer available.")) }]);
     } catch {
       const statusText = plumePresent
         ? "Plume detected above threshold"
@@ -403,7 +423,7 @@ export function DecisionSupportPage() {
       const riskText = riskLevel;
       const windText = windSpeed !== "Unavailable" || windDirection !== "Unavailable" ? `Wind ${windSpeed} ${windDirection}`.trim() : "Wind details unavailable";
       const datasetNote = "Uses current forecast context only.";
-      const fallback = `${statusText}. Risk: ${riskText}. ${windText}. ${datasetNote}`;
+      const fallback = cleanAssistantText(`${statusText}. Risk: ${riskText}. ${windText}. ${datasetNote}`);
       setMessages((prev) => [...prev, { role: "assistant", content: fallback }]);
     }
   }
@@ -438,7 +458,7 @@ export function DecisionSupportPage() {
 
       <section className="panel decision-support-live-panel">
         <h3>Geospatial Conditions</h3>
-        {datasetScenarios.length > 0 ? <div className="values-section"><div className="status-row"><strong>Scenario</strong><span><select value={activeScenario} onChange={(e) => void activateDatasetScenario(e.target.value)}>{datasetScenarios.map((item) => <option key={item.scenario_id} value={item.scenario_id}>{item.label}</option>)}</select></span></div></div> : null}
+        {datasetScenarios.length > 0 ? <div className="scenario-control"><label htmlFor="scenario-select"><strong>Scenario</strong></label><div className="scenario-select"><select id="scenario-select" value={activeScenario} onChange={(e) => void activateDatasetScenario(e.target.value)}>{datasetScenarios.map((item) => <option key={item.scenario_id} value={item.scenario_id}>{item.label}</option>)}</select></div><p className="scenario-meta">Demo dataset scenario · {riskLevel} · {formatUnknown(ctxForecast.status)}</p></div> : null}
         <div className="values-section">
           <h4>Current Conditions</h4>
           <div className="values-grid compact-values-grid">{currentConditionsRows.map(([label, value]) => <div key={label} className="status-row"><strong>{label}</strong><span>{value}</span></div>)}</div>
