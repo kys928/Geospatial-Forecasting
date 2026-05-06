@@ -31,21 +31,17 @@ class FakeLlmService:
         self.chat_answer = chat_answer
         self.error = error
         self.raw_text = raw_text
-        self.client = self
 
     def interpret_context(self, *, system_prompt, context):
         assert "Return ONLY strict JSON" in system_prompt
         assert isinstance(context, dict)
         return FakeLlmResult(success=self.success, error=self.error, raw_text=self.raw_text)
 
-    def chat_completion(self, **kwargs):
+    def answer_context_question(self, *, system_prompt, context, question):
+        assert "Do not mention raw grid cell counts" in system_prompt
         if self.chat_answer == "RAISE":
-            raise RuntimeError("chat failure")
-        return type("C", (), {"choices": [type("Choice", (), {"message": type("Msg", (), {"content": self.chat_answer})()})()]})()
-
-    @staticmethod
-    def _extract_chat_text(completion):
-        return completion.choices[0].message.content
+            return {"success": False, "answer": None, "error": "chat failure"}
+        return {"success": True, "answer": self.chat_answer, "error": None}
 
 
 class FakeExplain:
