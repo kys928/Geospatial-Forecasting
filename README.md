@@ -149,13 +149,19 @@ When `PLUME_PERSIST_BATCH_EXPLANATION=true`, `POST /forecast` will generate an e
 If `explanation.json` is missing (for older forecasts or when persistence is disabled), the explanation endpoint returns the honest HTTP `409 Conflict` limitation that persisted artifact reconstruction is not implemented.
 
 
-LLM decision-support configuration (Hugging Face Inference API):
+LLM decision-support configuration (local GGUF via llama.cpp):
 
 ```bash
-export HF_TOKEN=<your-token>
 export PLUME_EXPLANATION_BACKEND=llm
-export PLUME_LLM_PROVIDER=auto
+export PLUME_LLM_PROVIDER=local-gguf
+export PLUME_LOCAL_LLM_GGUF_PATH="/workspace/llm_runtime/models/Qwen_Qwen2.5-7B-Instruct.Q4_K_M.gguf"
+export PLUME_LLAMA_CPP_BIN="/workspace/llm_runtime/tools/llama.cpp/build/bin/llama-cli"
 ```
+
+Notes:
+- `HF_TOKEN` is not required when `PLUME_LLM_PROVIDER=local-gguf`.
+- Keep GGUF model artifacts outside this repository.
+- Keep llama.cpp binaries/tools outside this repository.
 
 
 ### OpenRemote external service registration

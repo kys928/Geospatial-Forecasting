@@ -21,8 +21,9 @@ class DecisionSupportService:
             "You are an AI decision-support assistant for geospatial plume forecasts. "
             "Use only the provided forecast context. "
             "The first response should summarize current conditions and explain why the risk level is what it is. "
-            "Do not mention raw grid cell counts; translate grid/cell metrics into plain-language extent terms like limited, moderate, or broad. "
+            "Do not mention raw grid cells or cell counts; translate model metrics into plain-language terms such as limited, moderate, broad, weak, stronger, or more widespread. "
             "Do not invent casualties, evacuation orders, exact weather, exact emergency instructions, or certainty. "
+            "Do not claim live sensor confirmation unless observations_available=true appears in the context. "
             "Return ONLY strict JSON with exactly these fields: "
             "summary, risk_level, recommendation, uncertainty_note."
         )
@@ -155,26 +156,23 @@ class DecisionSupportService:
                     "Do not mention raw grid cell counts; describe plume extent in plain language. "
                     "Be concise and honest about uncertainty."
                 )
-                response = llm_service.client.chat_completion(
-                    messages=[
-                        {"role": "system", "content": prompt},
-                        {"role": "user", "content": f"Question: {message}\n\nForecast context:\n{context}"},
-                    ],
-                    max_tokens=300,
-                    temperature=0.2,
+                result = llm_service.answer_context_question(
+                    system_prompt=prompt,
+                    context=context,
+                    question=message,
                 )
-                answer = llm_service._extract_chat_text(response).strip()
-                if answer:
+                if result.get("success") and result.get("answer"):
                     return {
                         "mode": "llm",
-                        "answer": answer,
+                        "answer": result.get("answer"),
                         "used_context_fields": latest.get("used_context_fields", []),
                         "limitations": latest.get("limitations", []),
                         "context_forecast_id": None,
                         "context_session_id": latest.get("runtime_metadata", {}).get("context_session_id"),
-                        "runtime_metadata": {"used_llm": True},
+                        "runtime_metadata": {"used_llm": True, "llm_error": None},
                     }
-            except Exception:
+            except Exception as exc:
+                print(f"[decision-support] LLM chat failed with exception: {exc}")
                 pass
 
         briefing = str(latest.get("briefing", "")).strip()
