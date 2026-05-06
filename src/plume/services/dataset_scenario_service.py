@@ -174,6 +174,39 @@ class DatasetScenarioService:
             "raw": {"source_file": str(window_row.get("source_file")), "manifest_row": manifest_row, "window_row": window_row, "input_shape": list(input_data.shape), "target_shape": list(target.shape), "channel_order": self.CHANNELS},
         }
 
+
+    def get_active_payload(self) -> dict[str, Any]:
+        scenarios = self.list_scenarios()
+        available_ids = {item.get("scenario_id") for item in scenarios}
+        active_id = self.get_active()
+        selected_id = active_id if isinstance(active_id, str) and active_id in available_ids else None
+        if selected_id is None and scenarios:
+            selected_id = scenarios[0].get("scenario_id")
+        selected_payload = None
+        if isinstance(selected_id, str):
+            try:
+                selected_payload = self.get_scenario(selected_id)
+            except KeyError:
+                selected_payload = None
+        return {
+            "enabled": self.is_enabled(),
+            "available": bool(scenarios),
+            "active_scenario_id": active_id if isinstance(active_id, str) else None,
+            "selected_scenario_id": selected_id,
+            "scenario": selected_payload,
+        }
+
+    def overlay_geojson(self, scenario_key: str) -> dict[str, Any]:
+        payload = self.get_scenario(scenario_key)
+        plume = self._load_plume_channel(payload)
+        return self._build_overlay(payload, plume)
+
+    def overlay_active_geojson(self) -> dict[str, Any]:
+        active = self.get_active_payload()
+        scenario_id = active.get("selected_scenario_id")
+        if not isinstance(scenario_id, str):
+            raise KeyError("no active scenario")
+        return self.overlay_geojson(scenario_id)
     def _scenario_preview(self, key: str, value: dict[str, Any]) -> dict[str, Any]:
         p = value["payload"]
         return {"scenario_id": key, "label": key.replace("dataset_", "").replace("_", " ").title(), "status": value["status"], "risk_level": value["risk"], "wind_speed_ms": p["conditions"]["wind_speed_ms"], "max_concentration": p["plume_metrics"]["max_concentration"]}
@@ -188,6 +221,49 @@ class DatasetScenarioService:
         labels = ["N", "NE", "E", "SE", "S", "SW", "W", "NW", "N"]
         return labels[int((degrees + 22.5) // 45)]
 
+
+    def _load_plume_channel(self, payload: dict[str, Any]) -> np.ndarray:
+        sample_path = str(payload.get("raw", {}).get("window_row", {}).get("sample_path", ""))
+        if not sample_path:
+            raise KeyError("missing sample path")
+        npz_path = self.config.windows_dir / Path(sample_path).name
+        if not npz_path.exists():
+            raise KeyError("dataset sample file unavailable")
+        arr = np.load(npz_path)
+        return DatasetScenarioService._extract_plume_channel(arr["target"])
+
+    def _build_overlay(self, payload: dict[str, Any], plume: np.ndarray) -> dict[str, Any]:
+        span_km = float(os.getenv("PLUME_DATASET_OVERLAY_SPAN_KM", "20"))
+        max_features = int(os.getenv("PLUME_DATASET_OVERLAY_MAX_FEATURES", "1000"))
+        src = payload.get("source", {})
+        lat0 = float(src.get("latitude", 0.0)); lon0 = float(src.get("longitude", 0.0))
+        rows, cols = plume.shape[-2], plume.shape[-1]
+        positives = plume[plume > 0]
+        threshold = payload.get("plume_metrics", {}).get("threshold_used")
+        if not isinstance(threshold, (int, float)):
+            threshold = float(np.nanpercentile(positives, 75)) if positives.size else 0.0
+        lat_step = (span_km / max(rows, 1)) / 111.0
+        lon_step = (span_km / max(cols, 1)) / max(111.0 * max(math.cos(math.radians(lat0)), 1e-6), 1e-6)
+        half_r = rows / 2.0; half_c = cols / 2.0
+        candidates=[]
+        for r in range(rows):
+            for c in range(cols):
+                v=float(plume[r,c])
+                if v < float(threshold):
+                    continue
+                candidates.append((v,r,c))
+        candidates.sort(reverse=True, key=lambda x: x[0])
+        if len(candidates)>max_features:
+            candidates=candidates[:max_features]
+        max_v = max([v for v,_,_ in candidates], default=0.0)
+        feats=[]
+        for v,r,c in candidates:
+            lat_center = lat0 + (r - half_r + 0.5) * lat_step
+            lon_center = lon0 + (c - half_c + 0.5) * lon_step
+            lat_min,lat_max=lat_center-lat_step/2,lat_center+lat_step/2
+            lon_min,lon_max=lon_center-lon_step/2,lon_center+lon_step/2
+            feats.append({"type":"Feature","geometry":{"type":"Polygon","coordinates":[[[lon_min,lat_min],[lon_max,lat_min],[lon_max,lat_max],[lon_min,lat_max],[lon_min,lat_min]]]},"properties":{"value":v,"row":r,"col":c,"normalized_value":(v/max_v if max_v>0 else 0.0),"threshold":float(threshold),"source":"dataset_playback"}})
+        return {"type":"FeatureCollection","features":feats,"metadata":{"source":"dataset_playback","georeferencing":"approximate_source_centered_grid","units":"dataset/transformed plume values","warning":"Dataset playback overlay; not live OpenRemote data."}}
     @staticmethod
     def _extract_plume_channel(target: np.ndarray) -> np.ndarray:
         if target.ndim == 4:

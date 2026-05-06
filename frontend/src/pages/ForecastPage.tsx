@@ -1,9 +1,10 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { AppShell } from "../app/AppShell";
 import { ForecastMap } from "../features/map/components/ForecastMap";
 import type { GeoJsonFeatureCollection } from "../features/forecast/types/forecast.types";
 import { useSessionForecastView } from "../features/sessions/context/SessionForecastViewContext";
 import { sessionClient } from "../features/sessions/api/sessionClient";
+import { httpGet } from "../services/api/http";
 
 export function ForecastPage() {
   const {
@@ -14,8 +15,9 @@ export function ForecastPage() {
     setLatestForecastBundle
   } = useSessionForecastView();
 
-  const geojson =
-    (latestForecastBundle?.geojson ?? null) as GeoJsonFeatureCollection | null;
+  const [datasetOverlay, setDatasetOverlay] = useState<GeoJsonFeatureCollection | null>(null);
+  const [datasetOverlayNote, setDatasetOverlayNote] = useState<string>("");
+  const geojson = ((datasetOverlay ?? latestForecastBundle?.geojson) ?? null) as GeoJsonFeatureCollection | null;
 
   const runLatestForecast = async () => {
     try {
@@ -32,6 +34,31 @@ export function ForecastPage() {
     void runLatestForecast();
   }, []);
 
+  useEffect(() => {
+    httpGet<{ enabled: boolean; available: boolean }>("/forecast-context/dataset-scenarios/active")
+      .then((active) => {
+        if (!active.enabled || !active.available) {
+          setDatasetOverlay(null);
+          setDatasetOverlayNote("");
+          return;
+        }
+        return httpGet<GeoJsonFeatureCollection>("/forecast-context/dataset-scenarios/active/overlay")
+          .then((overlay) => {
+            setDatasetOverlay(overlay);
+            setDatasetOverlayNote("Dataset playback plume · Approximate source-centered grid · Not live data");
+          })
+          .catch(() => {
+            setDatasetOverlay(null);
+            setDatasetOverlayNote("No dataset plume overlay available.");
+          });
+      })
+      .catch(() => {
+        setDatasetOverlay(null);
+        setDatasetOverlayNote("");
+      });
+  }, []);
+
+
   return (
     <AppShell
       title="Map / Forecast"
@@ -43,6 +70,7 @@ export function ForecastPage() {
           selectedFeature={selectedFeature}
           onSelectFeature={setSelectedFeature}
         />
+        {datasetOverlayNote ? <p className="muted" style={{ marginTop: 8 }}>{datasetOverlayNote}</p> : null}
       </main>
     </AppShell>
   );
