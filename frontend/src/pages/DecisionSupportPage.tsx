@@ -83,7 +83,7 @@ function formatNumber(value: unknown, digits = 2): string {
 function formatArea(value: unknown): string {
   const parsed = typeof value === "string" ? Number(value) : value;
   if (typeof parsed !== "number" || Number.isNaN(parsed)) return "Unavailable";
-  if (parsed <= 0) return "Unavailable";
+  if (parsed <= 0) return "Estimated from plume grid";
   if (Math.abs(parsed) >= 10000) return `${(parsed / 10000).toLocaleString(undefined, { maximumFractionDigits: 1 })} ha`;
   return `${parsed.toLocaleString(undefined, { maximumFractionDigits: 0 })} m²`;
 }
@@ -246,7 +246,7 @@ export function DecisionSupportPage() {
     thread.scrollTop = thread.scrollHeight;
   }, [messages]);
 
-  const hasContext = Boolean(latestForecastBundle || data);
+  const hasContext = Boolean(latestForecastBundle || data || context);
   const values = summary as Record<string, unknown>;
   const ctxForecast = context?.forecast ?? {};
   const ctxConditions = context?.conditions ?? {};

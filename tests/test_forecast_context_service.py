@@ -78,7 +78,7 @@ class FakeDatasetService:
         return self.enabled
 
     def list_scenarios(self):
-        return [{"scenario_id": "dataset_strong_wind"}, {"scenario_id": "dataset_stable_night"}] if self.enabled else []
+        return [{"scenario_id": "dataset_normal_stream"}, {"scenario_id": "dataset_stable_night"}] if self.enabled else []
 
     def get_active(self):
         return self.active
@@ -188,7 +188,7 @@ def test_session_source_does_not_fallback_to_dataset():
 def test_dataset_source_returns_default_when_no_active_scenario():
     service = ForecastContextService(runtime_client=FakeRuntime(), explain_service=FakeExplain(), dataset_scenario_service=FakeDatasetService(active=None))
     ctx = service.latest(source="dataset").payload
-    assert ctx["forecast"]["scenario_id"] == "dataset_strong_wind"
+    assert ctx["forecast"]["scenario_id"] == "dataset_normal_stream"
 
 
 def test_dataset_source_returns_active_scenario_after_activation():
