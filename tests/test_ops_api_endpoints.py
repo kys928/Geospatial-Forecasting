@@ -7,6 +7,7 @@ from fastapi.testclient import TestClient
 import numpy as np
 
 from plume.api.main import create_app
+from plume.api.routes import ops as ops_routes
 from plume.models.convlstm_contract import CONVLSTM_CONTRACT_VERSION
 
 
@@ -524,3 +525,25 @@ def test_ops_system_status_reads_worker_status_file(monkeypatch, tmp_path: Path)
     response = client.get("/ops/system/status")
     assert response.status_code == 200
     assert response.json()["worker_status"]["state"] == "running"
+
+
+def test_collect_gpu_metrics_parses_optional_fields(monkeypatch):
+    def fake_check_output(cmd, text=True, timeout=2):
+        if cmd[0] == "nvidia-smi" and "--query-gpu=name,utilization.gpu,memory.used,memory.total,temperature.gpu,power.draw,driver_version" in cmd:
+            return "NVIDIA A10, 75, 1024, 24564, N/A, Not Supported, 550.120\n"
+        if cmd == ["nvidia-smi"]:
+            return "NVIDIA-SMI 550.120    Driver Version: 550.120    CUDA Version: 12.4"
+        raise AssertionError(f"unexpected command: {cmd}")
+
+    monkeypatch.setattr(ops_routes.shutil, "which", lambda *_: "/usr/bin/nvidia-smi")
+    monkeypatch.setattr(ops_routes.subprocess, "check_output", fake_check_output)
+    payload = ops_routes._collect_gpu_metrics()
+    assert payload["available"] is True
+    assert payload["name"] == "NVIDIA A10"
+    assert payload["utilization_percent"] == 75.0
+    assert payload["memory_used_mib"] == 1024.0
+    assert payload["memory_total_mib"] == 24564.0
+    assert payload["temperature_c"] is None
+    assert payload["power_w"] is None
+    assert payload["driver_version"] == "550.120"
+    assert payload["cuda_version"] == "12.4"
