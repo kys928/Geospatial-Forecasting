@@ -11,6 +11,8 @@ from typing import Any
 
 import numpy as np
 
+from plume.models.ridge_plume_baseline import load_ridge_artifact, predict_ridge_plume
+
 
 @dataclass
 class DatasetScenarioConfig:
@@ -22,6 +24,7 @@ class DatasetScenarioConfig:
     activation_state_path: Path
     online_subset_path: Path
     playback_state_path: Path
+    ridge_model_path: Path
 
 
 class DatasetScenarioService:
@@ -33,6 +36,7 @@ class DatasetScenarioService:
         self.config = config
         self._scenario_cache: dict[str, dict[str, Any]] | None = None
         self._cache_signature: tuple[str, ...] | None = None
+        self._ridge_artifact: dict[str, Any] | None = None
 
     @classmethod
     def from_env(cls) -> "DatasetScenarioService":
@@ -53,7 +57,8 @@ class DatasetScenarioService:
         else:
             online_subset = root / "online_learning_subset"
         playback_state = Path(os.getenv("PLUME_DATASET_PLAYBACK_STATE_PATH", "runtime_state/dataset_playback_state.json"))
-        return cls(DatasetScenarioConfig(mode, manifest, windows_manifest, windows_dir, scan_limit, activation, online_subset, playback_state))
+        ridge_model_path = Path(os.getenv("PLUME_DATASET_RIDGE_MODEL_PATH", "artifacts/models/ridge_plume_baseline.pkl"))
+        return cls(DatasetScenarioConfig(mode, manifest, windows_manifest, windows_dir, scan_limit, activation, online_subset, playback_state, ridge_model_path))
 
     def is_enabled(self) -> bool:
         return self.config.mode == "enabled"
@@ -214,11 +219,11 @@ class DatasetScenarioService:
         nonzero = [s for s in scored if s["plume_strength"] > 0]
         small = nonzero[0] if nonzero else lowest
         large = max(scored, key=lambda x: x["plume_strength"])
-        strong_wind = max(scored, key=lambda x: x["wind_speed"])
+        normal_stream = sorted(scored, key=lambda x: x["window_sort_key"])[0]
         picks = {
+            "dataset_normal_stream": normal_stream,
             "dataset_lowest_plume": lowest,
             "dataset_small_plume": small,
-            "dataset_strong_wind": strong_wind,
             "dataset_large_plume": large,
         }
         strengths = np.array([float(s["plume_strength"]) for s in scored], dtype=float)
@@ -230,8 +235,6 @@ class DatasetScenarioService:
                 risk = "high"
             elif key == "dataset_small_plume":
                 risk = "medium" if plume_strength > 0 else "low"
-            elif key == "dataset_strong_wind":
-                risk = "medium" if plume_strength > 0 else "low"
             selected["payload"]["forecast"]["risk_level"] = risk
         result = {k: {"payload": v["payload"], "risk": v["payload"]["forecast"]["risk_level"], "status": v["payload"]["forecast"]["status"]} for k, v in picks.items()}
         self._scenario_cache = result
@@ -242,13 +245,14 @@ class DatasetScenarioService:
         arr = np.load(npz_path)
         input_data = arr["input"]
         target = arr["target"]
-        plume = self._extract_plume_channel(target)
-        plume_strength = float(np.nanmean(plume))
+        prediction = predict_ridge_plume(input_data, self._get_ridge_artifact())
+        plume_strength = float(np.nanmean(prediction))
         wind_speed = float(np.nanmedian(input_data[2, 3]))
-        payload = self._build_payload(window_row, manifest_row, input_data, target, plume_strength)
-        return {"plume_strength": plume_strength, "wind_speed": wind_speed, "payload": payload}
+        payload = self._build_payload(window_row, manifest_row, input_data, target, prediction, plume_strength)
+        window_sort_key = f"{manifest_row.get('start_time', '')}_{window_row.get('window_id', '')}"
+        return {"plume_strength": plume_strength, "wind_speed": wind_speed, "payload": payload, "window_sort_key": window_sort_key}
 
-    def _build_payload(self, window_row, manifest_row, input_data, target, plume_strength):
+    def _build_payload(self, window_row, manifest_row, input_data, target, prediction, plume_strength):
         last = input_data[-1]
         u10 = float(np.nanmedian(last[1])); v10 = float(np.nanmedian(last[2])); wspd = float(np.nanmedian(last[3]))
         sin_v = float(np.nanmedian(last[4])); cos_v = float(np.nanmedian(last[5]))
@@ -258,7 +262,7 @@ class DatasetScenarioService:
         if start.tzinfo is None:
             start = start.replace(tzinfo=timezone.utc)
         run_hours = float(manifest_row.get("run_hours", 0) or 0)
-        plume_channel = self._extract_plume_channel(target)
+        plume_channel = prediction
         threshold = float(np.nanmax(plume_channel)) * 0.1 if float(np.nanmax(plume_channel)) > 0 else 0.0
         affected = int(np.count_nonzero(plume_channel > threshold)) if threshold > 0 else int(np.count_nonzero(plume_channel > 0))
         if float(np.nanmax(plume_channel)) == 0.0 and affected == 0:
@@ -270,8 +274,8 @@ class DatasetScenarioService:
             "conditions": {"u10m_ms": u10, "v10m_ms": v10, "wind_speed_ms": wspd, "wind_direction_deg": direction, "wind_direction_label": self._direction_label(direction), "pbl_height_m": float(np.nanmedian(last[6])), "surface_pressure_hpa": float(np.nanmedian(last[7])), "humidity_pct": float(np.nanmedian(last[8])), "temperature_c": float(np.nanmedian(last[9])) - 273.15, "meteorology_source": "kaggle_hysplit_enriched_npz", "meteorology_timestamp": start.isoformat()},
             "source": {"latitude": float(manifest_row.get("lat", 0)), "longitude": float(manifest_row.get("lon", 0)), "pollutant": "demo_release", "emission_rate": float(manifest_row.get("emission_rate", 0)), "release_height_m": float(manifest_row.get("height_m", 0)), "duration_minutes": run_hours * 60, "start_time": start.isoformat(), "end_time": (start + timedelta(hours=run_hours)).isoformat()},
             "plume_metrics": {"max_concentration": float(np.nanmax(plume_channel)), "mean_concentration": float(np.nanmean(plume_channel)), "affected_cells_above_threshold": affected, "affected_area_m2": None, "affected_area_hectares": None, "dominant_spread_direction": None, "threshold_used": threshold, "grid_rows": int(plume_channel.shape[-2]), "grid_columns": int(plume_channel.shape[-1])},
-            "runtime": {"backend": "dataset_playback", "model_name": "hysplit_convlstm_enriched_dataset", "model_source": "dataset_playback", "model_version": "kaggle_dataset", "output_space": "dataset_playback", "input_mode": "scenario_playback", "prediction_trust": "demo_only", "missing_channels": [], "missing_frame_indices": [], "meteorology_available": True, "observations_available": False, "limitations": ["Dataset playback from Kaggle HYSPLIT/ConvLSTM dataset; not live OpenRemote data.", "Values are for demo/development playback.", "Plume values may be transformed dataset values unless model/output-space metadata defines physical units."]},
-            "raw": {"source_file": str(window_row.get("source_file")), "manifest_row": manifest_row, "window_row": window_row, "input_shape": list(input_data.shape), "target_shape": list(target.shape), "channel_order": self.CHANNELS},
+            "runtime": {"backend": "dataset_playback", "model_name": "ridge_plume_baseline", "model_source": "dataset_input_inference", "model_version": str(self._get_ridge_artifact().get("model_version") or "ridge_baseline_pickle"), "output_space": "ridge_prediction", "input_mode": "dataset_stream_window", "missing_channels": [], "missing_frame_indices": [], "meteorology_available": True, "observations_available": False, "limitations": ["Dataset playback from Kaggle HYSPLIT/ConvLSTM dataset; not live OpenRemote data.", "Values are for demo/development playback.", "Plume values may be transformed dataset values unless model/output-space metadata defines physical units."]},
+            "raw": {"source_file": str(window_row.get("source_file")), "manifest_row": manifest_row, "window_row": window_row, "input_shape": list(input_data.shape), "target_shape": list(target.shape), "prediction_shape": list(prediction.shape), "target_usage": "optional_reference_only", "channel_order": self.CHANNELS},
         }
 
 
@@ -311,7 +315,8 @@ class DatasetScenarioService:
         return self.overlay_geojson(scenario_id)
     def _scenario_preview(self, key: str, value: dict[str, Any]) -> dict[str, Any]:
         p = value["payload"]
-        return {"scenario_id": key, "label": key.replace("dataset_", "").replace("_", " ").title(), "status": value["status"], "risk_level": value["risk"], "wind_speed_ms": p["conditions"]["wind_speed_ms"], "max_concentration": p["plume_metrics"]["max_concentration"]}
+        labels={"dataset_normal_stream":"Normal","dataset_lowest_plume":"Low plume","dataset_small_plume":"Small plume","dataset_large_plume":"Large plume"}
+        return {"scenario_id": key, "label": labels.get(key,key.replace("dataset_", "").replace("_", " ").title()), "status": value["status"], "risk_level": value["risk"], "wind_speed_ms": p["conditions"]["wind_speed_ms"], "max_concentration": p["plume_metrics"]["max_concentration"]}
 
     @staticmethod
     def _read_csv(path: Path) -> list[dict[str, str]]:
@@ -332,7 +337,7 @@ class DatasetScenarioService:
         if not npz_path.exists():
             raise KeyError("dataset sample file unavailable")
         arr = np.load(npz_path)
-        return DatasetScenarioService._extract_plume_channel(arr["target"])
+        return predict_ridge_plume(arr["input"], self._get_ridge_artifact())
 
     def _build_overlay(self, payload: dict[str, Any], plume: np.ndarray) -> dict[str, Any]:
         span_km = float(os.getenv("PLUME_DATASET_OVERLAY_SPAN_KM", "20"))
@@ -353,6 +358,8 @@ class DatasetScenarioService:
                 v=float(plume[r,c])
                 if v < float(threshold):
                     continue
+                if v <= 0:
+                    continue
                 candidates.append((v,r,c))
         candidates.sort(reverse=True, key=lambda x: x[0])
         if len(candidates)>max_features:
@@ -364,8 +371,22 @@ class DatasetScenarioService:
             lon_center = lon0 + (c - half_c + 0.5) * lon_step
             lat_min,lat_max=lat_center-lat_step/2,lat_center+lat_step/2
             lon_min,lon_max=lon_center-lon_step/2,lon_center+lon_step/2
-            feats.append({"type":"Feature","geometry":{"type":"Polygon","coordinates":[[[lon_min,lat_min],[lon_max,lat_min],[lon_max,lat_max],[lon_min,lat_max],[lon_min,lat_min]]]},"properties":{"value":v,"row":r,"col":c,"normalized_value":(v/max_v if max_v>0 else 0.0),"threshold":float(threshold),"source":"dataset_playback"}})
-        return {"type":"FeatureCollection","features":feats,"metadata":{"source":"dataset_playback","georeferencing":"approximate_source_centered_grid","units":"dataset/transformed plume values","warning":"Dataset playback overlay; not live OpenRemote data."}}
+            nv=(v/max_v if max_v>0 else 0.0)
+            kind = "plume_band_high" if nv >= 0.66 else ("plume_band_medium" if nv >= 0.33 else "plume_band_low")
+            feats.append({"type":"Feature","geometry":{"type":"Polygon","coordinates":[[[lon_min,lat_min],[lon_max,lat_min],[lon_max,lat_max],[lon_min,lat_max],[lon_min,lat_min]]]},"properties":{"kind":kind,"value":v,"row":r,"col":c,"normalized_value":nv,"threshold":float(threshold),"source":"dataset_playback","model_source":"ridge_plume_baseline"}})
+        feats.append({"type":"Feature","geometry":{"type":"Point","coordinates":[lon0,lat0]},"properties":{"kind":"source","title":"Release source"}})
+        raw = payload.get("raw", {})
+        return {"type":"FeatureCollection","features":feats,"metadata":{"source":"dataset_playback","feature_count":len(feats),"source_latitude":lat0,"source_longitude":lon0,"model_source":"ridge_plume_baseline","prediction_shape":raw.get("prediction_shape"),"input_shape":raw.get("input_shape"),"active_window_id":raw.get("window_row",{}).get("window_id"),"active_scenario_id":payload.get("forecast",{}).get("scenario_id"),"georeferencing":"approximate_source_centered_grid"}}
+
+
+    def _get_ridge_artifact(self) -> dict[str, Any]:
+        if self._ridge_artifact is not None:
+            return self._ridge_artifact
+        model_path = self.config.ridge_model_path.expanduser()
+        if not model_path.is_absolute():
+            model_path = (Path.cwd() / model_path).resolve()
+        self._ridge_artifact = load_ridge_artifact(model_path)
+        return self._ridge_artifact
     @staticmethod
     def _extract_plume_channel(target: np.ndarray) -> np.ndarray:
         if target.ndim == 4:
