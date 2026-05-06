@@ -50,6 +50,7 @@ from plume.services.model_candidate_context import build_model_candidate_context
 from plume.workers.status import WorkerStatusStore
 from plume.services.retraining_explanation_context import build_retraining_explanation_context
 from plume.services.retraining_recommendation import build_retraining_recommendation
+from plume.services.dataset_scenario_service import DatasetScenarioService
 
 
 def _env_flag(name: str, *, default: bool) -> bool:
@@ -310,6 +311,7 @@ def register_ops_routes(app: FastAPI, *, forecast_service, dispatch_worker=dispa
             elif status == "failed":
                 retraining_jobs["failed"] += 1
 
+        dataset_status = DatasetScenarioService.from_env().availability()
         return {
             "generated_at": datetime.now(timezone.utc).isoformat(),
             "host": _collect_host_metrics(),
@@ -326,6 +328,7 @@ def register_ops_routes(app: FastAPI, *, forecast_service, dispatch_worker=dispa
                 "latest_warning_or_error": status_payload.get("latest_warning_or_error"),
                 "active_model": status_payload.get("active_model"),
             },
+            "dataset": dataset_status,
         }
 
     @app.get("/ops/registry", response_model=OpsRegistryResponse)

@@ -66,6 +66,24 @@ class FakeExplain:
         )
 
 
+
+
+class FakeDatasetService:
+    def __init__(self, enabled=True):
+        self.enabled = enabled
+
+    def is_enabled(self):
+        return self.enabled
+
+    def list_scenarios(self):
+        return [{"scenario_id": "dataset_strong_wind"}] if self.enabled else []
+
+    def get_active(self):
+        return None
+
+    def get_scenario(self, scenario_id):
+        return {"forecast": {"status": "plume detected above threshold", "input_source": "dataset_playback"}, "conditions": {}, "source": {}, "plume_metrics": {}, "runtime": {}, "raw": {}}
+
 def _result(summary_stats, summary=None):
     return ForecastRunResult(
         forecast_id="f-1",
@@ -121,3 +139,16 @@ def test_runtime_input_completeness_mapping():
     assert ctx["runtime"]["missing_frame_indices"] == [1, 3]
     assert ctx["runtime"]["meteorology_available"] is False
     assert ctx["runtime"]["observations_available"] is False
+
+
+def test_dataset_fallback_when_no_sessions():
+    service = ForecastContextService(runtime_client=FakeRuntime(), explain_service=FakeExplain(), dataset_scenario_service=FakeDatasetService())
+    ctx = service.latest().payload
+    assert ctx["forecast"]["input_source"] == "dataset_playback"
+
+
+def test_real_session_forecast_wins_over_dataset():
+    runtime = FakeRuntime(sessions=[type("S", (), {"session_id": "s1"})()], result=_result({"max_concentration": 0.1}), state={})
+    service = ForecastContextService(runtime_client=runtime, explain_service=FakeExplain(), dataset_scenario_service=FakeDatasetService())
+    ctx = service.latest().payload
+    assert ctx["forecast"]["forecast_id"] == "f-1"

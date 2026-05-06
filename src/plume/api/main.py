@@ -27,6 +27,7 @@ from plume.openremote.service_registration import OpenRemoteServiceRegistrar
 from plume.services.convlstm_operations import dispatch_retraining_worker
 from plume.services.decision_support_service import DecisionSupportService
 from plume.services.forecast_context_service import ForecastContextService
+from plume.services.dataset_scenario_service import DatasetScenarioService
 
 
 def _env_flag(name: str, *, default: bool) -> bool:
@@ -102,6 +103,7 @@ def create_app() -> FastAPI:
                 "convlstm_default_output_space": "demo_raw_physical",
             },
             "openremote_service_registration": openremote_service_registration,
+            "dataset_playback": dataset_scenario_service.availability(),
         }
 
     register_service_routes(
@@ -118,7 +120,8 @@ def create_app() -> FastAPI:
         explain_service=explain_service,
     )
     decision_support_service = DecisionSupportService(runtime_client=runtime_client, explain_service=explain_service)
-    forecast_context_service = ForecastContextService(runtime_client=runtime_client, explain_service=explain_service)
+    dataset_scenario_service = DatasetScenarioService.from_env()
+    forecast_context_service = ForecastContextService(runtime_client=runtime_client, explain_service=explain_service, dataset_scenario_service=dataset_scenario_service)
 
     register_session_routes(
         app,
@@ -128,7 +131,7 @@ def create_app() -> FastAPI:
         explain_service=explain_service,
     )
     register_decision_support_routes(app, decision_support_service=decision_support_service)
-    register_forecast_context_routes(app, forecast_context_service=forecast_context_service)
+    register_forecast_context_routes(app, forecast_context_service=forecast_context_service, dataset_scenario_service=dataset_scenario_service)
     register_ops_routes(app, forecast_service=forecast_service, dispatch_worker=dispatch_retraining_worker)
 
     return app

@@ -126,6 +126,7 @@ class OpsSystemStatusResponse(BaseModel):
     jobs: dict[str, Any]
     recent_events: list[dict[str, Any]]
     status_summary: dict[str, Any]
+    dataset: dict[str, Any] | None = None
 
 
 class WorkerStatusResponse(BaseModel):
