@@ -12,20 +12,27 @@ class ForecastContextResponse:
 
 
 class ForecastContextService:
-    def __init__(self, runtime_client, explain_service):
+    def __init__(self, runtime_client, explain_service, dataset_scenario_service=None):
         self.runtime_client = runtime_client
         self.explain_service = explain_service
+        self.dataset_scenario_service = dataset_scenario_service
 
     def latest(self, session_id: str | None = None) -> ForecastContextResponse:
         if session_id is None:
             sessions = self.runtime_client.list_sessions()
             if not sessions:
+                dataset = self._dataset_fallback()
+                if dataset is not None:
+                    return ForecastContextResponse(payload=dataset)
                 return ForecastContextResponse(payload=self._empty_context())
             session_id = sessions[-1].session_id
 
         try:
             result = self.runtime_client.get_latest_session_forecast_result(session_id)
         except (KeyError, ValueError):
+            dataset = self._dataset_fallback()
+            if dataset is not None:
+                return ForecastContextResponse(payload=dataset)
             return ForecastContextResponse(payload=self._empty_context(session_id=session_id))
 
         session_state = self._as_dict(self.runtime_client.get_session_state(session_id))
@@ -124,6 +131,24 @@ class ForecastContextService:
         }
         return ForecastContextResponse(payload=context)
 
+
+    def _dataset_fallback(self) -> dict[str, object] | None:
+        service = self.dataset_scenario_service
+        if service is None or not service.is_enabled():
+            return None
+        scenarios = service.list_scenarios()
+        if not scenarios:
+            return None
+        active = service.get_active()
+        target = active if isinstance(active, str) else "dataset_strong_wind"
+        if target not in {item.get("scenario_id") for item in scenarios}:
+            target = scenarios[0].get("scenario_id")
+        if not isinstance(target, str):
+            return None
+        try:
+            return service.get_scenario(target)
+        except KeyError:
+            return None
     def _empty_context(self, session_id: str | None = None) -> dict[str, object]:
         return {
             "forecast": {"forecast_id": None, "timestamp": None, "issued_at": None, "status": "forecast unavailable", "risk_level": "unknown", "input_source": "unknown", "scenario_id": session_id},

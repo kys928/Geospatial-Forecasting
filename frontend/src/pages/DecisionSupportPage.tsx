@@ -21,6 +21,7 @@ type DecisionSupportLatest = {
   forecast_backend?: string;
   last_forecast_time?: string;
 };
+type DatasetScenarioPreview = { scenario_id: string; label: string; status?: string; risk_level?: string };
 type ForecastContextResponse = {
   forecast: Record<string, unknown>;
   conditions: Record<string, unknown>;
@@ -165,6 +166,8 @@ export function DecisionSupportPage() {
   const [data, setData] = useState<DecisionSupportLatest | null>(null);
   const [context, setContext] = useState<ForecastContextResponse | null>(null);
   const [session, setSession] = useState<SessionDetail | null>(null);
+  const [datasetScenarios, setDatasetScenarios] = useState<DatasetScenarioPreview[]>([]);
+  const [activeScenario, setActiveScenario] = useState<string>("");
   const [sessionState, setSessionState] = useState<SessionStateSummary | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [chatQuestion, setChatQuestion] = useState("");
@@ -174,6 +177,13 @@ export function DecisionSupportPage() {
   useEffect(() => {
     httpGet<DecisionSupportLatest>("/decision-support/latest").then(setData).catch((e) => setError(e instanceof Error ? e.message : "Unavailable"));
     httpGet<ForecastContextResponse>("/forecast-context/latest").then(setContext).catch(() => setContext(null));
+    httpGet<{ enabled: boolean; scenarios: DatasetScenarioPreview[] }>("/forecast-context/dataset-scenarios")
+      .then((resp) => {
+        const scenarios = Array.isArray(resp.scenarios) ? resp.scenarios : [];
+        setDatasetScenarios(scenarios);
+        if (scenarios.length > 0) setActiveScenario(scenarios[0].scenario_id);
+      })
+      .catch(() => setDatasetScenarios([]));
   }, []);
 
   useEffect(() => {
@@ -300,7 +310,8 @@ export function DecisionSupportPage() {
   const lastForecastLabel = formatTimestamp(forecastTime);
   const currentForecastRows = [
     ["Status", formatUnknown(ctxForecast.status) || plumeStatus],
-    ["Risk", riskLevel]
+    ["Risk", riskLevel],
+    ["Input source", formatUnknown(ctxForecast.input_source)]
   ] as Array<[string, string]>;
   const plumeDetailRows = plumePresent
     ? [
@@ -360,6 +371,17 @@ export function DecisionSupportPage() {
     }
   };
 
+
+  async function activateDatasetScenario(scenarioId: string) {
+    setActiveScenario(scenarioId);
+    try {
+      await httpPost(`/forecast-context/dataset-scenarios/${scenarioId}/activate`, {});
+      const refreshed = await httpGet<ForecastContextResponse>("/forecast-context/latest");
+      setContext(refreshed);
+    } catch {
+      // ignore
+    }
+  }
   async function sendQuestion(question: string) {
     if (!question.trim() || !hasContext) return;
     setMessages((prev) => [...prev, { role: "user", content: question }]);
@@ -403,6 +425,7 @@ export function DecisionSupportPage() {
 
       <section className="panel decision-support-live-panel">
         <h3>Geospatial Conditions</h3>
+        {datasetScenarios.length > 0 ? <div className="values-section"><div className="status-row"><strong>Scenario source</strong><span>Dataset playback</span></div><label>Scenario<select value={activeScenario} onChange={(e) => void activateDatasetScenario(e.target.value)}>{datasetScenarios.map((item) => <option key={item.scenario_id} value={item.scenario_id}>{item.label}</option>)}</select></label></div> : null}
         <div className="values-section">
           <h4>Current Conditions</h4>
           <div className="values-grid compact-values-grid">{currentConditionsRows.map(([label, value]) => <div key={label} className="status-row"><strong>{label}</strong><span>{value}</span></div>)}</div>
