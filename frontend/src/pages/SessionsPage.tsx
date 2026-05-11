@@ -59,10 +59,17 @@ export function SessionsPage() {
 
   return (
     <AppShell
-      title="Sessions workspace"
-      subtitle="Start a session, choose it, run forecast, and review the result summary."
+      title="Developer Session Tools"
+      subtitle="Inspect backend session infrastructure for development and debugging."
       metaItems={sessionState.detail?.model_name ? [{ label: sessionState.detail.model_name }] : undefined}
     >
+      <section className="panel">
+        <p className="muted" style={{ marginBottom: 0 }}>
+          This page exposes backend session infrastructure for development and debugging. The normal operator flow
+          starts from Map / Forecast.
+        </p>
+      </section>
+
       <section className="panel">
         <div className="button-row">
           <button
@@ -70,20 +77,24 @@ export function SessionsPage() {
             type="button"
             onClick={() => setMode("basic")}
           >
-            Basic
+            Focused
           </button>
           <button
             className={mode === "operator" ? "primary-button" : "secondary-button"}
             type="button"
             onClick={() => setMode("operator")}
           >
-            Operator
+            Developer
           </button>
         </div>
         <p className="muted" style={{ marginBottom: 0 }}>
           {mode === "basic"
-            ? "Basic mode focuses on the core session workflow and hides technical controls."
-            : "Operator mode shows ingest, manual update, backend details, and raw state tools."}
+            ? "Focused view keeps only quick session checks for internal use."
+            : "Developer view shows ingest, manual update, backend details, and raw state tools."}
+        </p>
+        <p className="muted" style={{ marginBottom: 0.25, marginTop: 8, fontSize: "0.9rem" }}>
+          Operators normally do not create sessions manually here. Map / Forecast creates and runs forecast context
+          automatically.
         </p>
         <p className="muted" style={{ marginBottom: 0.25, marginTop: 8, fontSize: "0.9rem" }}>
           Sessions are runtime state only and may be lost after a backend restart. Persisted forecast artifacts remain
@@ -101,8 +112,8 @@ export function SessionsPage() {
             loading={loading}
           />
           <SessionCreateForm
-            heading="Start session"
-            actionLabel="Start session"
+            heading="Create test session"
+            actionLabel="Create test session"
             onCreate={async (payload) => {
               const created = await createSession(payload);
               setSelectedSessionId(created.session_id);
@@ -133,7 +144,7 @@ export function SessionsPage() {
 
       {showOperatorPanels ? (
         <details className="panel advanced-section" open>
-          <summary>Operator controls</summary>
+          <summary>Developer controls</summary>
           <div className="advanced-content workspace-grid" style={{ gridTemplateColumns: "1fr 1fr 1fr" }}>
             <div className="workspace-column">
               <SessionActionBar
