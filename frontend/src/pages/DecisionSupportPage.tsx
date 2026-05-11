@@ -1,191 +1,49 @@
-import { useEffect, useRef, useState, type KeyboardEvent } from "react";
+import { useEffect, useRef, useState } from "react";
 import { AppShell } from "../app/AppShell";
 import { useSessionForecastView } from "../features/sessions/context/SessionForecastViewContext";
 import { sessionClient } from "../features/sessions/api/sessionClient";
 import type { SessionDetail, SessionStateSummary } from "../features/sessions/types/session.types";
 import { httpGet, httpPost } from "../services/api/http";
-
-type DecisionSupportLatest = {
-  mode?: "stub" | "llm" | string;
-  used_llm?: boolean;
-  briefing?: string;
-  situation_summary?: string;
-  risk_level?: string;
-  recommended_action?: string;
-  uncertainty_limitations?: string;
-  forecast_evidence?: unknown;
-  system_honesty?: string;
-  limitations?: string[];
-  live_inputs?: Record<string, unknown>;
-  runtime_mode?: string;
-  forecast_backend?: string;
-  last_forecast_time?: string;
-};
-type DatasetScenarioPreview = { scenario_id: string; label: string; status?: string; risk_level?: string };
-type ActiveDatasetScenarioResponse = { enabled: boolean; available: boolean; active_scenario_id?: string | null; selected_scenario_id?: string | null; scenario?: ForecastContextResponse | null; };
-type DatasetPlaybackState = { enabled: boolean; active_scenario_id?: string | null; mode?: string };
-type ForecastContextResponse = {
-  forecast: Record<string, unknown>;
-  conditions: Record<string, unknown>;
-  source: Record<string, unknown>;
-  plume_metrics: Record<string, unknown>;
-  runtime: Record<string, unknown>;
-  raw: Record<string, unknown>;
-};
-
-type ChatMessage = { role: "assistant" | "user"; content: string };
-
-const CHAT_STORAGE_KEY = "geospatial.decisionSupport.chatMessages.v1";
-
-const SUGGESTED_PROMPTS = [
-  "Summarize the current scenario",
-  "Why is this the current risk level?",
-  "What should an operator watch next?",
-  "What are the main uncertainties?",
-  "Explain the plume direction"
-];
-
-
-
-function cleanAssistantText(text: string): string {
-  const withoutCellCounts = text
-    .replace(/\b\d+[\d,]*\s+grid cells?\b/gi, "a broader part of the model grid")
-    .replace(/grid cells?\s+(?:are|is)\s+above\s+threshold/gi, "a wider predicted plume area is above threshold")
-    .replace(/affected_cells_above_threshold\s*[:=]\s*\d+[\d,]*/gi, "predicted plume extent is available in technical details");
-  const thresholdOnly = /^\s*(?:the\s+)?threshold\s*(?:is|=|used)?\s*[0-9.]+\s*\.?\s*$/i;
-  if (thresholdOnly.test(withoutCellCounts)) return "The threshold is only one technical indicator; use plume extent, risk, and wind context together.";
-  return withoutCellCounts.trim();
-}
-function safeText(value: unknown, fallback = "Unavailable"): string {
-  return typeof value === "string" && value.trim().length > 0 ? value : fallback;
-}
-function isPresentValue(value: unknown): boolean {
-  if (value == null) return false;
-  if (typeof value === "string") return value.trim().length > 0;
-  if (Array.isArray(value)) return value.length > 0;
-  return true;
-}
-function getNestedValue(source: unknown, ...paths: string[]): unknown {
-  for (const path of paths) {
-    const parts = path.split(".");
-    let current: unknown = source;
-    let found = true;
-    for (const part of parts) {
-      if (current && typeof current === "object" && part in (current as Record<string, unknown>)) {
-        current = (current as Record<string, unknown>)[part];
-      } else {
-        found = false;
-        break;
-      }
-    }
-    if (found && isPresentValue(current)) return current;
-  }
-  return undefined;
-}
-
-function formatTimestamp(value: unknown): string {
-  if (typeof value !== "string" || !value.trim()) return "Unavailable";
-  const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? value : date.toLocaleString();
-}
-
-function formatNumber(value: unknown, digits = 2): string {
-  const parsed = typeof value === "string" ? Number(value) : value;
-  if (typeof parsed !== "number" || Number.isNaN(parsed)) return "Unavailable";
-  return parsed.toLocaleString(undefined, { maximumFractionDigits: digits });
-}
-function formatArea(value: unknown): string {
-  const parsed = typeof value === "string" ? Number(value) : value;
-  if (typeof parsed !== "number" || Number.isNaN(parsed)) return "Unavailable";
-  if (parsed <= 0) return "Estimated from plume grid";
-  if (Math.abs(parsed) >= 10000) return `${(parsed / 10000).toLocaleString(undefined, { maximumFractionDigits: 1 })} ha`;
-  return `${parsed.toLocaleString(undefined, { maximumFractionDigits: 0 })} m²`;
-}
-function formatCoordinate(value: unknown): string {
-  const parsed = typeof value === "string" ? Number(value) : value;
-  if (typeof parsed !== "number" || Number.isNaN(parsed)) return "Unavailable";
-  return parsed.toFixed(5);
-}
-function formatSpeed(value: unknown): string {
-  const n = formatNumber(value);
-  return n === "Unavailable" ? n : `${n} m/s`;
-}
-function formatDirection(value: unknown): string {
-  if (!isPresentValue(value)) return "Unavailable";
-  if (typeof value === "number") return `${value}°`;
-  return String(value);
-}
-function formatTemperature(value: unknown): string {
-  const n = formatNumber(value, 1);
-  return n === "Unavailable" ? n : `${n} °C`;
-}
-function formatPressure(value: unknown): string {
-  const n = formatNumber(value, 1);
-  return n === "Unavailable" ? n : `${n} hPa`;
-}
-function formatPercent(value: unknown): string {
-  const n = formatNumber(value, 1);
-  return n === "Unavailable" ? n : `${n}%`;
-}
-function formatDurationMinutes(value: unknown): string {
-  const parsed = typeof value === "string" ? Number(value) : value;
-  if (typeof parsed !== "number" || Number.isNaN(parsed)) return "Unavailable";
-  return `${formatNumber(parsed, 0)} min`;
-}
-function formatGridSize(value: unknown): string {
-  if (!isPresentValue(value)) return "Unavailable";
-  if (Array.isArray(value)) return value.join(" × ");
-  if (typeof value === "object") {
-    const rows = getNestedValue(value, "rows");
-    const cols = getNestedValue(value, "columns", "cols");
-    if (isPresentValue(rows) && isPresentValue(cols)) return `${rows} × ${cols}`;
-  }
-  return formatUnknown(value);
-}
-
-function formatUnknown(value: unknown): string {
-  if (value == null) return "Unavailable";
-  if (typeof value === "string") return value;
-  if (typeof value === "number" || typeof value === "boolean") return String(value);
-  if (Array.isArray(value)) return value.length ? value.map((item) => formatUnknown(item)).join(", ") : "Unavailable";
-  return "Unavailable";
-}
-
-function formatRiskLevel(value: unknown): string {
-  const text = safeText(value, "Unknown").toLowerCase();
-  return text.charAt(0).toUpperCase() + text.slice(1);
-}
-
-function hasMeaningfulPlume(params: {
-  affectedAreaM2: unknown;
-  affectedCellsAboveThreshold: unknown;
-  maxConcentration: unknown;
-  explanationSummary: unknown;
-  riskLevel: string;
-}): boolean {
-  const toNumber = (value: unknown): number | null => {
-    const parsed = typeof value === "string" ? Number(value) : value;
-    return typeof parsed === "number" && Number.isFinite(parsed) ? parsed : null;
-  };
-  const affectedArea = toNumber(params.affectedAreaM2);
-  const affectedCells = toNumber(params.affectedCellsAboveThreshold);
-  const maxConcentration = toNumber(params.maxConcentration);
-  const explanationText = safeText(params.explanationSummary, "").toLowerCase();
-
-  if ((affectedArea != null && affectedArea > 0) || (affectedCells != null && affectedCells > 0) || (maxConcentration != null && maxConcentration > 0)) return true;
-  if (affectedArea == 0 || affectedCells == 0 || maxConcentration == 0 || explanationText.includes("no meaningful plume")) return false;
-  return params.riskLevel.toLowerCase() !== "low";
-}
+import { DecisionChatPanel } from "../features/decision-support/components/DecisionChatPanel";
+import { ConditionsPanel } from "../features/decision-support/components/ConditionsPanel";
+import { CHAT_STORAGE_KEY } from "../features/decision-support/constants";
+import {
+  cleanAssistantText,
+  formatArea,
+  formatCoordinate,
+  formatDirection,
+  formatDurationMinutes,
+  formatGridSize,
+  formatNumber,
+  formatPercent,
+  formatPressure,
+  formatRiskLevel,
+  formatSpeed,
+  formatTemperature,
+  formatTimestamp,
+  formatUnknown,
+  getNestedValue,
+  safeText
+} from "../features/decision-support/formatters";
+import { hasMeaningfulPlume } from "../features/decision-support/plumeLogic";
+import type {
+  ActiveDatasetScenarioResponse,
+  ChatMessage,
+  DatasetPlaybackState,
+  DatasetScenarioPreview,
+  DecisionSupportLatest,
+  ForecastContextResponse
+} from "../features/decision-support/types";
 
 export function DecisionSupportPage() {
   const { activeSessionId, latestForecastBundle } = useSessionForecastView();
   const [data, setData] = useState<DecisionSupportLatest | null>(null);
   const [context, setContext] = useState<ForecastContextResponse | null>(null);
-  const [session, setSession] = useState<SessionDetail | null>(null);
+  const [, setSession] = useState<SessionDetail | null>(null);
   const [datasetScenarios, setDatasetScenarios] = useState<DatasetScenarioPreview[]>([]);
   const [activeScenario, setActiveScenario] = useState<string>("");
   const [datasetModeEnabled, setDatasetModeEnabled] = useState(false);
-  const [sessionState, setSessionState] = useState<SessionStateSummary | null>(null);
+  const [, setSessionState] = useState<SessionStateSummary | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [chatQuestion, setChatQuestion] = useState("");
   const [messages, setMessages] = useState<ChatMessage[]>(() => {
@@ -208,7 +66,7 @@ export function DecisionSupportPage() {
       return [];
     }
   });
-  const threadRef = useRef<HTMLDivElement | null>(null);
+  const threadRef = useRef<HTMLDivElement>(null);
   const lastBriefingKeyRef = useRef<string | null>(null);
 
   useEffect(() => {
@@ -267,7 +125,6 @@ export function DecisionSupportPage() {
   const ctxConditions = context?.conditions ?? {};
   const ctxSource = context?.source ?? {};
   const ctxPlume = context?.plume_metrics ?? {};
-  const ctxRuntime = context?.runtime ?? {};
 
   const riskLevel = formatRiskLevel(ctxForecast.risk_level ?? data?.risk_level ?? explanation.risk_level ?? values.risk_level);
   const forecastEvidence = getNestedValue(data, "forecast_evidence") as Record<string, unknown> | undefined;
@@ -305,11 +162,7 @@ export function DecisionSupportPage() {
   const windDirection = formatDirection(windDirectionValue);
   const uWind = formatSpeed(uWindValue);
   const vWind = formatSpeed(vWindValue);
-  const windSummary = windSpeed !== "Unavailable" && windDirection !== "Unavailable"
-    ? `${windSpeed} ${windDirection}`
-    : (uWind !== "Unavailable" || vWind !== "Unavailable"
-      ? `U ${uWind}, V ${vWind}`.replace("U Unavailable, ", "").replace(", V Unavailable", "")
-      : "Unavailable");
+  const windSummary = windSpeed !== "Unavailable" && windDirection !== "Unavailable" ? `${windSpeed} ${windDirection}` : (uWind !== "Unavailable" || vWind !== "Unavailable" ? `U ${uWind}, V ${vWind}`.replace("U Unavailable, ", "").replace(", V Unavailable", "") : "Unavailable");
   const displayValue = (value: string, fallback = "Not available") => value === "Unavailable" ? fallback : value;
 
   const weatherCompactRows = [
@@ -327,35 +180,18 @@ export function DecisionSupportPage() {
   const sourceLatitude = formatCoordinate(ctxSource.latitude);
   const sourceLongitude = formatCoordinate(ctxSource.longitude);
   const sourceLocation = sourceLatitude !== "Unavailable" && sourceLongitude !== "Unavailable" ? `${sourceLatitude}, ${sourceLongitude}` : null;
-  const currentConditionsRows = [
-    ...weatherCompactRows,
-    ["Source", sourceLocation ?? "Not configured"]
-  ] as Array<[string, string]>;
+  const currentConditionsRows = [...weatherCompactRows, ["Source", sourceLocation ?? "Not configured"]] as Array<[string, string]>;
 
   const lastForecastLabel = formatTimestamp(forecastTime);
-  const currentForecastRows = [
-    ["Status", formatUnknown(ctxForecast.status) || plumeStatus],
-    ["Risk", riskLevel],
-    ["Input source", formatUnknown(ctxForecast.input_source)]
-  ] as Array<[string, string]>;
-  const plumeDetailRows = plumePresent
-    ? [
-      ["Impact extent", formatArea(affectedAreaM2) === "Unavailable" ? "Estimated from plume grid" : formatArea(affectedAreaM2)],
-      ["Peak plume score", formatNumber(maxConcentration)],
-      ["Predicted spread", formatDirection(dominantSpreadDirection)],
-      ...(lastForecastLabel !== "Unavailable" ? [["Forecast time", lastForecastLabel] as [string, string]] : [])
-    ]
+  const currentForecastRows = [["Status", formatUnknown(ctxForecast.status) || plumeStatus], ["Risk", riskLevel], ["Input source", formatUnknown(ctxForecast.input_source)]] as Array<[string, string]>;
+  const plumeDetailRows: Array<[string, string]> = plumePresent
+    ? [["Impact extent", formatArea(affectedAreaM2) === "Unavailable" ? "Estimated from plume grid" : formatArea(affectedAreaM2)], ["Peak plume score", formatNumber(maxConcentration)], ["Predicted spread", formatDirection(dominantSpreadDirection)], ...(lastForecastLabel !== "Unavailable" ? [["Forecast time", lastForecastLabel] as [string, string]] : [])]
     : [];
 
   const forecastHorizon = getNestedValue(summary, "forecast_horizon_minutes", "horizon_minutes", "summary_statistics.forecast_horizon_minutes") ?? getNestedValue(forecastEvidence, "forecast_horizon_minutes", "horizon_minutes");
   const gridSizeValue = getNestedValue(summary, "grid", "grid_size", "grid_shape", "summary_statistics.grid_size") ?? getNestedValue(forecastEvidence, "grid", "grid_size", "grid_shape");
 
-  const detailsRows = [
-    ["Forecast horizon", formatDurationMinutes(forecastHorizon)],
-    ["Mean plume score", formatNumber(meanConcentration)],
-    ["Detection threshold", formatUnknown(thresholdUsed)],
-    ["Grid size", formatGridSize([ctxPlume.grid_rows, ctxPlume.grid_columns]) === "Unavailable" ? formatGridSize(gridSizeValue) : formatGridSize([ctxPlume.grid_rows, ctxPlume.grid_columns])],
-  ] as Array<[string, string]>;
+  const detailsRows = [["Forecast horizon", formatDurationMinutes(forecastHorizon)], ["Mean plume score", formatNumber(meanConcentration)], ["Detection threshold", formatUnknown(thresholdUsed)], ["Grid size", formatGridSize([ctxPlume.grid_rows, ctxPlume.grid_columns]) === "Unavailable" ? formatGridSize(gridSizeValue) : formatGridSize([ctxPlume.grid_rows, ctxPlume.grid_columns])]] as Array<[string, string]>;
 
   const filterAvailableRows = (rows: Array<[string, string]>, { allowZero = true } = {}) =>
     rows.filter(([, value]) => {
@@ -366,12 +202,13 @@ export function DecisionSupportPage() {
   const weatherContext = Object.fromEntries(meteorologyRows.filter(([, value]) => value !== "Unavailable"));
   const overlayMetadata = (context?.raw?.overlay_metadata as Record<string, unknown> | undefined) ?? {};
   const overlayFeatures = (context?.raw?.overlay_features as Array<Record<string, unknown>> | undefined) ?? [];
-  const rawContext = {
+  const rawContext: Record<string, unknown> = {
     selected_scenario: activeScenario || ctxForecast.scenario_id,
     forecast: ctxForecast,
     conditions: ctxConditions,
     source: ctxSource,
     plume_metrics: ctxPlume,
+    weather_context: weatherContext,
     model_inference: getNestedValue(context, "raw.model_inference", "raw.model_inference") ?? getNestedValue(context, "raw.model_inference"),
     overlay_summary: {
       endpoint_path: "/forecast-context/dataset-scenarios/active/overlay",
@@ -388,7 +225,6 @@ export function DecisionSupportPage() {
       target_usage: getNestedValue(context, "raw.target_usage")
     }
   };
-
 
   const buildOperatorBriefing = (briefingText?: string): string => {
     const candidateBriefing = safeText(briefingText, "");
@@ -419,7 +255,6 @@ export function DecisionSupportPage() {
     });
   }, [briefingKey, hasContext, data?.briefing, scenarioLabel]);
 
-
   async function activateDatasetScenario(scenarioId: string) {
     setActiveScenario(scenarioId);
     try {
@@ -434,6 +269,7 @@ export function DecisionSupportPage() {
       // ignore
     }
   }
+
   async function sendQuestion(question: string) {
     if (!question.trim() || !hasContext) return;
     setMessages((prev) => [...prev, { role: "user", content: question }]);
@@ -442,9 +278,7 @@ export function DecisionSupportPage() {
       const response = await httpPost<{ answer?: string }>("/decision-support/chat", { message: question });
       setMessages((prev) => [...prev, { role: "assistant", content: cleanAssistantText(safeText(response.answer, "No answer available.")) }]);
     } catch {
-      const statusText = plumePresent
-        ? "Plume detected above threshold"
-        : safeText(ctxForecast.status, "No meaningful plume above threshold");
+      const statusText = plumePresent ? "Plume detected above threshold" : safeText(ctxForecast.status, "No meaningful plume above threshold");
       const riskText = riskLevel;
       const windText = windSpeed !== "Unavailable" || windDirection !== "Unavailable" ? `Wind ${windSpeed} ${windDirection}`.trim() : "Wind details unavailable";
       const datasetNote = "Uses current forecast context only.";
@@ -456,54 +290,8 @@ export function DecisionSupportPage() {
   return <AppShell title="Forecast Overview" subtitle="Forecast interpretation, current conditions, and plume result.">
     {error ? <section className="panel"><p>{error}</p></section> : null}
     <div className="decision-support-layout">
-      <section className="panel decision-support-chat-panel polished-chat-panel">
-        <header className="chat-panel-header">
-          <h3>AI Decision Support</h3>
-        </header>
-
-        <div className="chat-thread polished-chat-thread" ref={threadRef}>
-          {!hasContext ? <p className="chat-empty-state">No forecast context is available yet. Open the Map page or wait for the automatic forecast to complete.</p> : null}
-          {messages.map((message, index) => <article key={`${message.role}-${index}`} className={`chat-message ${message.role}`}><p>{message.content}</p></article>)}
-        </div>
-
-        <div className="suggested-prompts">
-          {SUGGESTED_PROMPTS.map((prompt) => <button key={prompt} type="button" className="chip-button" onClick={() => void sendQuestion(prompt)} disabled={!hasContext}>{prompt}</button>)}
-        </div>
-
-        <div className="chat-composer">
-          <textarea value={chatQuestion} onChange={(event) => setChatQuestion(event.target.value)} onKeyDown={(event: KeyboardEvent<HTMLTextAreaElement>) => {
-            if (event.key === "Enter" && !event.shiftKey) {
-              event.preventDefault();
-              void sendQuestion(chatQuestion);
-            }
-          }} placeholder="Ask a grounded question about this forecast" disabled={!hasContext} />
-          <button className="primary-button" onClick={() => void sendQuestion(chatQuestion)} disabled={!hasContext || !chatQuestion.trim()}>Ask</button>
-        </div>
-      </section>
-
-      <section className="panel decision-support-live-panel">
-        <h3>Geospatial Conditions</h3>
-        {datasetScenarios.length > 0 ? <div className="scenario-control"><label htmlFor="scenario-select"><strong>Scenario</strong></label><div className="scenario-select"><select id="scenario-select" value={activeScenario} onChange={(e) => void activateDatasetScenario(e.target.value)}>{datasetScenarios.map((item) => <option key={item.scenario_id} value={item.scenario_id}>{item.label}</option>)}</select></div></div> : null}
-        <div className="values-section">
-          <h4>Current Conditions</h4>
-          <div className="values-grid compact-values-grid">{currentConditionsRows.map(([label, value]) => <div key={label} className="status-row"><strong>{label}</strong><span>{value}</span></div>)}</div>
-        </div>
-
-        <div className="values-section">
-          <h4>Forecast Result</h4>
-          <div className="values-grid compact-values-grid">{currentForecastRows.map(([label, value]) => <div key={label} className="status-row"><strong>{label}</strong><span>{value}</span></div>)}</div>
-          {plumePresent ? <div className="values-grid compact-values-grid">{plumeDetailRows.map(([label, value]) => <div key={`plume-${label}`} className="status-row"><strong>{label}</strong><span>{value}</span></div>)}</div> : null}
-        </div>
-
-        <details className="technical-details">
-          <summary>Details</summary>
-          <div className="values-grid compact-values-grid">{filterAvailableRows(detailsRows).map(([label, value]) => <div key={`details-${label}`} className="status-row"><strong>{label}</strong><span>{value}</span></div>)}</div>
-          <details className="technical-details nested-technical-details">
-            <summary>Technical details</summary>
-            <pre>{JSON.stringify(rawContext, null, 2)}</pre>
-          </details>
-        </details>
-      </section>
+      <DecisionChatPanel hasContext={hasContext} messages={messages} chatQuestion={chatQuestion} setChatQuestion={setChatQuestion} sendQuestion={sendQuestion} threadRef={threadRef} />
+      <ConditionsPanel datasetScenarios={datasetScenarios} activeScenario={activeScenario} activateDatasetScenario={activateDatasetScenario} currentConditionsRows={currentConditionsRows} currentForecastRows={currentForecastRows} plumePresent={plumePresent} plumeDetailRows={plumeDetailRows} detailsRows={detailsRows} filterAvailableRows={filterAvailableRows} rawContext={rawContext} />
     </div>
   </AppShell>;
 }
