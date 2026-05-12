@@ -820,3 +820,80 @@ textarea {
   align-items: center;
   padding-top: 12px;
 }
+
+.map-compass-overlay {
+  position: absolute;
+  top: 12px;
+  left: 12px;
+  z-index: 4;
+  pointer-events: none;
+}
+
+.map-compass {
+  position: relative;
+  width: 80px;
+  height: 80px;
+  border-radius: 14px;
+  border: 1px solid rgba(148, 163, 184, 0.35);
+  background: rgba(255, 255, 255, 0.8);
+  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.14);
+  backdrop-filter: blur(2px);
+}
+
+.map-compass-label {
+  position: absolute;
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: #475569;
+  line-height: 1;
+}
+
+.map-compass-label-n {
+  top: 6px;
+  left: 50%;
+  transform: translateX(-50%);
+  color: #0f172a;
+  font-weight: 700;
+}
+
+.map-compass-label-e {
+  right: 8px;
+  top: 50%;
+  transform: translateY(-50%);
+}
+
+.map-compass-label-s {
+  bottom: 6px;
+  left: 50%;
+  transform: translateX(-50%);
+}
+
+.map-compass-label-w {
+  left: 8px;
+  top: 50%;
+  transform: translateY(-50%);
+}
+
+.map-compass-needle {
+  position: absolute;
+  top: 14px;
+  left: 50%;
+  width: 2px;
+  height: 28px;
+  transform: translateX(-50%);
+  background: linear-gradient(180deg, #dc2626 0%, #94a3b8 100%);
+  border-radius: 999px;
+  opacity: 0.95;
+}
+
+.map-compass-center {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 8px;
+  height: 8px;
+  transform: translate(-50%, -50%);
+  border-radius: 999px;
+  background: #0f172a;
+  box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.85);
+}
