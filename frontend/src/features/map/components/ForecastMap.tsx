@@ -14,6 +14,7 @@ import type {
   SelectedFeatureState
 } from "../../forecast/types/forecast.types";
 import { isValidFeatureCollection } from "../utils/layerBuilders";
+import { MapCompassOverlay } from "./MapCompassOverlay";
 
 interface ForecastMapProps {
   geojson: GeoJsonFeatureCollection | null;
@@ -690,5 +691,9 @@ export function ForecastMap({
     applySelectedFeatureToMap(map, selectedFeature);
   }, [selectedFeature]);
 
-  return <div ref={mapContainerRef} className="forecast-map panel forecast-map-canvas" />;
+  return (
+    <div ref={mapContainerRef} className="forecast-map panel forecast-map-canvas">
+      <MapCompassOverlay />
+    </div>
+  );
 }
