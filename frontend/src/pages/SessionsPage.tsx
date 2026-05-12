@@ -14,12 +14,12 @@ import { useSessionActions } from "../features/sessions/hooks/useSessionActions"
 import { useSessionForecastBundle } from "../features/sessions/hooks/useSessionForecastBundle";
 import { useSessionForecastView } from "../features/sessions/context/SessionForecastViewContext";
 
-type SessionWorkspaceMode = "basic" | "operator";
+type SessionWorkspaceMode = "focused" | "developer";
 
 export function SessionsPage() {
   const { sessions, loading, error, refresh, createSession } = useSessions();
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null);
-  const [mode, setMode] = useState<SessionWorkspaceMode>("basic");
+  const [mode, setMode] = useState<SessionWorkspaceMode>("focused");
 
   const effectiveSessionId = useMemo(() => selectedSessionId ?? sessions[0]?.session_id ?? null, [selectedSessionId, sessions]);
   const sessionState = useSessionState(effectiveSessionId);
@@ -35,7 +35,7 @@ export function SessionsPage() {
     await Promise.all([refresh(), sessionState.refresh()]);
   });
 
-  const showOperatorPanels = mode === "operator";
+  const showDeveloperPanels = mode === "developer";
 
   useEffect(() => {
     setActiveSessionId(effectiveSessionId);
@@ -73,22 +73,22 @@ export function SessionsPage() {
       <section className="panel">
         <div className="button-row">
           <button
-            className={mode === "basic" ? "primary-button" : "secondary-button"}
+            className={mode === "focused" ? "primary-button" : "secondary-button"}
             type="button"
-            onClick={() => setMode("basic")}
+            onClick={() => setMode("focused")}
           >
             Focused
           </button>
           <button
-            className={mode === "operator" ? "primary-button" : "secondary-button"}
+            className={mode === "developer" ? "primary-button" : "secondary-button"}
             type="button"
-            onClick={() => setMode("operator")}
+            onClick={() => setMode("developer")}
           >
             Developer
           </button>
         </div>
         <p className="muted" style={{ marginBottom: 0 }}>
-          {mode === "basic"
+          {mode === "focused"
             ? "Focused view keeps only quick session checks for internal use."
             : "Developer view shows ingest, manual update, backend details, and raw state tools."}
         </p>
@@ -123,10 +123,10 @@ export function SessionsPage() {
         </div>
 
         <div className="workspace-column">
-          {showOperatorPanels ? <SessionStateRibbon detail={sessionState.detail} state={sessionState.state} /> : null}
+          {showDeveloperPanels ? <SessionStateRibbon detail={sessionState.detail} state={sessionState.state} /> : null}
           <PredictionRequestForm
             disabled={!effectiveSessionId || actions.runningAction !== null}
-            showAdvancedOptions={showOperatorPanels}
+            showAdvancedOptions={showDeveloperPanels}
             onPredict={async (payload) => {
               await actions.predict(payload);
               clearSelectedFeature();
@@ -142,7 +142,7 @@ export function SessionsPage() {
         </div>
       </div>
 
-      {showOperatorPanels ? (
+      {showDeveloperPanels ? (
         <details className="panel advanced-section" open>
           <summary>Developer controls</summary>
           <div className="advanced-content workspace-grid" style={{ gridTemplateColumns: "1fr 1fr 1fr" }}>

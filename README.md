@@ -17,7 +17,8 @@ Current deployment shape is a **modular monolith + worker boundary**:
 - **Forecast artifact boundary**: batch forecast artifacts are durably written to `artifacts/forecasts/<forecast_id>/...` and can be listed/retrieved by API.
 - **Retraining worker boundary (`src/plume/workers/retraining_worker.py`)**: API submits jobs; a dedicated worker process claims/executes jobs. Shared boundary is job store + model registry + operational state + event log.
 - **OpenRemote boundary (`src/plume/openremote`)**: optional external service registration lifecycle; disabled by default.
-- **Frontend workspaces (`frontend/src/pages`)**: React pages for Map/Forecast (`/forecast`), Sessions (`/sessions`), and Ops (`/ops`).
+- **Frontend workspaces (`frontend/src/pages`)**: React pages for Map / Forecast (`/forecast`), Forecast Overview / AI Decision Support (`/decision-support`), and Workspace / Ops status (`/ops`).
+- **Internal session tooling (`/sessions`)**: routable developer-focused runtime/session infrastructure inspection page; available but not part of the normal operator workflow.
 
 ## What is implemented now
 
@@ -328,10 +329,13 @@ If `VITE_API_BASE_URL` is unset, the frontend falls back to `http://localhost:80
 For remote pod usage, do not rely on browser `localhost` unless you are explicitly port-forwarding backend port `8000`.
 
 
-Frontend workspace routes now include functional operator-facing pages:
-- `/forecast`: existing forecast demo workflow (unchanged)
-- `/sessions`: session list/create/state/ingest/update/predict controls
-- `/ops`: operations workspace with status, retraining, registry, and event/audit panels
+Frontend workspace routes now align to the current operator workflow:
+- `/forecast`: Map / Forecast main operator entrypoint
+- `/decision-support`: Forecast Overview / AI Decision Support for explanation and forecast interpretation
+- `/ops`: Workspace / operations status (retraining, registry, event/audit, and system visibility)
+
+Internal/developer tooling route:
+- `/sessions`: developer session infrastructure tooling for inspecting runtime session behavior; it remains routable but is not part of the normal operator flow
 
 Ops read and write actions may require bearer-token auth depending on backend auth settings.
 By default, backend ops auth also requires auth for reads, so `VITE_OPS_API_TOKEN` may be needed to load ops pages as well as perform write actions.
