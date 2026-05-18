@@ -1,8 +1,10 @@
 from dataclasses import dataclass
-from .scenario import Scenario
-from .grid import GridSpec
 import datetime
+
 import numpy as np
+
+from .grid import GridSpec
+from .scenario import Scenario
 
 
 @dataclass

@@ -2,10 +2,20 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Any
+import importlib.util
 
 import numpy as np
-import torch
-from torch import nn
+if importlib.util.find_spec("torch") is None:
+    torch = None
+
+    class _NN:
+        class Module:
+            pass
+
+    nn = _NN()
+else:
+    import torch
+    from torch import nn
 
 
 class ConvLSTMCellTorch(nn.Module):
@@ -108,6 +118,8 @@ class TorchMultiStepConvLSTM(nn.Module):
 
 class TorchMultiStepConvLSTMCheckpoint:
     def __init__(self, checkpoint_path: str | Path, *, device: str = "cpu", checkpoint_strict: bool = True):
+        if torch is None:
+            raise ModuleNotFoundError("torch is required for TorchMultiStepConvLSTMCheckpoint")
         self.checkpoint_path = str(Path(checkpoint_path))
         self.device = device
         self.checkpoint_strict = checkpoint_strict
