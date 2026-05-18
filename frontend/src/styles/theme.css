@@ -899,7 +899,7 @@ textarea {
   box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.85);
 }
 
-.forecast-source-toggle {
+.forecast-controls {
   position: absolute;
   z-index: 30;
   top: 14px;
@@ -909,22 +909,6 @@ textarea {
   gap: 8px;
   align-items: center;
   flex-wrap: wrap;
-}
-
-.forecast-source-toggle button {
-  border: 1px solid rgba(203, 213, 225, 0.9);
-  background: rgba(248, 250, 252, 0.9);
-  color: #0f172a;
-  border-radius: 999px;
-  padding: 7px 12px;
-  font-size: 0.8rem;
-  font-weight: 600;
-}
-
-.forecast-source-toggle button.is-active {
-  background: rgba(15, 23, 42, 0.88);
-  color: #f8fafc;
-  border-color: rgba(15, 23, 42, 0.9);
 }
 
 .run-forecast-button {
@@ -1024,7 +1008,7 @@ textarea {
 }
 
 @media (max-width: 900px) {
-  .forecast-source-toggle,
+  .forecast-controls,
   .forecast-timeline-card {
     position: static;
   }
