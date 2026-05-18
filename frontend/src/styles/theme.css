@@ -902,14 +902,25 @@ textarea {
 .forecast-controls {
   position: absolute;
   z-index: 30;
-  top: 14px;
-  left: 14px;
-  right: 14px;
+  top: 16px;
+  left: 112px;
+  right: 74px;
   display: flex;
   gap: 8px;
   align-items: center;
-  flex-wrap: wrap;
+  justify-content: flex-end;
+  flex-wrap: nowrap;
+  background: rgba(255, 255, 255, 0.86);
+  backdrop-filter: blur(7px);
+  border: 1px solid rgba(203, 213, 225, 0.9);
+  border-radius: 999px;
+  padding: 6px 10px;
 }
+
+.forecast-controls-labels { display: grid; margin-right: auto; }
+.status-dot { width: 10px; height: 10px; border-radius: 999px; }
+.status-dot.is-ready { background: #16a34a; }
+.status-dot.is-running { background: #f59e0b; box-shadow: 0 0 0 4px rgba(245, 158, 11, 0.2); }
 
 .run-forecast-button {
   border-radius: 999px;
@@ -960,7 +971,7 @@ textarea {
 
 .forecast-timeline-slider {
   display: grid;
-  grid-template-columns: auto 1fr auto;
+  grid-template-columns: auto auto 1fr auto;
   gap: 10px;
   align-items: center;
 }
@@ -1005,6 +1016,32 @@ textarea {
   margin: 0;
   font-size: 0.82rem;
   color: #64748b;
+}
+
+.forecast-horizon-badge {
+  font-size: 1.05rem;
+  font-weight: 700;
+  border-radius: 999px;
+  background: #e8eef9;
+  padding: 6px 10px;
+  color: #0f172a;
+}
+
+.timeline-loading {
+  position: relative;
+  overflow: hidden;
+}
+.timeline-loading::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  transform: translateX(-100%);
+  background: linear-gradient(90deg, transparent, rgba(148, 163, 184, 0.22), transparent);
+  animation: timeline-shimmer 1.2s linear infinite;
+}
+
+@keyframes timeline-shimmer {
+  to { transform: translateX(100%); }
 }
 
 @media (max-width: 900px) {

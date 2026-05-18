@@ -27,6 +27,21 @@ export interface SessionStateSummary {
   [key: string]: unknown;
 }
 
+export interface InputCompletenessMetadata {
+  status?: string;
+  missing_channels?: string[];
+  missing_frame_indices?: number[];
+  observed_frame_count?: number;
+  required_frame_count?: number;
+}
+
+export interface AdapterMetadata {
+  input_mode?: string;
+  prediction_trust?: string;
+  input_completeness?: InputCompletenessMetadata;
+  meteorology_source_kind?: string;
+}
+
 export interface CreateSessionRequest {
   backend_name?: string;
   model_name?: string;

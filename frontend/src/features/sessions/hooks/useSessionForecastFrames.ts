@@ -61,8 +61,8 @@ export function useSessionForecastFrames(sessionId: string | null) {
     }
   }, []);
 
-  const refreshFrames = useCallback(async () => {
-    if (!sessionId) {
+  const refreshFramesForSession = useCallback(async (sessionIdOverride: string | null) => {
+    if (!sessionIdOverride) {
       clearFrames();
       return;
     }
@@ -70,7 +70,7 @@ export function useSessionForecastFrames(sessionId: string | null) {
     setState((previous) => ({ ...previous, frameLoading: true, frameError: null }));
 
     try {
-      const metadata = await sessionClient.getLatestForecastFrames(sessionId);
+      const metadata = await sessionClient.getLatestForecastFrames(sessionIdOverride);
       if (requestId !== sequenceRef.current) {
         return;
       }
@@ -84,7 +84,7 @@ export function useSessionForecastFrames(sessionId: string | null) {
         ? metadata.default_frame_index
         : metadata.frame_indices[0];
       setState((previous) => ({ ...previous, framesMetadata: metadata }));
-      await fetchFrame(sessionId, boundedDefault);
+      await fetchFrame(sessionIdOverride, boundedDefault);
     } catch (error) {
       if (requestId !== sequenceRef.current) {
         return;
@@ -92,7 +92,11 @@ export function useSessionForecastFrames(sessionId: string | null) {
       const message = error instanceof Error ? error.message : "Frame sequence unavailable";
       setState((previous) => ({ ...previous, frameLoading: false, frameError: message }));
     }
-  }, [clearFrames, fetchFrame, sessionId]);
+  }, [clearFrames, fetchFrame]);
+
+  const refreshFrames = useCallback(async (sessionIdOverride?: string) => {
+    await refreshFramesForSession(sessionIdOverride ?? sessionId);
+  }, [refreshFramesForSession, sessionId]);
 
   const setSelectedFrameIndex = useCallback((frameIndex: number) => {
     if (!sessionId) {
@@ -104,6 +108,7 @@ export function useSessionForecastFrames(sessionId: string | null) {
   return {
     ...state,
     refreshFrames,
+    refreshFramesForSession,
     setSelectedFrameIndex,
     clearFrames
   };

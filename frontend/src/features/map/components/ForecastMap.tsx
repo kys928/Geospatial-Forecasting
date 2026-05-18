@@ -21,6 +21,7 @@ interface ForecastMapProps {
   selectedFeature: SelectedFeatureState | null;
   onSelectFeature: (feature: SelectedFeatureState | null) => void;
   center?: [number, number] | null;
+  autoFitKey?: string | null;
 }
 
 const FORECAST_SOURCE_ID = "forecast-source";
@@ -241,7 +242,7 @@ function add3DBuildingsIfPossible(map: Map) {
 function applyGeojsonToMap(
   map: Map,
   geojson: GeoJsonFeatureCollection | null,
-  hasFittedRef: React.MutableRefObject<boolean>
+  shouldFitBounds: boolean
 ) {
   const normalized = normalizeGeojson(geojson);
 
@@ -258,18 +259,12 @@ function applyGeojsonToMap(
 
   const plumeOnly: GeoJsonFeatureCollection = { ...normalized, features: normalized.features.filter((f) => f.geometry?.type === "Polygon") };
   const bounds = plumeOnly.features.length ? getFeatureCollectionBounds(plumeOnly) : null;
-  if (bounds && !bounds.isEmpty()) {
+  if (shouldFitBounds && bounds && !bounds.isEmpty()) {
     map.fitBounds(bounds, {
-      padding: {
-        top: 56,
-        right: 56,
-        bottom: 56,
-        left: 56
-      },
-      duration: hasFittedRef.current ? 700 : 1100,
+      padding: { top: 56, right: 56, bottom: 56, left: 56 },
+      duration: 850,
       maxZoom: 18
     });
-    hasFittedRef.current = true;
   }
 }
 
@@ -293,17 +288,19 @@ export function ForecastMap({
   geojson,
   selectedFeature,
   onSelectFeature,
-  center = null
+  center = null,
+  autoFitKey = null
 }: ForecastMapProps) {
   const mapContainerRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<Map | null>(null);
   const hasFittedRef = useRef(false);
+  const lastFitKeyRef = useRef<string | null>(null);
   const latestGeojsonRef = useRef<GeoJsonFeatureCollection | null>(geojson);
   const latestSelectedFeatureRef = useRef<SelectedFeatureState | null>(selectedFeature);
 
   useEffect(() => {
     latestGeojsonRef.current = geojson;
-  }, [geojson]);
+  }, [autoFitKey, geojson]);
 
   useEffect(() => {
     if (!center || !mapRef.current) return;
@@ -655,7 +652,12 @@ export function ForecastMap({
         }
       });
 
-      applyGeojsonToMap(map, latestGeojsonRef.current, hasFittedRef);
+      const shouldFit = autoFitKey ? autoFitKey !== lastFitKeyRef.current : !hasFittedRef.current;
+      applyGeojsonToMap(map, latestGeojsonRef.current, shouldFit);
+      if (shouldFit) {
+        hasFittedRef.current = true;
+        lastFitKeyRef.current = autoFitKey;
+      }
       applySelectedFeatureToMap(map, latestSelectedFeatureRef.current);
     });
 
@@ -672,9 +674,13 @@ export function ForecastMap({
     if (!map) {
       return;
     }
-
-    applyGeojsonToMap(map, geojson, hasFittedRef);
-  }, [geojson]);
+    const shouldFit = autoFitKey ? autoFitKey !== lastFitKeyRef.current : !hasFittedRef.current;
+    applyGeojsonToMap(map, geojson, shouldFit);
+    if (shouldFit) {
+      hasFittedRef.current = true;
+      lastFitKeyRef.current = autoFitKey;
+    }
+  }, [autoFitKey, geojson]);
 
   useEffect(() => {
     if (center && mapRef.current && (!geojson || !geojson.features?.some((f) => f.geometry?.type === "Polygon"))) {
