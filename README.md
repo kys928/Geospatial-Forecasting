@@ -153,6 +153,10 @@ If `explanation.json` is missing (for older forecasts or when persistence is dis
 LLM decision-support configuration (local GGUF via `llama-cpp-python`, in-process):
 
 ```bash
+# Safe dev default (no local LLM required):
+export PLUME_EXPLANATION_BACKEND=stub
+
+# Optional local LLM mode:
 export PLUME_EXPLANATION_BACKEND=llm
 export PLUME_LLM_PROVIDER=local-gguf
 export PLUME_LOCAL_LLM_GGUF_PATH="/workspace/llm_runtime/models/Qwen_Qwen2.5-7B-Instruct.Q4_K_M.gguf"

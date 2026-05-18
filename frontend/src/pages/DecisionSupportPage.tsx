@@ -45,6 +45,7 @@ export function DecisionSupportPage() {
   const [datasetModeEnabled, setDatasetModeEnabled] = useState(false);
   const [, setSessionState] = useState<SessionStateSummary | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [llmWarning, setLlmWarning] = useState<string | null>(null);
   const [chatQuestion, setChatQuestion] = useState("");
   const [messages, setMessages] = useState<ChatMessage[]>(() => {
     try {
@@ -83,7 +84,14 @@ export function DecisionSupportPage() {
         setActiveScenario(selectedId);
         const contextUrl = playback.enabled ? "/forecast-context/latest?source=dataset" : "/forecast-context/latest";
         void httpGet<ForecastContextResponse>(contextUrl).then(setContext).catch(() => setContext(null));
-        void httpGet<DecisionSupportLatest>("/decision-support/latest").then(setData).catch((e) => setError(e instanceof Error ? e.message : "Unavailable"));
+        void httpGet<DecisionSupportLatest>("/decision-support/latest")
+          .then((latest) => {
+            setData(latest);
+            setLlmWarning(null);
+          })
+          .catch(() => {
+            setLlmWarning("LLM unavailable; using forecast context.");
+          });
       })
       .catch(() => setDatasetScenarios([]));
   }, []);
@@ -119,7 +127,7 @@ export function DecisionSupportPage() {
     thread.scrollTop = thread.scrollHeight;
   }, [messages]);
 
-  const hasContext = Boolean(latestForecastBundle || data || context);
+  const hasContext = Boolean(latestForecastBundle || data || context || activeScenario || datasetScenarios.length);
   const values = summary as Record<string, unknown>;
   const ctxForecast = context?.forecast ?? {};
   const ctxConditions = context?.conditions ?? {};
@@ -263,8 +271,13 @@ export function DecisionSupportPage() {
       const refreshed = await httpGet<ForecastContextResponse>("/forecast-context/latest?source=dataset");
       setContext(refreshed);
       setDatasetModeEnabled(true);
-      const latest = await httpGet<DecisionSupportLatest>("/decision-support/latest");
-      setData(latest);
+      try {
+        const latest = await httpGet<DecisionSupportLatest>("/decision-support/latest");
+        setData(latest);
+        setLlmWarning(null);
+      } catch {
+        setLlmWarning("LLM unavailable; using forecast context.");
+      }
     } catch {
       // ignore
     }
@@ -276,8 +289,10 @@ export function DecisionSupportPage() {
     setChatQuestion("");
     try {
       const response = await httpPost<{ answer?: string }>("/decision-support/chat", { message: question });
+      setLlmWarning(null);
       setMessages((prev) => [...prev, { role: "assistant", content: cleanAssistantText(safeText(response.answer, "No answer available.")) }]);
     } catch {
+      setLlmWarning("LLM unavailable; using forecast context.");
       const statusText = plumePresent ? "Plume detected above threshold" : safeText(ctxForecast.status, "No meaningful plume above threshold");
       const riskText = riskLevel;
       const windText = windSpeed !== "Unavailable" || windDirection !== "Unavailable" ? `Wind ${windSpeed} ${windDirection}`.trim() : "Wind details unavailable";
@@ -290,7 +305,7 @@ export function DecisionSupportPage() {
   return <AppShell title="Forecast Overview" subtitle="Forecast interpretation, current conditions, and plume result.">
     {error ? <section className="panel"><p>{error}</p></section> : null}
     <div className="decision-support-layout">
-      <DecisionChatPanel hasContext={hasContext} messages={messages} chatQuestion={chatQuestion} setChatQuestion={setChatQuestion} sendQuestion={sendQuestion} threadRef={threadRef} />
+      <DecisionChatPanel hasContext={hasContext} llmWarning={llmWarning} messages={messages} chatQuestion={chatQuestion} setChatQuestion={setChatQuestion} sendQuestion={sendQuestion} threadRef={threadRef} />
       <ConditionsPanel datasetScenarios={datasetScenarios} activeScenario={activeScenario} activateDatasetScenario={activateDatasetScenario} currentConditionsRows={currentConditionsRows} currentForecastRows={currentForecastRows} plumePresent={plumePresent} plumeDetailRows={plumeDetailRows} detailsRows={detailsRows} filterAvailableRows={filterAvailableRows} rawContext={rawContext} />
     </div>
   </AppShell>;
