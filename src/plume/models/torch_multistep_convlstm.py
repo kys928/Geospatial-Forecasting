@@ -16,6 +16,7 @@ if importlib.util.find_spec("torch") is None:
 else:
     import torch
     from torch import nn
+    import torch.nn.functional as F
 
 
 class ConvLSTMCellTorch(nn.Module):
@@ -60,15 +61,18 @@ class TorchMultiStepConvLSTM(nn.Module):
         hidden_channels: int = 64,
         num_encoder_layers: int = 2,
         future_steps: int = 4,
+        groupnorm_groups: int = 4,
+        output_activation: str | None = "softplus",
     ):
         super().__init__()
         if num_encoder_layers != 2:
             raise ValueError("TorchMultiStepConvLSTM currently requires num_encoder_layers=2")
         self.input_channels = input_channels
         self.future_steps = future_steps
+        self.output_activation = output_activation
         self.encoder = nn.Sequential(
             nn.Conv2d(input_channels, encoder_channels, kernel_size=3, padding=1),
-            nn.BatchNorm2d(encoder_channels),
+            nn.GroupNorm(num_groups=groupnorm_groups, num_channels=encoder_channels),
             nn.ReLU(),
         )
         self.encoder_lstm_layers = nn.ModuleList(
@@ -80,10 +84,20 @@ class TorchMultiStepConvLSTM(nn.Module):
         self.decoder_cell = ConvLSTMCellTorch(input_channels=1, hidden_channels=hidden_channels)
         self.decoder = nn.Sequential(
             nn.Conv2d(hidden_channels, encoder_channels, kernel_size=3, padding=1),
-            nn.BatchNorm2d(encoder_channels),
+            nn.GroupNorm(num_groups=groupnorm_groups, num_channels=encoder_channels),
             nn.ReLU(),
             nn.Conv2d(encoder_channels, 1, kernel_size=1),
         )
+
+    def _apply_output_activation(self, x: torch.Tensor) -> torch.Tensor:
+        activation = self.output_activation.lower() if isinstance(self.output_activation, str) else self.output_activation
+        if activation == "softplus":
+            return F.softplus(x)
+        if activation == "relu":
+            return torch.relu(x)
+        if activation in {None, "none", "linear"}:
+            return x
+        raise ValueError(f"Unsupported output_activation: {self.output_activation}")
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         if x.ndim != 5:
@@ -111,18 +125,27 @@ class TorchMultiStepConvLSTM(nn.Module):
         for _ in range(self.future_steps):
             dec_state = self.decoder_cell(decoder_input, dec_state)
             frame = self.decoder(dec_state[0])
+            frame = self._apply_output_activation(frame)
             outputs.append(frame)
             decoder_input = frame
         return torch.stack(outputs, dim=1)
 
 
 class TorchMultiStepConvLSTMCheckpoint:
-    def __init__(self, checkpoint_path: str | Path, *, device: str = "cpu", checkpoint_strict: bool = True):
+    def __init__(
+        self,
+        checkpoint_path: str | Path,
+        *,
+        device: str = "cpu",
+        strict: bool | None = None,
+        checkpoint_strict: bool | None = None,
+    ):
         if torch is None:
             raise ModuleNotFoundError("torch is required for TorchMultiStepConvLSTMCheckpoint")
         self.checkpoint_path = str(Path(checkpoint_path))
         self.device = device
-        self.checkpoint_strict = checkpoint_strict
+        resolved_strict = checkpoint_strict if checkpoint_strict is not None else strict
+        self.checkpoint_strict = bool(False if resolved_strict is None else resolved_strict)
         path = Path(self.checkpoint_path)
         if not path.exists():
             raise FileNotFoundError(f"ConvLSTM checkpoint not found: {path}")
@@ -136,17 +159,23 @@ class TorchMultiStepConvLSTMCheckpoint:
 
         config = raw.get("config") if isinstance(raw.get("config"), dict) else {}
         contract = raw.get("model_contract") if isinstance(raw.get("model_contract"), dict) else {}
+        model_config = config.get("model") if isinstance(config.get("model"), dict) else {}
+        data_config = config.get("data") if isinstance(config.get("data"), dict) else {}
 
-        future_steps = int(contract.get("future_steps") or config.get("future_steps") or 4)
+        future_steps = int(contract.get("future_steps") or data_config.get("future_steps") or config.get("future_steps") or 4)
+        groupnorm_groups = int(model_config.get("groupnorm_groups") or 4)
+        output_activation = model_config.get("output_activation", "softplus")
         model = TorchMultiStepConvLSTM(
             input_channels=int(contract.get("input_channels") or config.get("input_channels") or 10),
-            encoder_channels=int(contract.get("encoder_channels") or config.get("encoder_channels") or 32),
-            hidden_channels=int(contract.get("hidden_channels") or config.get("hidden_channels") or 64),
-            num_encoder_layers=int(contract.get("num_encoder_layers") or config.get("num_encoder_layers") or 2),
+            encoder_channels=int(contract.get("encoder_channels") or model_config.get("encoder_channels") or 32),
+            hidden_channels=int(contract.get("hidden_channels") or model_config.get("hidden_channels") or 64),
+            num_encoder_layers=int(contract.get("num_encoder_layers") or model_config.get("num_encoder_lstm_layers") or 2),
             future_steps=future_steps,
+            groupnorm_groups=groupnorm_groups,
+            output_activation=output_activation,
         )
         model.to(device)
-        load_result = model.load_state_dict(cleaned_state, strict=checkpoint_strict)
+        load_result = model.load_state_dict(cleaned_state, strict=self.checkpoint_strict)
         missing = list(load_result.missing_keys)
         unexpected = list(load_result.unexpected_keys)
         model.eval()
@@ -165,6 +194,9 @@ class TorchMultiStepConvLSTMCheckpoint:
             "future_steps": future_steps,
             "load_missing_keys": missing,
             "load_unexpected_keys": unexpected,
+            "normalization": "groupnorm",
+            "groupnorm_groups": groupnorm_groups,
+            "output_activation": output_activation,
         }
 
     def predict(self, sequence_np: np.ndarray) -> np.ndarray:
