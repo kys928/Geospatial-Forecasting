@@ -66,12 +66,8 @@ function getFallbackTitle(kind: string | null): string {
   switch (kind) {
     case "source":
       return "Emission source";
-    case "plume_band_high":
-      return "High plume band";
-    case "plume_band_medium":
-      return "Medium plume band";
-    case "plume_band_low":
-      return "Low plume band";
+    case "plume_cell":
+      return "Plume cell";
     case "forecast_extent":
       return "Forecast domain";
     default:
@@ -255,7 +251,7 @@ function applyGeojsonToMap(
 
   source.setData(normalized as GeoJSON.FeatureCollection);
 
-  const plumeOnly: GeoJsonFeatureCollection = { ...normalized, features: normalized.features.filter((f) => ["plume_band_low", "plume_band_medium", "plume_band_high"].includes(typeof f.properties?.kind === "string" ? f.properties.kind : "")) };
+  const plumeOnly: GeoJsonFeatureCollection = { ...normalized, features: normalized.features.filter((f) => (typeof f.properties?.kind === "string" ? f.properties.kind : "") === "plume_cell") };
   const bounds = plumeOnly.features.length ? getFeatureCollectionBounds(plumeOnly) : null;
   if (shouldFitBounds && bounds && !bounds.isEmpty()) {
     map.fitBounds(bounds, {
@@ -405,7 +401,7 @@ export function ForecastMap({
           "fill-color": "#000000",
           "fill-opacity": 0
         },
-        filter: ["all", ["==", ["get", "kind"], "plume_band_low"]]
+        filter: ["all", ["==", ["get", "kind"], "plume_cell"], ["==", ["get", "band"], "low"]]
       });
 
       map.addLayer({
@@ -416,7 +412,7 @@ export function ForecastMap({
           "fill-color": "#000000",
           "fill-opacity": 0
         },
-        filter: ["all", ["==", ["get", "kind"], "plume_band_medium"]]
+        filter: ["all", ["==", ["get", "kind"], "plume_cell"], ["==", ["get", "band"], "medium"]]
       });
 
       map.addLayer({
@@ -427,7 +423,7 @@ export function ForecastMap({
           "fill-color": "#000000",
           "fill-opacity": 0
         },
-        filter: ["all", ["==", ["get", "kind"], "plume_band_high"]]
+        filter: ["all", ["==", ["get", "kind"], "plume_cell"], ["==", ["get", "band"], "high"]]
       });
 
       map.addLayer({
@@ -436,9 +432,9 @@ export function ForecastMap({
         source: FORECAST_SOURCE_ID,
         paint: {
           "fill-color": "#fde68a",
-          "fill-opacity": 0.26
+          "fill-opacity": 0.18
         },
-        filter: ["all", ["==", ["get", "kind"], "plume_band_low"]]
+        filter: ["all", ["==", ["get", "kind"], "plume_cell"], ["==", ["get", "band"], "low"]]
       });
 
       map.addLayer({
@@ -448,9 +444,9 @@ export function ForecastMap({
         paint: {
           "line-color": "#facc15",
           "line-width": 1.0,
-          "line-opacity": 0.28
+          "line-opacity": 0.2
         },
-        filter: ["all", ["==", ["get", "kind"], "plume_band_low"]]
+        filter: ["all", ["==", ["get", "kind"], "plume_cell"], ["==", ["get", "band"], "low"]]
       });
 
       map.addLayer({
@@ -459,9 +455,9 @@ export function ForecastMap({
         source: FORECAST_SOURCE_ID,
         paint: {
           "fill-color": "#f59e0b",
-          "fill-opacity": 0.34
+          "fill-opacity": 0.32
         },
-        filter: ["all", ["==", ["get", "kind"], "plume_band_medium"]]
+        filter: ["all", ["==", ["get", "kind"], "plume_cell"], ["==", ["get", "band"], "medium"]]
       });
 
       map.addLayer({
@@ -471,9 +467,9 @@ export function ForecastMap({
         paint: {
           "line-color": "#d97706",
           "line-width": 1.2,
-          "line-opacity": 0.34
+          "line-opacity": 0.24
         },
-        filter: ["all", ["==", ["get", "kind"], "plume_band_medium"]]
+        filter: ["all", ["==", ["get", "kind"], "plume_cell"], ["==", ["get", "band"], "medium"]]
       });
 
       map.addLayer({
@@ -482,9 +478,9 @@ export function ForecastMap({
         source: FORECAST_SOURCE_ID,
         paint: {
           "fill-color": "#ef4444",
-          "fill-opacity": 0.42
+          "fill-opacity": 0.5
         },
-        filter: ["all", ["==", ["get", "kind"], "plume_band_high"]]
+        filter: ["all", ["==", ["get", "kind"], "plume_cell"], ["==", ["get", "band"], "high"]]
       });
 
       map.addLayer({
@@ -494,9 +490,9 @@ export function ForecastMap({
         paint: {
           "line-color": "#b91c1c",
           "line-width": 1.35,
-          "line-opacity": 0.32
+          "line-opacity": 0.28
         },
-        filter: ["all", ["==", ["get", "kind"], "plume_band_high"]]
+        filter: ["all", ["==", ["get", "kind"], "plume_cell"], ["==", ["get", "band"], "high"]]
       });
 
       map.addLayer({

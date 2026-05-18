@@ -18,6 +18,12 @@ class RasterMetadata:
     min_value: float
     max_value: float
     grid_spacing: float
+    columns: int
+    dx_meters: float
+    dy_meters: float
+    cell_area_m2: float
+    georeferencing_status: str
+    georeferencing_note: str
 
 
 class ExportService:
