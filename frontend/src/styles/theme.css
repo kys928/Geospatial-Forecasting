@@ -905,12 +905,12 @@ textarea {
   left: 50%;
   bottom: 18px;
   transform: translateX(-50%);
-  width: min(560px, calc(100% - 32px));
+  width: min(520px, calc(100% - 32px));
   display: grid;
-  grid-template-columns: auto auto auto auto 1fr auto;
+  grid-template-columns: auto auto auto 1fr auto;
   align-items: center;
   gap: 8px;
-  padding: 8px 10px;
+  padding: 7px 9px;
   border-radius: 999px;
   background: rgba(255, 255, 255, 0.88);
   backdrop-filter: blur(10px);
@@ -920,15 +920,6 @@ textarea {
 
 .map-column .forecast-timeline-card.is-disabled {
   opacity: 0.75;
-}
-
-.map-column .forecast-horizon-badge {
-  font-size: 0.82rem;
-  font-weight: 700;
-  border-radius: 999px;
-  background: #e8eef9;
-  padding: 4px 8px;
-  color: #0f172a;
 }
 
 .map-column .timeline-icon-button {
@@ -968,6 +959,6 @@ textarea {
   .map-column .forecast-timeline-card {
     width: calc(100% - 20px);
     bottom: 10px;
-    grid-template-columns: auto auto auto auto 1fr auto;
+    grid-template-columns: auto auto auto 1fr auto;
   }
 }
