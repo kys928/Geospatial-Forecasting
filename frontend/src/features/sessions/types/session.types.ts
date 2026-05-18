@@ -75,3 +75,14 @@ export interface SessionForecastBundle {
   rasterMetadata: Record<string, unknown>;
   explanation: Record<string, unknown>;
 }
+
+export interface ForecastFramesMetadata {
+  forecast_id: string;
+  model: string | null;
+  model_version: string | null;
+  frame_count: number;
+  frame_indices: number[];
+  default_frame_index: number;
+  shape: number[];
+  metadata?: Record<string, unknown>;
+}
