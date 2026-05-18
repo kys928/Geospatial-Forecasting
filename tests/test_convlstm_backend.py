@@ -441,3 +441,32 @@ def test_convlstm_backend_ridge_engine_missing_artifact_raises(tmp_path: Path):
     )
     with pytest.raises(FileNotFoundError, match="model artifact was not found"):
         ConvLSTMBackend(config=Config(config_dir=tmp_path))
+
+
+def test_convlstm_backend_torch_multistep_returns_sequence(tmp_path: Path):
+    pytest.importorskip("torch")
+    checkpoint = Path("artifacts/models/convlstm_multistep_autoreg_two_stage_v1/best_full_checkpoint.pt")
+    if not checkpoint.exists():
+        pytest.skip("checkpoint not present in test environment")
+    _write_backend_yaml(
+        tmp_path,
+        {
+            "default_backend": "convlstm_online",
+            "fallback_backend": "gaussian_fallback",
+            "state_store": "in_memory",
+            "convlstm_sequence_length": 3,
+            "convlstm_input_channels": 10,
+            "convlstm_prediction_engine": "torch_multistep",
+            "convlstm_checkpoint_path": str(checkpoint),
+            "convlstm_checkpoint_strict": False,
+            "convlstm_device": "cpu",
+        },
+    )
+    backend = ConvLSTMBackend(config=Config(config_dir=tmp_path))
+    session = backend.create_session()
+    state = backend.initialize_state(session)
+    request = PredictionRequest(session_id=session.session_id, grid_spec=_contract_grid_spec(), scenario=Config().load_scenario())
+    forecast = backend.predict(state, request)
+    assert forecast.concentration_grid.shape == (64, 64)
+    assert forecast.concentration_sequence is not None
+    assert forecast.concentration_sequence.shape == (4, 64, 64)

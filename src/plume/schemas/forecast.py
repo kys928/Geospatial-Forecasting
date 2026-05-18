@@ -11,3 +11,5 @@ class Forecast:
     timestamp: datetime.datetime
     scenario: Scenario
     grid_spec: GridSpec
+    concentration_sequence: np.ndarray | None = None
+    metadata: dict[str, object] | None = None
