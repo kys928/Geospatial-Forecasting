@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from fastapi import FastAPI, HTTPException
+from dataclasses import replace
 
 from plume.services.explanation_payloads import build_explanation_payload
 from plume.api.schemas import ObservationIngestRequest, SessionCreateRequest, SessionPredictionRequest
@@ -28,6 +29,17 @@ def _get_latest_session_forecast_result(runtime_client, session_id: str):
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+def _forecast_for_frame(result, frame_index: int):
+    sequence = result.forecast.concentration_sequence
+    if sequence is None:
+        if frame_index == 0:
+            return result
+        raise HTTPException(status_code=404, detail="Forecast does not include multiple frames")
+    if frame_index < 0 or frame_index >= int(sequence.shape[0]):
+        raise HTTPException(status_code=404, detail=f"Frame index {frame_index} out of range")
+    return replace(result, forecast=replace(result.forecast, concentration_grid=sequence[frame_index]))
 
 
 def register_session_routes(
@@ -141,6 +153,44 @@ def register_session_routes(
     def get_session_latest_forecast_raster_metadata(session_id: str):
         result = _get_latest_session_forecast_result(runtime_client, session_id)
         return export_service.to_raster_metadata(result).__dict__
+
+    @app.get("/sessions/{session_id}/forecast/latest/frames")
+    def get_session_latest_forecast_frames(session_id: str):
+        result = _get_latest_session_forecast_result(runtime_client, session_id)
+        seq = result.forecast.concentration_sequence
+        if seq is None:
+            shape = [result.forecast.concentration_grid.shape[0], result.forecast.concentration_grid.shape[1]]
+            frame_count = 1
+            indices = [0]
+        else:
+            frame_count = int(seq.shape[0])
+            indices = list(range(frame_count))
+            shape = [int(seq.shape[0]), int(seq.shape[1]), int(seq.shape[2])]
+        return {
+            "forecast_id": result.forecast_id,
+            "model": result.model_name,
+            "model_version": result.model_version,
+            "frame_count": frame_count,
+            "frame_indices": indices,
+            "default_frame_index": 0,
+            "shape": shape,
+            "metadata": result.forecast.metadata,
+        }
+
+    @app.get("/sessions/{session_id}/forecast/latest/frames/{frame_index}/summary")
+    def get_session_latest_forecast_frame_summary(session_id: str, frame_index: int):
+        result = _get_latest_session_forecast_result(runtime_client, session_id)
+        return forecast_service.summarize_forecast(_forecast_for_frame(result, frame_index))
+
+    @app.get("/sessions/{session_id}/forecast/latest/frames/{frame_index}/geojson")
+    def get_session_latest_forecast_frame_geojson(session_id: str, frame_index: int):
+        result = _get_latest_session_forecast_result(runtime_client, session_id)
+        return export_service.to_geojson(_forecast_for_frame(result, frame_index))
+
+    @app.get("/sessions/{session_id}/forecast/latest/frames/{frame_index}/raster-metadata")
+    def get_session_latest_forecast_frame_raster_metadata(session_id: str, frame_index: int):
+        result = _get_latest_session_forecast_result(runtime_client, session_id)
+        return export_service.to_raster_metadata(_forecast_for_frame(result, frame_index)).__dict__
 
     @app.get("/sessions/{session_id}/forecast/latest/explanation")
     def get_session_latest_forecast_explanation(session_id: str, threshold: float = 1e-5, use_llm: bool = True):

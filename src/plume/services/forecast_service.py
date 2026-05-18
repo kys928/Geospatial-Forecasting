@@ -89,7 +89,7 @@ class ForecastService:
         )
 
     def summarize_forecast(self, result):
-        return {
+        payload = {
             "forecast_id": result.forecast_id,
             "issued_at": result.issued_at.isoformat(),
             "model": result.model_name,
@@ -107,3 +107,14 @@ class ForecastService:
             },
             "timestamp": result.forecast.timestamp.isoformat(),
         }
+        if result.forecast.concentration_sequence is not None:
+            sequence = result.forecast.concentration_sequence
+            payload["frames"] = {
+                "frame_count": int(sequence.shape[0]),
+                "frame_indices": list(range(int(sequence.shape[0]))),
+                "default_frame_index": 0,
+                "shape": [int(sequence.shape[0]), int(sequence.shape[1]), int(sequence.shape[2])],
+            }
+        if result.forecast.metadata is not None:
+            payload["forecast_metadata"] = result.forecast.metadata
+        return payload
