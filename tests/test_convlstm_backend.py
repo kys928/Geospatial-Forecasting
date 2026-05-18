@@ -443,11 +443,27 @@ def test_convlstm_backend_ridge_engine_missing_artifact_raises(tmp_path: Path):
         ConvLSTMBackend(config=Config(config_dir=tmp_path))
 
 
-def test_convlstm_backend_torch_multistep_returns_sequence(tmp_path: Path):
+def test_convlstm_backend_torch_multistep_returns_sequence(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     pytest.importorskip("torch")
-    checkpoint = Path("artifacts/models/convlstm_multistep_autoreg_two_stage_v1/best_full_checkpoint.pt")
-    if not checkpoint.exists():
-        pytest.skip("checkpoint not present in test environment")
+    import torch
+    from plume.models.torch_multistep_convlstm import TorchMultiStepConvLSTM
+
+    checkpoint = tmp_path / "fake_multistep.pt"
+    model = TorchMultiStepConvLSTM(future_steps=4)
+    torch.save(
+        {
+            "model_state_dict": model.state_dict(),
+            "global_epoch": 1,
+            "stage_name": "test_stage",
+            "best_score": 1.23,
+            "config": {"future_steps": 4},
+            "model_contract": {"future_steps": 4},
+        },
+        checkpoint,
+    )
+    def _forbidden(*args, **kwargs):
+        raise AssertionError("MinimalConvLSTMModel.load_checkpoint must not be called for torch_multistep")
+    monkeypatch.setattr(MinimalConvLSTMModel, "load_checkpoint", _forbidden)
     _write_backend_yaml(
         tmp_path,
         {

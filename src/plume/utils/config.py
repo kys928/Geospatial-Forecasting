@@ -1,4 +1,5 @@
 from pathlib import Path
+import os
 import yaml
 
 from ..schemas.Inference import Inference, Plot
@@ -46,7 +47,40 @@ class Config:
         backend_yaml = self.config_dir / "backend.yaml"
         with backend_yaml.open("r", encoding="utf-8") as f:
             backend = yaml.safe_load(f)
-        return backend
+        return self._apply_backend_env_overrides(backend)
+
+
+
+    def _apply_backend_env_overrides(self, backend: dict[str, object]) -> dict[str, object]:
+        overrides: dict[str, tuple[str, str]] = {
+            "PLUME_CONVLSTM_PREDICTION_ENGINE": ("convlstm_prediction_engine", "str"),
+            "PLUME_CONVLSTM_CHECKPOINT_PATH": ("convlstm_checkpoint_path", "str"),
+            "PLUME_CONVLSTM_INIT_MODE": ("convlstm_init_mode", "str"),
+            "PLUME_CONVLSTM_DEVICE": ("convlstm_device", "str"),
+            "PLUME_CONVLSTM_CHECKPOINT_STRICT": ("convlstm_checkpoint_strict", "bool"),
+            "PLUME_CONVLSTM_FORECAST_HORIZON": ("convlstm_forecast_horizon", "int"),
+            "PLUME_CONVLSTM_INPUT_MODE": ("convlstm_input_mode", "str"),
+        }
+
+        out = dict(backend)
+        for env_key, (cfg_key, kind) in overrides.items():
+            raw = os.getenv(env_key)
+            if raw is None:
+                continue
+            value = raw.strip()
+            if kind == "bool":
+                lowered = value.lower()
+                if lowered in {"1", "true", "yes", "on"}:
+                    out[cfg_key] = True
+                elif lowered in {"0", "false", "no", "off"}:
+                    out[cfg_key] = False
+                else:
+                    raise ValueError(f"Invalid boolean value for {env_key}: {raw}")
+            elif kind == "int":
+                out[cfg_key] = int(value)
+            else:
+                out[cfg_key] = value
+        return out
 
     def load_openremote(self) -> dict[str, object]:
         openremote_yaml = self.config_dir / "openremote.yaml"

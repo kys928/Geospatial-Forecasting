@@ -54,14 +54,9 @@ class ConvLSTMBackend(BaseBackend):
         if self.prediction_engine not in {"convlstm", "ridge_baseline", "torch_multistep"}:
             raise ValueError(f"Unsupported convlstm_prediction_engine: {self.prediction_engine}")
         self.ridge_model_path = self.backend_config.get("convlstm_ridge_model_path", "artifacts/models/ridge_plume_baseline.pkl")
-        self.ridge_artifact: dict[str, object] | None = None
-
+        self.model = None
         self.torch_model = None
-        self.model = MinimalConvLSTMModel(
-            input_channels=self.input_channels,
-            hidden_channels=hidden_channels,
-            seed=seed,
-        )
+        self.ridge_artifact: dict[str, object] | None = None
         self.device = str(self.backend_config.get("convlstm_device", "cpu")).strip().lower()
         if self.prediction_engine == "torch_multistep" and self.device == "cuda":
             torch_spec = importlib.util.find_spec("torch")
@@ -103,6 +98,70 @@ class ConvLSTMBackend(BaseBackend):
         return value
 
     def _initialize_model_weights(self) -> None:
+        if self.prediction_engine == "torch_multistep":
+            checkpoint = self.checkpoint_path
+            if checkpoint is None or not str(checkpoint).strip():
+                raise ValueError("convlstm_prediction_engine=torch_multistep requires convlstm_checkpoint_path")
+            if importlib.util.find_spec("torch") is None:
+                raise ModuleNotFoundError("torch is required for convlstm_prediction_engine=torch_multistep")
+            from plume.models.torch_multistep_convlstm import TorchMultiStepConvLSTMCheckpoint
+
+            resolved_checkpoint = Path(str(checkpoint)).expanduser()
+            if not resolved_checkpoint.is_absolute():
+                resolved_checkpoint = Path.cwd() / resolved_checkpoint
+            resolved_checkpoint = resolved_checkpoint.resolve()
+            self.torch_model = TorchMultiStepConvLSTMCheckpoint(
+                str(resolved_checkpoint),
+                device=self.device,
+                checkpoint_strict=self.checkpoint_strict,
+            )
+            self.model_source = "checkpoint"
+            stage_name = self.torch_model.metadata.get("stage_name")
+            global_epoch = self.torch_model.metadata.get("global_epoch")
+            if stage_name is not None or global_epoch is not None:
+                self.model_version = f"global_epoch_{global_epoch or 'unknown'}_{stage_name or 'stage'}"
+            else:
+                self.model_version = resolved_checkpoint.stem
+            self.output_space = "transformed_plume_or_model_space"
+            self.load_metadata = {
+                **self.load_metadata,
+                "load_status": "loaded",
+                "prediction_engine": "torch_multistep",
+                "checkpoint_path": str(resolved_checkpoint),
+                "model_source": self.model_source,
+                "model_version": self.model_version,
+                "output_space": self.output_space,
+                "temporary_model_substitution": False,
+                "checkpoint_metadata": self.torch_model.metadata,
+            }
+            return
+
+        if self.prediction_engine == "ridge_baseline":
+            resolved = Path(str(self.ridge_model_path)).expanduser()
+            if not resolved.is_absolute():
+                resolved = Path.cwd() / resolved
+            resolved = resolved.resolve()
+            self.ridge_artifact = load_ridge_artifact(resolved)
+            self.model_source = "ridge_baseline_temporary"
+            self.model_version = str(self.ridge_artifact.get("model_version") or "ridge_baseline_pickle")
+            self.output_space = "demo_raw_physical"
+            self.load_metadata = {
+                **self.load_metadata,
+                "prediction_engine": "ridge_baseline",
+                "temporary_model_substitution": True,
+                "ridge_model_path": str(resolved),
+                "ridge_load_status": "loaded",
+                "model_source": self.model_source,
+                "model_version": self.model_version,
+                "output_space": self.output_space,
+            }
+            return
+
+        self.model = MinimalConvLSTMModel(
+            input_channels=self.input_channels,
+            hidden_channels=int(self.backend_config.get("convlstm_hidden_channels", 8)),
+            seed=int(self.backend_config.get("convlstm_random_seed", 7)),
+        )
         checkpoint = self.checkpoint_path
         if self.use_model_registry:
             if self.model_registry_path is None or not str(self.model_registry_path).strip():
@@ -163,63 +222,11 @@ class ConvLSTMBackend(BaseBackend):
                 "output_space": self.output_space,
             }
 
-        if self.prediction_engine == "torch_multistep":
-            if checkpoint is None or not str(checkpoint).strip():
-                raise ValueError("convlstm_prediction_engine=torch_multistep requires convlstm_checkpoint_path")
-            if importlib.util.find_spec("torch") is None:
-                raise ModuleNotFoundError("torch is required for convlstm_prediction_engine=torch_multistep")
-            from plume.models.torch_multistep_convlstm import TorchMultiStepConvLSTMCheckpoint
-
-            self.torch_model = TorchMultiStepConvLSTMCheckpoint(
-                str(Path(checkpoint)),
-                device=self.device,
-                checkpoint_strict=self.checkpoint_strict,
-            )
-            self.model_source = "checkpoint"
-            stage_name = self.torch_model.metadata.get("stage_name")
-            global_epoch = self.torch_model.metadata.get("global_epoch")
-            if stage_name is not None or global_epoch is not None:
-                self.model_version = f"{stage_name or 'stage'}_epoch_{global_epoch or 'unknown'}"
-            else:
-                self.model_version = Path(str(checkpoint)).stem
-            self.output_space = "transformed_plume_or_model_space"
-            self.load_metadata = {
-                **self.load_metadata,
-                "load_status": "loaded",
-                "model_source": self.model_source,
-                "model_version": self.model_version,
-                "output_space": self.output_space,
-                "prediction_engine": self.prediction_engine,
-                "checkpoint_path": str(Path(checkpoint)),
-                "checkpoint_metadata": self.torch_model.metadata,
-                "temporary_model_substitution": False,
-            }
-        elif self.prediction_engine == "ridge_baseline":
-            resolved = Path(str(self.ridge_model_path)).expanduser()
-            if not resolved.is_absolute():
-                resolved = Path.cwd() / resolved
-            resolved = resolved.resolve()
-            self.ridge_artifact = load_ridge_artifact(resolved)
-            self.model_source = "ridge_baseline_temporary"
-            self.model_version = str(self.ridge_artifact.get("model_version") or "ridge_baseline_pickle")
-            self.output_space = "demo_raw_physical"
-            self.load_metadata = {
-                **self.load_metadata,
-                "model_source": self.model_source,
-                "model_version": self.model_version,
-                "output_space": self.output_space,
-                "prediction_engine": self.prediction_engine,
-                "ridge_model_path": str(resolved),
-                "ridge_load_status": "loaded",
-                "ridge_downsample_factor": int(self.ridge_artifact.get("downsample_factor", 4)),
-                "temporary_model_substitution": True,
-            }
-        else:
-            self.load_metadata = {
-                **self.load_metadata,
-                "prediction_engine": self.prediction_engine,
-                "temporary_model_substitution": False,
-            }
+        self.load_metadata = {
+            **self.load_metadata,
+            "prediction_engine": self.prediction_engine,
+            "temporary_model_substitution": False,
+        }
 
     def create_session(self, *, model_name: str | None = None, metadata: dict[str, object] | None = None) -> BackendSession:
         now = datetime.now(timezone.utc)
@@ -350,6 +357,7 @@ class ConvLSTMBackend(BaseBackend):
                     "prediction_engine": "torch_multistep",
                     "frame_count": int(sequence.shape[0]),
                     "frame_indices": list(range(sequence.shape[0])),
+                    "default_frame_index": 0,
                     "checkpoint_metadata": self.torch_model.metadata,
                     "output_shape_order": "(future_steps,H,W)",
                 },
@@ -357,6 +365,8 @@ class ConvLSTMBackend(BaseBackend):
                 scenario=scenario,
                 grid_spec=grid_spec,
             )
+        if self.model is None:
+            raise RuntimeError("Legacy ConvLSTM model is not initialized")
         concentration_grid = self.model.forward(adapter_result.tensor)
         return Forecast(
             concentration_grid=concentration_grid,

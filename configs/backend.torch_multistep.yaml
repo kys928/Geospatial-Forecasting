@@ -10,10 +10,12 @@ convlstm_input_mode: degraded
 use_model_registry: false
 model_registry_path: null
 
-convlstm_prediction_engine: convlstm
-convlstm_checkpoint_path: null
-convlstm_init_mode: random_init
-convlstm_device: cpu
-convlstm_checkpoint_strict: true
+convlstm_prediction_engine: torch_multistep
+convlstm_checkpoint_path: artifacts/models/convlstm_multistep_autoreg_two_stage_v1/best_full_checkpoint.pt
+convlstm_init_mode: checkpoint_required
+convlstm_device: cuda
+convlstm_checkpoint_strict: false
+convlstm_forecast_horizon: 4
+convlstm_output_mode: multiframe
 
 convlstm_ridge_model_path: artifacts/models/ridge_plume_baseline.pkl
