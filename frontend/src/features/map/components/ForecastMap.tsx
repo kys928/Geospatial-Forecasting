@@ -41,8 +41,6 @@ const PLUME_HIGH_FILL_LAYER_ID = "forecast-plume-high-fill";
 const PLUME_LOW_OUTLINE_LAYER_ID = "forecast-plume-low-outline";
 const PLUME_MEDIUM_OUTLINE_LAYER_ID = "forecast-plume-medium-outline";
 const PLUME_HIGH_OUTLINE_LAYER_ID = "forecast-plume-high-outline";
-const PLUME_GENERIC_FILL_LAYER_ID = "forecast-plume-generic-fill";
-const PLUME_GENERIC_OUTLINE_LAYER_ID = "forecast-plume-generic-outline";
 
 const SOURCE_HIT_LAYER_ID = "forecast-source-hit";
 const SOURCE_POINT_LAYER_ID = "forecast-source-point";
@@ -257,7 +255,7 @@ function applyGeojsonToMap(
 
   source.setData(normalized as GeoJSON.FeatureCollection);
 
-  const plumeOnly: GeoJsonFeatureCollection = { ...normalized, features: normalized.features.filter((f) => f.geometry?.type === "Polygon") };
+  const plumeOnly: GeoJsonFeatureCollection = { ...normalized, features: normalized.features.filter((f) => ["plume_band_low", "plume_band_medium", "plume_band_high"].includes(typeof f.properties?.kind === "string" ? f.properties.kind : "")) };
   const bounds = plumeOnly.features.length ? getFeatureCollectionBounds(plumeOnly) : null;
   if (shouldFitBounds && bounds && !bounds.isEmpty()) {
     map.fitBounds(bounds, {
@@ -461,7 +459,7 @@ export function ForecastMap({
         source: FORECAST_SOURCE_ID,
         paint: {
           "fill-color": "#f59e0b",
-          "fill-opacity": 0.44
+          "fill-opacity": 0.34
         },
         filter: ["all", ["==", ["get", "kind"], "plume_band_medium"]]
       });
@@ -484,7 +482,7 @@ export function ForecastMap({
         source: FORECAST_SOURCE_ID,
         paint: {
           "fill-color": "#ef4444",
-          "fill-opacity": 0.62
+          "fill-opacity": 0.42
         },
         filter: ["all", ["==", ["get", "kind"], "plume_band_high"]]
       });
@@ -496,40 +494,9 @@ export function ForecastMap({
         paint: {
           "line-color": "#b91c1c",
           "line-width": 1.35,
-          "line-opacity": 0.42
+          "line-opacity": 0.32
         },
         filter: ["all", ["==", ["get", "kind"], "plume_band_high"]]
-      });
-
-      map.addLayer({
-        id: PLUME_GENERIC_FILL_LAYER_ID,
-        type: "fill",
-        source: FORECAST_SOURCE_ID,
-        paint: {
-          "fill-color": "#7c3aed",
-          "fill-opacity": 0.35
-        },
-        filter: [
-          "all",
-          ["any", ["==", "$type", "Polygon"], ["==", "$type", "MultiPolygon"]],
-          ["!", ["in", ["coalesce", ["get", "kind"], ""], ["literal", ["forecast_extent", "plume_band_low", "plume_band_medium", "plume_band_high"]]]]
-        ]
-      });
-
-      map.addLayer({
-        id: PLUME_GENERIC_OUTLINE_LAYER_ID,
-        type: "line",
-        source: FORECAST_SOURCE_ID,
-        paint: {
-          "line-color": "#5b21b6",
-          "line-width": 1.4,
-          "line-opacity": 0.8
-        },
-        filter: [
-          "all",
-          ["any", ["==", "$type", "Polygon"], ["==", "$type", "MultiPolygon"]],
-          ["!", ["in", ["coalesce", ["get", "kind"], ""], ["literal", ["forecast_extent", "plume_band_low", "plume_band_medium", "plume_band_high"]]]]
-        ]
       });
 
       map.addLayer({
