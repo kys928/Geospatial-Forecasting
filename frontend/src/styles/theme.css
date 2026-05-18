@@ -899,7 +899,7 @@ textarea {
   box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.85);
 }
 
-.forecast-controls {
+.map-column .forecast-controls {
   position: absolute;
   z-index: 30;
   top: 16px;
@@ -917,17 +917,17 @@ textarea {
   padding: 6px 10px;
 }
 
-.forecast-controls-labels { display: grid; margin-right: auto; }
-.status-dot { width: 10px; height: 10px; border-radius: 999px; }
-.status-dot.is-ready { background: #16a34a; }
-.status-dot.is-running { background: #f59e0b; box-shadow: 0 0 0 4px rgba(245, 158, 11, 0.2); }
+.map-column .forecast-controls-labels { display: grid; margin-right: auto; }
+.map-column .status-dot { width: 10px; height: 10px; border-radius: 999px; }
+.map-column .status-dot.is-ready { background: #16a34a; }
+.map-column .status-dot.is-running { background: #f59e0b; box-shadow: 0 0 0 4px rgba(245, 158, 11, 0.2); }
 
-.run-forecast-button {
+.map-column .run-forecast-button {
   border-radius: 999px;
   padding: 7px 12px;
 }
 
-.forecast-timeline-card {
+.map-column .forecast-timeline-card {
   position: absolute;
   z-index: 30;
   left: 14px;
@@ -944,11 +944,11 @@ textarea {
   gap: 10px;
 }
 
-.forecast-timeline-card.is-disabled {
+.map-column .forecast-timeline-card.is-disabled {
   opacity: 0.75;
 }
 
-.forecast-timeline-header {
+.map-column .forecast-timeline-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -962,21 +962,21 @@ textarea {
   color: #1e293b;
 }
 
-.forecast-timeline-controls {
+.map-column .forecast-timeline-controls {
   display: flex;
   gap: 8px;
   align-items: center;
   flex-wrap: wrap;
 }
 
-.forecast-timeline-slider {
+.map-column .forecast-timeline-slider {
   display: grid;
   grid-template-columns: auto auto 1fr auto;
   gap: 10px;
   align-items: center;
 }
 
-.forecast-timeline-slider input[type="range"] {
+.map-column .forecast-timeline-slider input[type="range"] {
   width: 100%;
 }
 
@@ -1004,7 +1004,7 @@ textarea {
   max-width: 280px;
 }
 
-.forecast-timeline-stats {
+.map-column .forecast-timeline-stats {
   display: flex;
   gap: 12px;
   flex-wrap: wrap;
@@ -1012,13 +1012,13 @@ textarea {
   color: #334155;
 }
 
-.timeline-note {
+.map-column .timeline-note {
   margin: 0;
   font-size: 0.82rem;
   color: #64748b;
 }
 
-.forecast-horizon-badge {
+.map-column .forecast-horizon-badge {
   font-size: 1.05rem;
   font-weight: 700;
   border-radius: 999px;
@@ -1027,11 +1027,11 @@ textarea {
   color: #0f172a;
 }
 
-.timeline-loading {
+.map-column .timeline-loading {
   position: relative;
   overflow: hidden;
 }
-.timeline-loading::after {
+.map-column .timeline-loading::after {
   content: "";
   position: absolute;
   inset: 0;
@@ -1045,16 +1045,16 @@ textarea {
 }
 
 @media (max-width: 900px) {
-  .forecast-controls,
-  .forecast-timeline-card {
+  .map-column .forecast-controls,
+  .map-column .forecast-timeline-card {
     position: static;
   }
 
-  .forecast-timeline-controls {
+  .map-column .forecast-timeline-controls {
     width: 100%;
   }
 
-  .forecast-timeline-stats {
+  .map-column .forecast-timeline-stats {
     flex-direction: column;
     gap: 6px;
   }
