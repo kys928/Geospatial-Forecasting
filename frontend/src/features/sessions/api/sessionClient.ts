@@ -5,6 +5,7 @@ import type {
   IngestObservationsResponse,
   SessionDetail,
   SessionForecastBundle,
+  ForecastFramesMetadata,
   SessionPredictionRequest,
   SessionPredictionResponse,
   SessionStateSummary,
@@ -43,6 +44,18 @@ export const sessionClient = {
       httpGet<Record<string, unknown>>(`/sessions/${sessionId}/forecast/latest/explanation`)
     ]);
     return { summary, geojson, rasterMetadata, explanation };
+  },
+  getLatestForecastFrames(sessionId: string): Promise<ForecastFramesMetadata> {
+    return httpGet<ForecastFramesMetadata>(`/sessions/${sessionId}/forecast/latest/frames`);
+  },
+  getLatestForecastFrameSummary(sessionId: string, frameIndex: number): Promise<Record<string, unknown>> {
+    return httpGet<Record<string, unknown>>(`/sessions/${sessionId}/forecast/latest/frames/${frameIndex}/summary`);
+  },
+  getLatestForecastFrameGeoJson(sessionId: string, frameIndex: number): Promise<Record<string, unknown>> {
+    return httpGet<Record<string, unknown>>(`/sessions/${sessionId}/forecast/latest/frames/${frameIndex}/geojson`);
+  },
+  getLatestForecastFrameRasterMetadata(sessionId: string, frameIndex: number): Promise<Record<string, unknown>> {
+    return httpGet<Record<string, unknown>>(`/sessions/${sessionId}/forecast/latest/frames/${frameIndex}/raster-metadata`);
   },
   clearSession() { localStorage.removeItem(ACTIVE_SESSION_STORAGE_KEY); },
   async ensureSession(): Promise<EnsureSessionResult> {
