@@ -8,7 +8,7 @@ import { sessionClient } from "../features/sessions/api/sessionClient";
 import { useSessionForecastView } from "../features/sessions/context/SessionForecastViewContext";
 import { useSessionForecastFrames } from "../features/sessions/hooks/useSessionForecastFrames";
 
-type MapPipelineStatus = "idle" | "creating_session" | "predicting" | "loading_bundle" | "loading_frames" | "ready" | "no_plume_cells" | "error";
+type MapPipelineStatus = "idle" | "creating_session" | "predicting" | "loading_bundle" | "loading_frames" | "ready" | "error";
 
 export function ForecastPage() {
   const {
@@ -35,15 +35,9 @@ export function ForecastPage() {
   const hasAutoBootstrappedRef = useRef(false);
   const [mapPipelineStatus, setMapPipelineStatus] = useState<MapPipelineStatus>("idle");
   const [mapPipelineError, setMapPipelineError] = useState<string | null>(null);
-  const [lastFrameFeatureCount, setLastFrameFeatureCount] = useState<number | null>(null);
-  const [lastFramePlumeCellCount, setLastFramePlumeCellCount] = useState<number | null>(null);
-  const [lastFrameKinds, setLastFrameKinds] = useState<string[]>([]);
 
   const inspectFrameGeoJson = (geojson: Record<string, unknown> | null) => {
     const counts = countGeojsonKinds(geojson);
-    setLastFrameFeatureCount(counts.featureCount);
-    setLastFramePlumeCellCount(counts.plumeCellCount);
-    setLastFrameKinds(counts.kinds);
     if (import.meta.env.DEV) {
       console.debug("[forecast-map] frame geojson", counts);
     }
@@ -63,7 +57,7 @@ export function ForecastPage() {
         setMapPipelineStatus("loading_frames");
         const frameResult = await refreshFrames(activeSessionId);
         const counts = inspectFrameGeoJson(frameResult?.selectedFrameGeoJson ?? null);
-        setMapPipelineStatus(counts.plumeCellCount > 0 ? "ready" : "no_plume_cells");
+        setMapPipelineStatus("ready");
         hasAutoBootstrappedRef.current = true;
         return;
       }
@@ -92,7 +86,7 @@ export function ForecastPage() {
       setMapPipelineStatus("loading_frames");
       const frameResult = await refreshFramesForSession(runResult.sessionId);
       const counts = inspectFrameGeoJson(frameResult?.selectedFrameGeoJson ?? null);
-      setMapPipelineStatus(counts.plumeCellCount > 0 ? "ready" : "no_plume_cells");
+      setMapPipelineStatus("ready");
       hasAutoBootstrappedRef.current = true;
     };
 
@@ -120,7 +114,7 @@ export function ForecastPage() {
     if (!selectedFrameGeoJson) return;
     const counts = inspectFrameGeoJson(selectedFrameGeoJson);
     if (mapPipelineStatus === "loading_frames" || mapPipelineStatus === "idle") {
-      setMapPipelineStatus(counts.plumeCellCount > 0 ? "ready" : "no_plume_cells");
+      setMapPipelineStatus("ready");
     }
   }, [mapPipelineStatus, selectedFrameGeoJson]);
 
@@ -149,17 +143,7 @@ export function ForecastPage() {
           disabled={timelineDisabled}
         />
         {frameError ? <span className="sr-only">{frameError}</span> : null}
-        {import.meta.env.DEV ? (
-          <div style={{ position: "absolute", right: 12, top: 12, zIndex: 10, background: "rgba(15,23,42,0.85)", color: "#e2e8f0", fontSize: 11, lineHeight: 1.3, padding: "6px 8px", borderRadius: 6, maxWidth: 320 }}>
-            <div><strong>status:</strong> {mapPipelineStatus}</div>
-            <div><strong>session:</strong> {activeSessionId ? `${activeSessionId.slice(0, 8)}…` : "none"}</div>
-            <div><strong>features:</strong> {lastFrameFeatureCount ?? "-"}</div>
-            <div><strong>plume_cells:</strong> {lastFramePlumeCellCount ?? "-"}</div>
-            <div><strong>kinds:</strong> {lastFrameKinds.join(", ") || "-"}</div>
-            <div><strong>frameError:</strong> {frameError ?? "-"}</div>
-            <div><strong>error:</strong> {mapPipelineError ?? "-"}</div>
-          </div>
-        ) : null}
+        
       </main>
     </AppShell>
   );
