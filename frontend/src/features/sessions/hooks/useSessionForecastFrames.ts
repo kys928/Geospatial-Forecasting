@@ -11,6 +11,13 @@ interface UseSessionForecastFramesState {
   frameError: string | null;
 }
 
+export interface RefreshedFrameResult {
+  framesMetadata: ForecastFramesMetadata;
+  selectedFrameIndex: number;
+  selectedFrameSummary: Record<string, unknown>;
+  selectedFrameGeoJson: Record<string, unknown>;
+}
+
 const INITIAL_STATE: UseSessionForecastFramesState = {
   framesMetadata: null,
   selectedFrameIndex: 0,
@@ -29,7 +36,7 @@ export function useSessionForecastFrames(sessionId: string | null) {
     setState(INITIAL_STATE);
   }, []);
 
-  const fetchFrame = useCallback(async (id: string, frameIndex: number) => {
+  const fetchFrame = useCallback(async (id: string, frameIndex: number): Promise<{ summary: Record<string, unknown>; geojson: Record<string, unknown> }> => {
     const requestId = ++sequenceRef.current;
     setState((previous) => ({ ...previous, selectedFrameIndex: frameIndex, frameLoading: true, frameError: null }));
     try {
@@ -38,7 +45,7 @@ export function useSessionForecastFrames(sessionId: string | null) {
         sessionClient.getLatestForecastFrameGeoJson(id, frameIndex)
       ]);
       if (requestId !== sequenceRef.current) {
-        return;
+        throw new Error(`Frame request superseded before completion for /sessions/${id}/forecast/latest/frames/${frameIndex}`);
       }
       setState((previous) => ({
         ...previous,
@@ -48,23 +55,25 @@ export function useSessionForecastFrames(sessionId: string | null) {
         frameLoading: false,
         frameError: null
       }));
+      return { summary, geojson };
     } catch (error) {
       if (requestId !== sequenceRef.current) {
-        return;
+        throw new Error(`Frame request superseded for /sessions/${id}/forecast/latest/frames/${frameIndex}`);
       }
       setState((previous) => ({
         ...previous,
         selectedFrameIndex: frameIndex,
         frameLoading: false,
-        frameError: error instanceof Error ? error.message : "Could not load selected frame"
+        frameError: `GET /sessions/${id}/forecast/latest/frames/${frameIndex}/summary|geojson failed: ${error instanceof Error ? error.message : "Could not load selected frame"}`
       }));
+      throw error;
     }
   }, []);
 
-  const refreshFramesForSession = useCallback(async (sessionIdOverride: string | null) => {
+  const refreshFramesForSession = useCallback(async (sessionIdOverride: string | null): Promise<RefreshedFrameResult | null> => {
     if (!sessionIdOverride) {
       clearFrames();
-      return;
+      return null;
     }
     const requestId = ++sequenceRef.current;
     setState((previous) => ({ ...previous, frameLoading: true, frameError: null }));
@@ -72,30 +81,37 @@ export function useSessionForecastFrames(sessionId: string | null) {
     try {
       const metadata = await sessionClient.getLatestForecastFrames(sessionIdOverride);
       if (requestId !== sequenceRef.current) {
-        return;
+        return null;
       }
       const hasFrames = metadata.frame_count > 0 && metadata.frame_indices.length > 0;
       if (!hasFrames) {
-        setState((previous) => ({ ...previous, framesMetadata: metadata, frameLoading: false, frameError: "Frame sequence unavailable" }));
-        return;
+        setState((previous) => ({ ...previous, framesMetadata: metadata, frameLoading: false, frameError: `GET /sessions/${sessionIdOverride}/forecast/latest/frames returned no frames` }));
+        return null;
       }
 
       const boundedDefault = metadata.frame_indices.includes(metadata.default_frame_index)
         ? metadata.default_frame_index
-        : metadata.frame_indices[0];
+        : (metadata.frame_indices[0] ?? 0);
       setState((previous) => ({ ...previous, framesMetadata: metadata }));
-      await fetchFrame(sessionIdOverride, boundedDefault);
+      const { summary, geojson } = await fetchFrame(sessionIdOverride, boundedDefault);
+      return {
+        framesMetadata: metadata,
+        selectedFrameIndex: boundedDefault,
+        selectedFrameSummary: summary,
+        selectedFrameGeoJson: geojson
+      };
     } catch (error) {
       if (requestId !== sequenceRef.current) {
-        return;
+        return null;
       }
-      const message = error instanceof Error ? error.message : "Frame sequence unavailable";
+      const message = `GET /sessions/${sessionIdOverride}/forecast/latest/frames failed: ${error instanceof Error ? error.message : "Frame sequence unavailable"}`;
       setState((previous) => ({ ...previous, frameLoading: false, frameError: message }));
+      throw error;
     }
   }, [clearFrames, fetchFrame]);
 
-  const refreshFrames = useCallback(async (sessionIdOverride?: string) => {
-    await refreshFramesForSession(sessionIdOverride ?? sessionId);
+  const refreshFrames = useCallback(async (sessionIdOverride?: string): Promise<RefreshedFrameResult | null> => {
+    return refreshFramesForSession(sessionIdOverride ?? sessionId);
   }, [refreshFramesForSession, sessionId]);
 
   const setSelectedFrameIndex = useCallback((frameIndex: number) => {
