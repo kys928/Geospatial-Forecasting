@@ -183,9 +183,9 @@ def register_session_routes(
         return forecast_service.summarize_forecast(_forecast_for_frame(result, frame_index))
 
     @app.get("/sessions/{session_id}/forecast/latest/frames/{frame_index}/geojson")
-    def get_session_latest_forecast_frame_geojson(session_id: str, frame_index: int):
+    def get_session_latest_forecast_frame_geojson(session_id: str, frame_index: int, debug: bool = False):
         result = _get_latest_session_forecast_result(runtime_client, session_id)
-        return export_service.to_geojson(_forecast_for_frame(result, frame_index))
+        return export_service.to_geojson(_forecast_for_frame(result, frame_index), include_plume_cells=debug)
 
     @app.get("/sessions/{session_id}/forecast/latest/frames/{frame_index}/raster-metadata")
     def get_session_latest_forecast_frame_raster_metadata(session_id: str, frame_index: int):

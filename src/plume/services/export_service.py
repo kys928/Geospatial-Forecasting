@@ -35,8 +35,8 @@ class ExportService:
             "summary_statistics": result.summary_statistics,
         }
 
-    def to_geojson(self, result, *, thresholds=None):
-        return forecast_to_geojson(result, thresholds=thresholds)
+    def to_geojson(self, result, *, thresholds=None, include_plume_cells: bool = False):
+        return forecast_to_geojson(result, thresholds=thresholds, include_plume_cells=include_plume_cells)
 
     def to_raster_metadata(self, result):
         metadata = forecast_to_raster_metadata(result)
@@ -45,10 +45,10 @@ class ExportService:
     def to_openremote_payload(self, result):
         return forecast_to_openremote_payload(result)
 
-    def write_geojson(self, result, output_path, *, thresholds=None):
+    def write_geojson(self, result, output_path, *, thresholds=None, include_plume_cells: bool = False):
         import json
 
-        geojson = self.to_geojson(result, thresholds=thresholds)
+        geojson = self.to_geojson(result, thresholds=thresholds, include_plume_cells=include_plume_cells)
         path = Path(output_path)
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(geojson, indent=2), encoding="utf-8")

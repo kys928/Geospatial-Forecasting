@@ -46,14 +46,29 @@ def test_estimated_cell_size_positive():
     assert dy > 0
 
 
-def test_geojson_plume_cells_include_georeferencing_and_thresholding():
-    grid = np.full((64, 64), 0.1, dtype=float)
-    grid[10:15, 10:15] = 10.0
+def test_geojson_plume_bands_and_core_features_present():
+    y, x = np.mgrid[-1:1:64j, -1:1:64j]
+    grid = np.exp(-(x**2 + y**2) * 6.0)
     payload = forecast_to_geojson(_result(grid))
-    plume_cells = [f for f in payload["features"] if f["properties"].get("kind") == "plume_cell"]
-    assert plume_cells
-    assert len(plume_cells) < 4096
-    props = plume_cells[0]["properties"]
-    assert props["georeferencing_status"] == "runtime_grid_from_config"
-    assert props["area_m2"] > 0
-    assert payload["properties"]["threshold_strategy"]
+    features = payload["features"]
+
+    plume_bands = [f for f in features if f["properties"].get("kind") == "plume_band"]
+    assert plume_bands
+    assert all(f["properties"].get("georeferencing_status") == "runtime_grid_from_config" for f in plume_bands)
+
+    min_lat, max_lat, min_lon, max_lon = _grid_spec().boundary_limits
+    for feature in plume_bands:
+        coords = feature["geometry"]["coordinates"]
+        for ring in coords:
+            for lon, lat in ring:
+                assert min_lon <= lon <= max_lon
+                assert min_lat <= lat <= max_lat
+
+    kinds = {f["properties"].get("kind") for f in features}
+    assert "source" in kinds
+    assert "forecast_extent" in kinds
+    assert "plume_cell" not in kinds
+
+    extent = next(f for f in features if f["properties"].get("kind") == "forecast_extent")
+    extent_ring = extent["geometry"]["coordinates"][0]
+    assert len(extent_ring) == 5

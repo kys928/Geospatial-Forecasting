@@ -23,6 +23,8 @@ for f in fs:
  if isinstance(k,str) and k:
   kinds[k]=kinds.get(k,0)+1
   if k=="plume_cell": plume += 1
+plume_band=kinds.get("plume_band",0)
 print(f"feature_count={len(fs)}")
 print("kinds=" + ",".join(sorted(kinds.keys())))
+print(f"plume_bands={plume_band}")
 print(f"plume_cells={plume}")'
