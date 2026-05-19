@@ -57,7 +57,7 @@ export function ForecastFrameTimeline({
       <button type="button" className="timeline-icon-button" onClick={() => handleManualSelect(Math.min(frameCount - 1, selectedFrameIndex + 1))} disabled={timelineDisabled || selectedFrameIndex >= frameCount - 1} aria-label="Next frame">›</button>
       <input type="range" min={0} max={Math.max(frameCount - 1, 0)} step={1} value={Math.min(selectedFrameIndex, Math.max(frameCount - 1, 0))} onChange={(event) => handleManualSelect(Number(event.currentTarget.value))} disabled={timelineDisabled} aria-label="Forecast frame" />
       <span className="timeline-count">{timelineDisabled ? "—/—" : `${Math.min(selectedFrameIndex + 1, Math.max(frameCount, 1))}/${Math.max(frameCount, 1)}`}</span>
-      {loading ? <span className="timeline-inline-status">Loading…</span> : null}
+      {loading ? null : null}
     </section>
   );
 }

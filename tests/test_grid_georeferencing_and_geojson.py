@@ -53,8 +53,11 @@ def test_geojson_plume_bands_and_core_features_present():
     features = payload["features"]
 
     plume_bands = [f for f in features if f["properties"].get("kind") == "plume_band"]
+    plume_points = [f for f in features if f["properties"].get("kind") == "plume_point"]
     assert plume_bands
+    assert plume_points
     assert all(f["properties"].get("georeferencing_status") == "runtime_grid_from_config" for f in plume_bands)
+    assert all(f["properties"].get("georeferencing_status") == "runtime_grid_from_config" for f in plume_points)
 
     min_lat, max_lat, min_lon, max_lon = _grid_spec().boundary_limits
     for feature in plume_bands:
@@ -68,6 +71,16 @@ def test_geojson_plume_bands_and_core_features_present():
     assert "source" in kinds
     assert "forecast_extent" in kinds
     assert "plume_cell" not in kinds
+    for point in plume_points:
+        lon, lat = point["geometry"]["coordinates"]
+        assert min_lon <= lon <= max_lon
+        assert min_lat <= lat <= max_lat
+        assert 0.0 <= float(point["properties"]["normalized_intensity"]) <= 1.0
+
+    metadata = payload["properties"]
+    assert metadata["georeferencing_status"] == "runtime_grid_from_config"
+    assert metadata["rendered_point_count"] > 0
+    assert metadata["threshold_strategy"] == "positive_finite_percentiles_p85_p93_p98"
 
     extent = next(f for f in features if f["properties"].get("kind") == "forecast_extent")
     extent_ring = extent["geometry"]["coordinates"][0]

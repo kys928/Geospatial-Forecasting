@@ -26,5 +26,11 @@ for f in fs:
 plume_band=kinds.get("plume_band",0)
 print(f"feature_count={len(fs)}")
 print("kinds=" + ",".join(sorted(kinds.keys())))
-print(f"plume_bands={plume_band}")
-print(f"plume_cells={plume}")'
+plume_point=kinds.get("plume_point",0)
+max_conc=d.get("properties",{}).get("max_concentration")
+rendered_points=d.get("properties",{}).get("rendered_point_count")
+print(f"plume_point={plume_point}")
+print(f"plume_band={plume_band}")
+print(f"plume_cell={plume}")
+print(f"max_concentration={max_conc}")
+print(f"rendered_point_count={rendered_points}")'

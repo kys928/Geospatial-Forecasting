@@ -34,11 +34,8 @@ const PLUME_LOW_HIT_LAYER_ID = "forecast-plume-low-hit";
 const PLUME_MEDIUM_HIT_LAYER_ID = "forecast-plume-medium-hit";
 const PLUME_HIGH_HIT_LAYER_ID = "forecast-plume-high-hit";
 
-const PLUME_LOW_FILL_LAYER_ID = "forecast-plume-low-fill";
-const PLUME_MEDIUM_FILL_LAYER_ID = "forecast-plume-medium-fill";
-const PLUME_HIGH_FILL_LAYER_ID = "forecast-plume-high-fill";
+const PLUME_HEATMAP_LAYER_ID = "forecast-plume-heatmap";
 
-const PLUME_LOW_OUTLINE_LAYER_ID = "forecast-plume-low-outline";
 const PLUME_MEDIUM_OUTLINE_LAYER_ID = "forecast-plume-medium-outline";
 const PLUME_HIGH_OUTLINE_LAYER_ID = "forecast-plume-high-outline";
 
@@ -253,7 +250,7 @@ function applyGeojsonToMap(
 
   source.setData(normalized as GeoJSON.FeatureCollection);
 
-  const plumeOnly: GeoJsonFeatureCollection = { ...normalized, features: normalized.features.filter((f) => (typeof f.properties?.kind === "string" ? f.properties.kind : "") === "plume_band") };
+  const plumeOnly: GeoJsonFeatureCollection = { ...normalized, features: normalized.features.filter((f) => ["plume_band", "plume_point"].includes(typeof f.properties?.kind === "string" ? f.properties.kind : "")) };
   const bounds = plumeOnly.features.length ? getFeatureCollectionBounds(plumeOnly) : null;
   if (shouldFitBounds && bounds && !bounds.isEmpty()) {
     map.fitBounds(bounds, {
@@ -300,8 +297,8 @@ export function ForecastMap({
 
   useEffect(() => {
     if (!center || !mapRef.current) return;
-    const hasPlumePolygons = Boolean(geojson?.features?.some((f) => f.geometry?.type === "Polygon"));
-    if (!hasPlumePolygons) {
+    const hasPlumeFeatures = Boolean(geojson?.features?.some((f) => ["Polygon", "Point"].includes(f.geometry?.type ?? "")));
+    if (!hasPlumeFeatures) {
       mapRef.current.flyTo({ center, zoom: 11, duration: 800 });
     }
   }, [center, geojson]);
@@ -429,37 +426,26 @@ export function ForecastMap({
       });
 
       map.addLayer({
-        id: PLUME_LOW_FILL_LAYER_ID,
-        type: "fill",
+        id: PLUME_HEATMAP_LAYER_ID,
+        type: "heatmap",
         source: FORECAST_SOURCE_ID,
         paint: {
-          "fill-color": "#fde68a",
-          "fill-opacity": 0.18,
+          "heatmap-weight": ["coalesce", ["to-number", ["get", "normalized_intensity"]], 0],
+          "heatmap-intensity": ["interpolate", ["linear"], ["zoom"], 9, 0.8, 15, 1.15, 18, 1.35],
+          "heatmap-radius": ["interpolate", ["linear"], ["zoom"], 8, 12, 12, 20, 15, 28, 18, 42],
+          "heatmap-opacity": 0.65,
+          "heatmap-color": [
+            "interpolate",
+            ["linear"],
+            ["heatmap-density"],
+            0, "rgba(255,255,255,0)",
+            0.25, "rgba(255,244,179,0.4)",
+            0.55, "rgba(245,158,11,0.75)",
+            0.8, "rgba(239,93,42,0.9)",
+            1, "rgba(220,38,38,0.98)"
+          ]
         },
-        filter: ["all", ["==", ["get", "kind"], "plume_band"], ["==", ["get", "band"], "low"]]
-      });
-
-      map.addLayer({
-        id: PLUME_LOW_OUTLINE_LAYER_ID,
-        type: "line",
-        source: FORECAST_SOURCE_ID,
-        paint: {
-          "line-color": "#facc15",
-          "line-width": 1.0,
-          "line-opacity": 0.12,
-        },
-        filter: ["all", ["==", ["get", "kind"], "plume_band"], ["==", ["get", "band"], "low"]]
-      });
-
-      map.addLayer({
-        id: PLUME_MEDIUM_FILL_LAYER_ID,
-        type: "fill",
-        source: FORECAST_SOURCE_ID,
-        paint: {
-          "fill-color": "#f59e0b",
-          "fill-opacity": 0.3,
-        },
-        filter: ["all", ["==", ["get", "kind"], "plume_band"], ["==", ["get", "band"], "medium"]]
+        filter: ["all", ["==", "$type", "Point"], ["==", ["get", "kind"], "plume_point"]]
       });
 
       map.addLayer({
@@ -468,21 +454,10 @@ export function ForecastMap({
         source: FORECAST_SOURCE_ID,
         paint: {
           "line-color": "#d97706",
-          "line-width": 1.2,
-          "line-opacity": 0.12,
+          "line-width": 0.8,
+          "line-opacity": 0.08,
         },
         filter: ["all", ["==", ["get", "kind"], "plume_band"], ["==", ["get", "band"], "medium"]]
-      });
-
-      map.addLayer({
-        id: PLUME_HIGH_FILL_LAYER_ID,
-        type: "fill",
-        source: FORECAST_SOURCE_ID,
-        paint: {
-          "fill-color": "#ef4444",
-          "fill-opacity": 0.45,
-        },
-        filter: ["all", ["==", ["get", "kind"], "plume_band"], ["==", ["get", "band"], "high"]]
       });
 
       map.addLayer({
@@ -491,17 +466,14 @@ export function ForecastMap({
         source: FORECAST_SOURCE_ID,
         paint: {
           "line-color": "#b91c1c",
-          "line-width": 1.35,
+          "line-width": 1,
           "line-opacity": 0.12,
         },
         filter: ["all", ["==", ["get", "kind"], "plume_band"], ["==", ["get", "band"], "high"]]
       });
 
-
-      map.setPaintProperty(PLUME_LOW_FILL_LAYER_ID, "fill-opacity-transition", { duration: 320 } as any);
-      map.setPaintProperty(PLUME_MEDIUM_FILL_LAYER_ID, "fill-opacity-transition", { duration: 320 } as any);
-      map.setPaintProperty(PLUME_HIGH_FILL_LAYER_ID, "fill-opacity-transition", { duration: 320 } as any);
-      map.setPaintProperty(PLUME_LOW_OUTLINE_LAYER_ID, "line-opacity-transition", { duration: 320 } as any);
+      map.setPaintProperty(PLUME_HEATMAP_LAYER_ID, "heatmap-opacity-transition", { duration: 320 } as any);
+      map.setPaintProperty(PLUME_HEATMAP_LAYER_ID, "heatmap-radius-transition", { duration: 320 } as any);
       map.setPaintProperty(PLUME_MEDIUM_OUTLINE_LAYER_ID, "line-opacity-transition", { duration: 320 } as any);
       map.setPaintProperty(PLUME_HIGH_OUTLINE_LAYER_ID, "line-opacity-transition", { duration: 320 } as any);
 
@@ -656,7 +628,7 @@ export function ForecastMap({
   }, [autoFitKey, geojson]);
 
   useEffect(() => {
-    if (center && mapRef.current && (!geojson || !geojson.features?.some((f) => f.geometry?.type === "Polygon"))) {
+    if (center && mapRef.current && (!geojson || !geojson.features?.some((f) => ["Polygon", "Point"].includes(f.geometry?.type ?? "")))) {
       mapRef.current.flyTo({ center, zoom: 11, duration: 800 });
     }
   }, [center]);

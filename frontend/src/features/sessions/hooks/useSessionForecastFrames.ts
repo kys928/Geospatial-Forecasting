@@ -27,7 +27,8 @@ const INITIAL_STATE: UseSessionForecastFramesState = {
   frameError: null
 };
 
-export function useSessionForecastFrames(sessionId: string | null) {
+export function useSessionForecastFrames(sessionId: string | null, options?: { includeFrameSummary?: boolean }) {
+  const includeFrameSummary = options?.includeFrameSummary ?? true;
   const [state, setState] = useState<UseSessionForecastFramesState>(INITIAL_STATE);
   const sequenceRef = useRef(0);
 
@@ -41,7 +42,9 @@ export function useSessionForecastFrames(sessionId: string | null) {
     setState((previous) => ({ ...previous, selectedFrameIndex: frameIndex, frameLoading: true, frameError: null }));
     try {
       const [summary, geojson] = await Promise.all([
-        sessionClient.getLatestForecastFrameSummary(id, frameIndex),
+        includeFrameSummary
+          ? sessionClient.getLatestForecastFrameSummary(id, frameIndex)
+          : Promise.resolve({}),
         sessionClient.getLatestForecastFrameGeoJson(id, frameIndex)
       ]);
       if (requestId !== sequenceRef.current) {
@@ -68,7 +71,7 @@ export function useSessionForecastFrames(sessionId: string | null) {
       }));
       throw error;
     }
-  }, []);
+  }, [includeFrameSummary]);
 
   const refreshFramesForSession = useCallback(async (sessionIdOverride: string | null): Promise<RefreshedFrameResult | null> => {
     if (!sessionIdOverride) {
