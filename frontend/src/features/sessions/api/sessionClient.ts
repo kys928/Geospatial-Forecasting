@@ -36,12 +36,15 @@ export const sessionClient = {
   ingestObservations(sessionId: string, payload: IngestObservationsRequest): Promise<IngestObservationsResponse> { return httpPost<IngestObservationsResponse, IngestObservationsRequest>(`/sessions/${sessionId}/observations`, payload); },
   updateSession(sessionId: string): Promise<SessionUpdateResponse> { return httpPost<SessionUpdateResponse>(`/sessions/${sessionId}/update`); },
   predictSession(sessionId: string, payload: SessionPredictionRequest): Promise<SessionPredictionResponse> { return httpPost<SessionPredictionResponse, SessionPredictionRequest>(`/sessions/${sessionId}/predict`, payload); },
-  async getLatestForecastBundle(sessionId: string): Promise<SessionForecastBundle> {
+  async getLatestForecastBundle(sessionId: string, options?: { includeExplanation?: boolean }): Promise<SessionForecastBundle> {
+    const includeExplanation = options?.includeExplanation ?? true;
     const [summary, geojson, rasterMetadata, explanation] = await Promise.all([
       httpGet<Record<string, unknown>>(`/sessions/${sessionId}/forecast/latest/summary`),
       httpGet<Record<string, unknown>>(`/sessions/${sessionId}/forecast/latest/geojson`),
       httpGet<Record<string, unknown>>(`/sessions/${sessionId}/forecast/latest/raster-metadata`),
-      httpGet<Record<string, unknown>>(`/sessions/${sessionId}/forecast/latest/explanation`)
+      includeExplanation
+        ? httpGet<Record<string, unknown>>(`/sessions/${sessionId}/forecast/latest/explanation`)
+        : Promise.resolve({})
     ]);
     return { summary, geojson, rasterMetadata, explanation };
   },

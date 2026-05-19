@@ -8,8 +8,10 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 from plume.geo.grid_georeferencing import (
+    GEOREFERENCING_NOTE,
     GEOREFERENCING_STATUS,
     cell_bounds,
+    cell_center,
     estimate_cell_area_m2,
     estimate_cell_size_meters,
     get_grid_bounds,
@@ -30,15 +32,13 @@ def _compute_thresholds(grid: np.ndarray) -> tuple[float, float, float, str]:
     finite_positive = grid[np.isfinite(grid) & (grid > 0)]
     if finite_positive.size == 0:
         return 1e-6, 1e-6, 1e-6, "fallback_no_positive_values"
-    p50 = float(np.percentile(finite_positive, 50))
-    p70 = float(np.percentile(finite_positive, 70))
     p85 = float(np.percentile(finite_positive, 85))
-    p95 = float(np.percentile(finite_positive, 95))
-    background_floor = max(1e-6, p50)
-    low = max(p70, background_floor * 1.001)
-    medium = max(p85, low)
-    high = max(p95, medium)
-    return low, medium, high, "positive_finite_percentiles_p70_p85_p95_with_p50_floor"
+    p93 = float(np.percentile(finite_positive, 93))
+    p98 = float(np.percentile(finite_positive, 98))
+    low = max(1e-6, p85)
+    medium = max(low, p93)
+    high = max(medium, p98)
+    return low, medium, high, "positive_finite_percentiles_p85_p93_p98"
 
 
 def _contour_band_features(grid: np.ndarray, grid_spec, frame_index: int, thresholds: dict[str, float], summary_stats: dict[str, float]) -> list[dict]:
@@ -100,8 +100,11 @@ def plume_cell_features(result, *, thresholds: Iterable[float] | None = None):
     rows, cols = grid.shape
     dx_meters, dy_meters = estimate_cell_size_meters(grid_spec)
     area_m2 = estimate_cell_area_m2(grid_spec)
-    features = []
+    cell_features = []
+    point_features = []
     rendered_count = 0
+    finite_positive = grid[np.isfinite(grid) & (grid > 0)]
+    max_concentration = float(np.max(finite_positive)) if finite_positive.size else 0.0
 
     for row in range(rows):
         for col in range(cols):
@@ -110,7 +113,27 @@ def plume_cell_features(result, *, thresholds: Iterable[float] | None = None):
                 continue
             rendered_count += 1
             band = "high" if value >= high else "medium" if value >= medium else "low"
-            features.append({"type": "Feature", "geometry": {"type": "Polygon", "coordinates": [cell_bounds(row, col, grid_spec)]}, "properties": {"kind": "plume_cell", "frame_index": 0, "row": row, "col": col, "concentration": value, "band": band, "dx_meters": dx_meters, "dy_meters": dy_meters, "area_m2": area_m2, "georeferencing_status": GEOREFERENCING_STATUS}})
+            normalized_intensity = value / max_concentration if max_concentration > 0 else 0.0
+            normalized_intensity = float(max(0.0, min(1.0, normalized_intensity)))
+            center_lon, center_lat = cell_center(row, col, grid_spec)
+            point_features.append({
+                "type": "Feature",
+                "geometry": {"type": "Point", "coordinates": [center_lon, center_lat]},
+                "properties": {
+                    "kind": "plume_point",
+                    "frame_index": 0,
+                    "row": row,
+                    "col": col,
+                    "concentration": value,
+                    "normalized_intensity": normalized_intensity,
+                    "band": band,
+                    "dx_meters": dx_meters,
+                    "dy_meters": dy_meters,
+                    "area_m2": area_m2,
+                    "georeferencing_status": GEOREFERENCING_STATUS,
+                },
+            })
+            cell_features.append({"type": "Feature", "geometry": {"type": "Polygon", "coordinates": [cell_bounds(row, col, grid_spec)]}, "properties": {"kind": "plume_cell", "frame_index": 0, "row": row, "col": col, "concentration": value, "band": band, "dx_meters": dx_meters, "dy_meters": dy_meters, "area_m2": area_m2, "georeferencing_status": GEOREFERENCING_STATUS}})
 
     finite = grid[np.isfinite(grid)]
     summary = {
@@ -118,12 +141,12 @@ def plume_cell_features(result, *, thresholds: Iterable[float] | None = None):
         "max": float(np.max(finite)) if finite.size else 0.0,
         "mean": float(np.mean(finite)) if finite.size else 0.0,
     }
-    return features, {
+    return point_features, cell_features, {
         "threshold_strategy": strategy,
         "threshold_low": low,
         "threshold_medium": medium,
         "threshold_high": high,
-        "rendered_cell_count": rendered_count,
+        "rendered_point_count": rendered_count,
         "total_cell_count": int(grid.size),
         "max_concentration": summary["max"],
         "mean_concentration": summary["mean"],
@@ -134,7 +157,7 @@ def plume_cell_features(result, *, thresholds: Iterable[float] | None = None):
 
 def forecast_to_geojson(result, *, thresholds=None, include_plume_cells: bool = False):
     features = [source_feature(result), forecast_extent_feature(result)]
-    plume_features, metadata, summary_stats = plume_cell_features(result, thresholds=thresholds)
+    plume_point_features, plume_cell_polygon_features, metadata, summary_stats = plume_cell_features(result, thresholds=thresholds)
     contour_features = _contour_band_features(
         np.asarray(result.forecast.concentration_grid, dtype=float),
         result.forecast.grid_spec,
@@ -143,8 +166,9 @@ def forecast_to_geojson(result, *, thresholds=None, include_plume_cells: bool = 
         summary_stats,
     )
     features.extend(contour_features)
+    features.extend(plume_point_features)
     if include_plume_cells:
-        features.extend(plume_features)
+        features.extend(plume_cell_polygon_features)
 
     grid_spec = result.forecast.grid_spec
     min_lat, max_lat, min_lon, max_lon = get_grid_bounds(grid_spec)
@@ -162,7 +186,7 @@ def forecast_to_geojson(result, *, thresholds=None, include_plume_cells: bool = 
             "forecast_id": result.forecast_id,
             "generated_at": result.issued_at.isoformat(),
             "georeferencing_status": GEOREFERENCING_STATUS,
-            "georeferencing_note": "Cell polygons are derived from configured runtime GridSpec bounds/spacing, not recovered original HYSPLIT concentration-grid metadata.",
+            "georeferencing_note": GEOREFERENCING_NOTE.replace("Cell polygons are", "Cell positions are"),
             "configured_grid_spacing_degrees": configured_spacing,
             "derived_lat_step_degrees": lat_step,
             "derived_lon_step_degrees": lon_step,

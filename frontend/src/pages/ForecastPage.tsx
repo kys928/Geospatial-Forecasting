@@ -8,8 +8,6 @@ import { sessionClient } from "../features/sessions/api/sessionClient";
 import { useSessionForecastView } from "../features/sessions/context/SessionForecastViewContext";
 import { useSessionForecastFrames } from "../features/sessions/hooks/useSessionForecastFrames";
 
-type MapPipelineStatus = "idle" | "creating_session" | "predicting" | "loading_bundle" | "loading_frames" | "ready" | "error";
-
 export function ForecastPage() {
   const {
     activeSessionId,
@@ -29,12 +27,11 @@ export function ForecastPage() {
     refreshFrames,
     refreshFramesForSession,
     setSelectedFrameIndex,
-  } = useSessionForecastFrames(activeSessionId);
+  } = useSessionForecastFrames(activeSessionId, { includeFrameSummary: false });
 
   const inFlightRef = useRef(false);
   const hasAutoBootstrappedRef = useRef(false);
-  const [mapPipelineStatus, setMapPipelineStatus] = useState<MapPipelineStatus>("idle");
-  const [mapPipelineError, setMapPipelineError] = useState<string | null>(null);
+  const [mapPipelineStatus, setMapPipelineStatus] = useState("idle");
 
   const inspectFrameGeoJson = (geojson: Record<string, unknown> | null) => {
     const counts = countGeojsonKinds(geojson);
@@ -50,7 +47,6 @@ export function ForecastPage() {
     }
 
     inFlightRef.current = true;
-    setMapPipelineError(null);
 
     const ensureForecast = async () => {
       if (activeSessionId && latestForecastBundle) {
@@ -70,7 +66,7 @@ export function ForecastPage() {
       setMapPipelineStatus("predicting");
       const runResult = await sessionClient.runSessionForecast({});
       setMapPipelineStatus("loading_bundle");
-      const bundle = await sessionClient.getLatestForecastBundle(runResult.sessionId);
+      const bundle = await sessionClient.getLatestForecastBundle(runResult.sessionId, { includeExplanation: false });
 
       setActiveSessionId(runResult.sessionId);
       setLatestForecastBundle(runResult.sessionId, bundle);
@@ -92,7 +88,6 @@ export function ForecastPage() {
 
     void ensureForecast().catch((error: unknown) => {
       setMapPipelineStatus("error");
-      setMapPipelineError(error instanceof Error ? error.message : String(error));
       if (import.meta.env.DEV) {
         console.debug("[forecast-map] auto-run failed", {
           error: error instanceof Error ? error.message : String(error),
