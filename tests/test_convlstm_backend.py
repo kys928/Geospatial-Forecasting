@@ -44,8 +44,8 @@ def _contract_grid_spec() -> GridSpec:
     )
 
 
-def test_convlstm_backend_creates_session_with_contract_defaults():
-    backend = ConvLSTMBackend(config=Config())
+def test_convlstm_backend_creates_session_with_contract_defaults(lightweight_convlstm_config):
+    backend = ConvLSTMBackend(config=lightweight_convlstm_config)
     session = backend.create_session()
     assert session.backend_name == "convlstm_online"
     assert session.status == "created"
@@ -81,8 +81,8 @@ def test_convlstm_backend_rejects_conflicting_contract_overrides(tmp_path: Path)
         ConvLSTMBackend(config=Config(config_dir=tmp_path))
 
 
-def test_convlstm_backend_predict_returns_forecast_with_contract_grid_shape():
-    backend = ConvLSTMBackend(config=Config())
+def test_convlstm_backend_predict_returns_forecast_with_contract_grid_shape(lightweight_convlstm_config):
+    backend = ConvLSTMBackend(config=lightweight_convlstm_config)
     session = backend.create_session()
     state = backend.initialize_state(session)
     ingested = backend.ingest_observations(
@@ -486,3 +486,13 @@ def test_convlstm_backend_torch_multistep_returns_sequence(tmp_path: Path, monke
     assert forecast.concentration_grid.shape == (64, 64)
     assert forecast.concentration_sequence is not None
     assert forecast.concentration_sequence.shape == (4, 64, 64)
+
+
+def test_convlstm_production_default_engine_is_torch_multistep():
+    backend_cfg = Config().load_backend()
+    assert backend_cfg.get("convlstm_prediction_engine") == "torch_multistep"
+
+
+def test_lightweight_config_allows_convlstm_backend_without_torch(lightweight_convlstm_config):
+    backend = ConvLSTMBackend(config=lightweight_convlstm_config)
+    assert backend.prediction_engine == "convlstm"

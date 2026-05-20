@@ -1,12 +1,13 @@
 import { useCallback, useRef, useState } from "react";
 import { sessionClient } from "../api/sessionClient";
-import type { ForecastFramesMetadata } from "../types/session.types";
+import type { ForecastFrameRasterPayload, ForecastFramesMetadata } from "../types/session.types";
 
 interface UseSessionForecastFramesState {
   framesMetadata: ForecastFramesMetadata | null;
   selectedFrameIndex: number;
   selectedFrameSummary: Record<string, unknown> | null;
   selectedFrameGeoJson: Record<string, unknown> | null;
+  selectedFrameRaster: ForecastFrameRasterPayload | null;
   frameLoading: boolean;
   frameError: string | null;
 }
@@ -16,6 +17,7 @@ export interface RefreshedFrameResult {
   selectedFrameIndex: number;
   selectedFrameSummary: Record<string, unknown>;
   selectedFrameGeoJson: Record<string, unknown>;
+  selectedFrameRaster: ForecastFrameRasterPayload;
 }
 
 const INITIAL_STATE: UseSessionForecastFramesState = {
@@ -23,6 +25,7 @@ const INITIAL_STATE: UseSessionForecastFramesState = {
   selectedFrameIndex: 0,
   selectedFrameSummary: null,
   selectedFrameGeoJson: null,
+  selectedFrameRaster: null,
   frameLoading: false,
   frameError: null
 };
@@ -37,15 +40,16 @@ export function useSessionForecastFrames(sessionId: string | null, options?: { i
     setState(INITIAL_STATE);
   }, []);
 
-  const fetchFrame = useCallback(async (id: string, frameIndex: number): Promise<{ summary: Record<string, unknown>; geojson: Record<string, unknown> }> => {
+  const fetchFrame = useCallback(async (id: string, frameIndex: number): Promise<{ summary: Record<string, unknown>; geojson: Record<string, unknown>; raster: ForecastFrameRasterPayload }> => {
     const requestId = ++sequenceRef.current;
     setState((previous) => ({ ...previous, selectedFrameIndex: frameIndex, frameLoading: true, frameError: null }));
     try {
-      const [summary, geojson] = await Promise.all([
+      const [summary, geojson, raster] = await Promise.all([
         includeFrameSummary
           ? sessionClient.getLatestForecastFrameSummary(id, frameIndex)
           : Promise.resolve({}),
-        sessionClient.getLatestForecastFrameGeoJson(id, frameIndex)
+        sessionClient.getLatestForecastFrameGeoJson(id, frameIndex),
+        sessionClient.getLatestForecastFrameRaster(id, frameIndex)
       ]);
       if (requestId !== sequenceRef.current) {
         throw new Error(`Frame request superseded before completion for /sessions/${id}/forecast/latest/frames/${frameIndex}`);
@@ -55,10 +59,11 @@ export function useSessionForecastFrames(sessionId: string | null, options?: { i
         selectedFrameIndex: frameIndex,
         selectedFrameSummary: summary,
         selectedFrameGeoJson: geojson,
+        selectedFrameRaster: raster,
         frameLoading: false,
         frameError: null
       }));
-      return { summary, geojson };
+      return { summary, geojson, raster };
     } catch (error) {
       if (requestId !== sequenceRef.current) {
         throw new Error(`Frame request superseded for /sessions/${id}/forecast/latest/frames/${frameIndex}`);
@@ -67,7 +72,7 @@ export function useSessionForecastFrames(sessionId: string | null, options?: { i
         ...previous,
         selectedFrameIndex: frameIndex,
         frameLoading: false,
-        frameError: `GET /sessions/${id}/forecast/latest/frames/${frameIndex}/summary|geojson failed: ${error instanceof Error ? error.message : "Could not load selected frame"}`
+        frameError: `GET /sessions/${id}/forecast/latest/frames/${frameIndex}/summary|geojson|raster failed: ${error instanceof Error ? error.message : "Could not load selected frame"}`
       }));
       throw error;
     }
@@ -96,12 +101,13 @@ export function useSessionForecastFrames(sessionId: string | null, options?: { i
         ? metadata.default_frame_index
         : (metadata.frame_indices[0] ?? 0);
       setState((previous) => ({ ...previous, framesMetadata: metadata }));
-      const { summary, geojson } = await fetchFrame(sessionIdOverride, boundedDefault);
+      const { summary, geojson, raster } = await fetchFrame(sessionIdOverride, boundedDefault);
       return {
         framesMetadata: metadata,
         selectedFrameIndex: boundedDefault,
         selectedFrameSummary: summary,
-        selectedFrameGeoJson: geojson
+        selectedFrameGeoJson: geojson,
+        selectedFrameRaster: raster
       };
     } catch (error) {
       if (requestId !== sequenceRef.current) {

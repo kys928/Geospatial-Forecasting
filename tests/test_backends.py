@@ -21,8 +21,9 @@ from plume.utils.config import Config
         (GaussianFallbackBackend, "gaussian_fallback"),
     ],
 )
-def test_backends_honor_contract_shape(backend_cls, backend_name):
-    backend = backend_cls(config=Config())
+def test_backends_honor_contract_shape(backend_cls, backend_name, lightweight_convlstm_config):
+    config = lightweight_convlstm_config if backend_name == "convlstm_online" else Config()
+    backend = backend_cls(config=config)
     session = backend.create_session()
     state = backend.initialize_state(session)
 

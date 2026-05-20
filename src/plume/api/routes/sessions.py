@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import math
 from fastapi import FastAPI, HTTPException
 from dataclasses import replace
+
+import numpy as np
 
 from plume.services.explanation_payloads import build_explanation_payload
 from plume.api.schemas import ObservationIngestRequest, SessionCreateRequest, SessionPredictionRequest
@@ -191,6 +194,38 @@ def register_session_routes(
     def get_session_latest_forecast_frame_raster_metadata(session_id: str, frame_index: int):
         result = _get_latest_session_forecast_result(runtime_client, session_id)
         return export_service.to_raster_metadata(_forecast_for_frame(result, frame_index)).__dict__
+
+
+    @app.get("/sessions/{session_id}/forecast/latest/frames/{frame_index}/raster")
+    def get_session_latest_forecast_frame_raster(session_id: str, frame_index: int):
+        result = _get_latest_session_forecast_result(runtime_client, session_id)
+        frame_result = _forecast_for_frame(result, frame_index)
+        grid = np.asarray(frame_result.forecast.concentration_grid, dtype=float)
+        finite = grid[np.isfinite(grid)]
+        min_value = float(np.min(finite)) if finite.size else math.nan
+        max_value = float(np.max(finite)) if finite.size else math.nan
+        mean_value = float(np.mean(finite)) if finite.size else math.nan
+        raster_metadata = export_service.to_raster_metadata(frame_result).__dict__
+        threshold = frame_result.forecast.metadata.get("threshold") if isinstance(frame_result.forecast.metadata, dict) else None
+        rounded_grid = [[float(f"{value:.6g}") if math.isfinite(value) else 0.0 for value in row] for row in grid.tolist()]
+        return {
+            "forecast_id": frame_result.forecast_id,
+            "session_id": session_id,
+            "frame_index": frame_index,
+            "shape": [int(grid.shape[0]), int(grid.shape[1])],
+            "grid": rounded_grid,
+            "min": min_value,
+            "max": max_value,
+            "mean": mean_value,
+            "threshold": threshold if isinstance(threshold, (int, float)) else None,
+            "bounds": raster_metadata.get("bounds", {}),
+            "georeferencing_status": raster_metadata.get("georeferencing_status"),
+            "metadata": {
+                "model": frame_result.model_name,
+                "model_version": frame_result.model_version,
+                "georeferencing_note": raster_metadata.get("georeferencing_note"),
+            },
+        }
 
     @app.get("/sessions/{session_id}/forecast/latest/explanation")
     def get_session_latest_forecast_explanation(session_id: str, threshold: float = 1e-5, use_llm: bool = True):

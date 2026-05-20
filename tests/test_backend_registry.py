@@ -17,8 +17,9 @@ from plume.utils.config import Config
         ("mock_online", MockOnlineBackend),
     ],
 )
-def test_build_backend_supports_expected_backends(backend_name, backend_cls):
-    backend = build_backend(name=backend_name, config=Config())
+def test_build_backend_supports_expected_backends(backend_name, backend_cls, lightweight_convlstm_config):
+    config = lightweight_convlstm_config if backend_name == "convlstm_online" else Config()
+    backend = build_backend(name=backend_name, config=config)
     assert isinstance(backend, backend_cls)
 
 

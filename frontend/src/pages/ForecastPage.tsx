@@ -8,6 +8,7 @@ import { sessionClient } from "../features/sessions/api/sessionClient";
 import { useSessionForecastView } from "../features/sessions/context/SessionForecastViewContext";
 import { useSessionForecastFrames } from "../features/sessions/hooks/useSessionForecastFrames";
 import { httpGet } from "../services/api/http";
+import { buildPlumeGridRasterOverlay } from "../features/map/utils/plumeGridRaster";
 
 export function ForecastPage() {
   const {
@@ -24,6 +25,7 @@ export function ForecastPage() {
     selectedFrameIndex,
     selectedFrameSummary,
     selectedFrameGeoJson,
+    selectedFrameRaster,
     frameLoading,
     frameError,
     refreshFrames,
@@ -164,6 +166,8 @@ export function ForecastPage() {
   const hasDatasetOverlay = Boolean(datasetOverlayGeoJson?.features?.length);
   const sourceMode: "dataset" | "session-frame" | "session-bundle" | "none" =
     hasUsableSelectedFrame ? "session-frame" : hasUsableSessionBundle ? "session-bundle" : hasDatasetOverlay ? "dataset" : "none";
+  const rasterOverlay = sourceMode === "session-frame" ? buildPlumeGridRasterOverlay(selectedFrameRaster) : null;
+
   const mapGeojson =
     sourceMode === "session-frame"
       ? (selectedFrameGeoJson as unknown as GeoJsonFeatureCollection)
@@ -193,6 +197,15 @@ export function ForecastPage() {
       selectedFrameIndex,
       featureCount: selectedFrameFeatures,
       kinds: selectedFrameKinds
+    });
+    console.debug("[forecast-map] raster grid", {
+      frameIndex: selectedFrameRaster?.frame_index ?? selectedFrameIndex,
+      shape: selectedFrameRaster?.shape ?? null,
+      min: selectedFrameRaster?.min ?? null,
+      max: selectedFrameRaster?.max ?? null,
+      threshold: selectedFrameRaster?.threshold ?? null,
+      bounds: selectedFrameRaster?.bounds ?? null,
+      hasImage: Boolean(rasterOverlay?.imageDataUrl)
     });
   }, [selectedFrameFeatures, selectedFrameIndex, selectedFrameKinds]);
 
@@ -243,6 +256,7 @@ export function ForecastPage() {
           onSelectFeature={setSelectedFeature}
           center={sourceMode === "dataset" ? datasetSourceCenter : null}
           autoFitKey={forecastFitKey}
+          rasterOverlay={rasterOverlay}
         />
         <ForecastFrameTimeline
           frameCount={framesMetadata?.frame_count ?? 0}
