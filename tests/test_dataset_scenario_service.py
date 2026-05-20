@@ -172,6 +172,50 @@ def test_raster_active_returns_payload_for_plume_scenarios(tmp_path: Path):
         assert payload["shape"] == [64, 64]
 
 
+def test_dataset_frames_metadata_and_rasters(tmp_path: Path):
+    _write_dataset(tmp_path)
+    cfg = DatasetScenarioConfig("enabled", tmp_path / "dataset_manifest.csv", tmp_path / "windows_manifest_enriched.csv", tmp_path / "windows", 10, tmp_path / "state.json", tmp_path / "online_learning_subset", tmp_path / "playback_state.json", tmp_path / "ridge.pkl")
+    svc = DatasetScenarioService(cfg)
+    svc.activate("dataset_large_plume")
+    metadata = svc.frames_active()
+    assert metadata["frame_count"] == 4
+    assert metadata["frame_indices"] == [0, 1, 2, 3]
+    rasters = [svc.frame_raster_active(i) for i in range(4)]
+    assert all(r["shape"] == [64, 64] for r in rasters)
+    assert any(r["positive_count"] > 0 for r in rasters)
+    g0 = np.array(rasters[0]["grid"], dtype=float)
+    assert not np.array_equal(g0, np.array(rasters[1]["grid"], dtype=float))
+    assert not np.array_equal(g0, np.array(rasters[2]["grid"], dtype=float))
+    assert not np.array_equal(g0, np.array(rasters[3]["grid"], dtype=float))
+
+
+def test_dataset_normal_frame_rasters_are_zero(tmp_path: Path):
+    _write_dataset(tmp_path)
+    cfg = DatasetScenarioConfig("enabled", tmp_path / "dataset_manifest.csv", tmp_path / "windows_manifest_enriched.csv", tmp_path / "windows", 10, tmp_path / "state.json", tmp_path / "online_learning_subset", tmp_path / "playback_state.json", tmp_path / "ridge.pkl")
+    svc = DatasetScenarioService(cfg)
+    svc.activate("dataset_normal")
+    for i in range(4):
+        payload = svc.frame_raster_active(i)
+        assert payload["max"] == 0.0
+        assert payload["positive_count"] == 0
+
+
+def test_unknown_and_invalid_frame_index_errors(tmp_path: Path):
+    _write_dataset(tmp_path)
+    cfg = DatasetScenarioConfig("enabled", tmp_path / "dataset_manifest.csv", tmp_path / "windows_manifest_enriched.csv", tmp_path / "windows", 10, tmp_path / "state.json", tmp_path / "online_learning_subset", tmp_path / "playback_state.json", tmp_path / "ridge.pkl")
+    svc = DatasetScenarioService(cfg)
+    try:
+        svc.frame_raster_for_scenario("unknown", 0)
+        assert False
+    except KeyError:
+        pass
+    try:
+        svc.frame_raster_for_scenario("dataset_large_plume", 99)
+        assert False
+    except IndexError:
+        pass
+
+
 def test_playback_running_does_not_advance_by_elapsed_time(tmp_path: Path):
     _write_dataset(tmp_path)
     cfg = DatasetScenarioConfig("enabled", tmp_path / "dataset_manifest.csv", tmp_path / "windows_manifest_enriched.csv", tmp_path / "windows", 10, tmp_path / "state.json", tmp_path / "online_learning_subset", tmp_path / "playback_state.json", tmp_path / "ridge.pkl")

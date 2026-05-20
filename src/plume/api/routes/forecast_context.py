@@ -33,6 +33,31 @@ def register_forecast_context_routes(app: FastAPI, *, forecast_context_service, 
         except KeyError as exc:
             raise HTTPException(status_code=404, detail="Dataset scenario raster unavailable") from exc
 
+    @app.get('/forecast-context/dataset-scenarios/active/frames')
+    def get_active_dataset_frames():
+        try:
+            return dataset_scenario_service.frames_active()
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="Dataset scenario frames unavailable") from exc
+
+    @app.get('/forecast-context/dataset-scenarios/active/frames/{frame_index}/raster')
+    def get_active_dataset_frame_raster(frame_index: int):
+        try:
+            return dataset_scenario_service.frame_raster_active(frame_index)
+        except IndexError as exc:
+            raise HTTPException(status_code=404, detail="Unknown dataset frame index") from exc
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="Dataset scenario frame raster unavailable") from exc
+
+    @app.get('/forecast-context/dataset-scenarios/active/frames/{frame_index}/overlay')
+    def get_active_dataset_frame_overlay(frame_index: int):
+        try:
+            return dataset_scenario_service.frame_overlay_active(frame_index)
+        except IndexError as exc:
+            raise HTTPException(status_code=404, detail="Unknown dataset frame index") from exc
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="Dataset scenario frame overlay unavailable") from exc
+
     @app.get('/forecast-context/dataset-scenarios/{scenario_id}')
     def get_dataset_scenario(scenario_id: str):
         try:
@@ -62,6 +87,31 @@ def register_forecast_context_routes(app: FastAPI, *, forecast_context_service, 
             return dataset_scenario_service.raster_for_scenario(scenario_id)
         except KeyError as exc:
             raise HTTPException(status_code=404, detail="Dataset scenario raster unavailable") from exc
+
+    @app.get('/forecast-context/dataset-scenarios/{scenario_id}/frames')
+    def get_dataset_scenario_frames(scenario_id: str):
+        try:
+            return dataset_scenario_service.frames_for_scenario(scenario_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="Unknown dataset scenario") from exc
+
+    @app.get('/forecast-context/dataset-scenarios/{scenario_id}/frames/{frame_index}/raster')
+    def get_dataset_scenario_frame_raster(scenario_id: str, frame_index: int):
+        try:
+            return dataset_scenario_service.frame_raster_for_scenario(scenario_id, frame_index)
+        except IndexError as exc:
+            raise HTTPException(status_code=404, detail="Unknown dataset frame index") from exc
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="Dataset scenario raster unavailable") from exc
+
+    @app.get('/forecast-context/dataset-scenarios/{scenario_id}/frames/{frame_index}/overlay')
+    def get_dataset_scenario_frame_overlay(scenario_id: str, frame_index: int):
+        try:
+            return dataset_scenario_service.frame_overlay_for_scenario(scenario_id, frame_index)
+        except IndexError as exc:
+            raise HTTPException(status_code=404, detail="Unknown dataset frame index") from exc
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="Dataset scenario overlay unavailable") from exc
 
     @app.get('/forecast-context/dataset-playback/state')
     def get_dataset_playback_state():

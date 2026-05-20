@@ -29,6 +29,8 @@ class DatasetScenarioConfig:
 
 
 class DatasetScenarioService:
+    FRAME_INDICES = [0, 1, 2, 3]
+    FRAME_DECAY = [1.0, 0.92, 0.85, 0.78]
     SCENARIO_ALIASES = {
         "dataset_normal_stream": "dataset_normal",
         "dataset_lowest_plume": "dataset_low_plume",
@@ -379,6 +381,59 @@ class DatasetScenarioService:
             plume = self._load_plume_channel(payload)
         return self._build_raster_payload(payload, plume, scenario_key)
 
+    def frames_for_scenario(self, scenario_id: str) -> dict[str, Any]:
+        payload = self.get_scenario(scenario_id)
+        return {
+            "source": "dataset_playback",
+            "scenario_id": scenario_id,
+            "frame_count": len(self.FRAME_INDICES),
+            "frame_indices": list(self.FRAME_INDICES),
+            "frames": [
+                {"frame_index": 0, "lead_time_minutes": 0, "label": "T+0"},
+                {"frame_index": 1, "lead_time_minutes": 60, "label": "T+1h"},
+                {"frame_index": 2, "lead_time_minutes": 120, "label": "T+2h"},
+                {"frame_index": 3, "lead_time_minutes": 180, "label": "T+3h"},
+            ],
+            "forecast_id": payload.get("forecast", {}).get("forecast_id"),
+        }
+
+    def frames_active(self) -> dict[str, Any]:
+        self.resolve_current_playback_state()
+        active = self.get_active_payload()
+        scenario_id = active.get("selected_scenario_id") or active.get("active_scenario_id")
+        if not isinstance(scenario_id, str):
+            raise KeyError("no active scenario")
+        return self.frames_for_scenario(scenario_id)
+
+    def frame_raster_for_scenario(self, scenario_id: str, frame_index: int) -> dict[str, Any]:
+        if frame_index not in self.FRAME_INDICES:
+            raise IndexError(frame_index)
+        payload = self._build_dataset_frame_raster(scenario_id, frame_index)
+        payload["frame_index"] = frame_index
+        return payload
+
+    def frame_raster_active(self, frame_index: int) -> dict[str, Any]:
+        self.resolve_current_playback_state()
+        active = self.get_active_payload()
+        scenario_id = active.get("selected_scenario_id") or active.get("active_scenario_id")
+        if not isinstance(scenario_id, str):
+            raise KeyError("no active scenario")
+        return self.frame_raster_for_scenario(scenario_id, frame_index)
+
+    def frame_overlay_for_scenario(self, scenario_id: str, frame_index: int) -> dict[str, Any]:
+        frame_raster = self.frame_raster_for_scenario(scenario_id, frame_index)
+        payload = self.get_scenario(scenario_id)
+        plume = np.array(frame_raster["grid"], dtype=float)
+        return self._build_overlay(payload, plume)
+
+    def frame_overlay_active(self, frame_index: int) -> dict[str, Any]:
+        self.resolve_current_playback_state()
+        active = self.get_active_payload()
+        scenario_id = active.get("selected_scenario_id") or active.get("active_scenario_id")
+        if not isinstance(scenario_id, str):
+            raise KeyError("no active scenario")
+        return self.frame_overlay_for_scenario(scenario_id, frame_index)
+
     def raster_active(self) -> dict[str, Any]:
         self.resolve_current_playback_state()
         active = self.get_active_payload()
@@ -391,6 +446,48 @@ class DatasetScenarioService:
         if not isinstance(scenario_id, str):
             raise KeyError("no active scenario")
         return self.raster_for_scenario(scenario_id)
+
+    def _build_dataset_frame_raster(self, scenario_id: str, frame_index: int) -> dict[str, Any]:
+        payload = self.get_scenario(scenario_id)
+        if scenario_id == "dataset_normal":
+            plume = np.zeros((64, 64), dtype=float)
+        else:
+            base = self._load_plume_channel(payload)
+            wind_direction = payload.get("conditions", {}).get("wind_direction_deg")
+            plume = self._advect_grid(base, frame_index, wind_direction if isinstance(wind_direction, (int, float)) else None)
+        return self._build_raster_payload(payload, plume, scenario_id)
+
+    def _advect_grid(self, grid: np.ndarray, frame_index: int, wind_direction_deg: float | None) -> np.ndarray:
+        frame = int(frame_index)
+        if frame <= 0:
+            return np.clip(grid.astype(float), 0.0, None)
+        direction = float(wind_direction_deg) if wind_direction_deg is not None else 45.0
+        theta = math.radians((90.0 - direction) % 360.0)
+        shift = frame * 2
+        dx = int(round(math.cos(theta) * shift))
+        dy = int(round(-math.sin(theta) * shift))
+        out = np.zeros_like(grid, dtype=float)
+        rows, cols = grid.shape
+        src_r0 = max(0, -dy); src_r1 = min(rows, rows - dy)
+        src_c0 = max(0, -dx); src_c1 = min(cols, cols - dx)
+        dst_r0 = max(0, dy); dst_r1 = min(rows, rows + dy)
+        dst_c0 = max(0, dx); dst_c1 = min(cols, cols + dx)
+        out[dst_r0:dst_r1, dst_c0:dst_c1] = grid[src_r0:src_r1, src_c0:src_c1]
+        out = out * self.FRAME_DECAY[min(frame, len(self.FRAME_DECAY) - 1)]
+        for _ in range(frame):
+            padded = np.pad(out, 1, mode="constant", constant_values=0.0)
+            out = (
+                padded[1:-1, 1:-1] * 0.42
+                + padded[:-2, 1:-1] * 0.11
+                + padded[2:, 1:-1] * 0.11
+                + padded[1:-1, :-2] * 0.11
+                + padded[1:-1, 2:] * 0.11
+                + padded[:-2, :-2] * 0.035
+                + padded[:-2, 2:] * 0.035
+                + padded[2:, :-2] * 0.035
+                + padded[2:, 2:] * 0.035
+            )
+        return np.clip(out, 0.0, None)
     def _scenario_preview(self, key: str, value: dict[str, Any]) -> dict[str, Any]:
         p = value["payload"]
         labels={"dataset_normal":"Normal","dataset_low_plume":"Low plume","dataset_medium_plume":"Medium plume","dataset_large_plume":"Large plume"}

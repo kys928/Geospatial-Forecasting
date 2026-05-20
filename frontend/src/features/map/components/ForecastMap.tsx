@@ -24,6 +24,8 @@ interface ForecastMapProps {
   center?: [number, number] | null;
   autoFitKey?: string | null;
   rasterOverlay?: PlumeRasterOverlay | null;
+  sourceMode?: "dataset" | "session-frame" | "session-bundle" | "none";
+  frameIndex?: number;
 }
 
 const FORECAST_SOURCE_ID = "forecast-source";
@@ -298,6 +300,9 @@ function applyGeojsonToMap(
     radarImageSource.updateImage({ url: rasterOverlay.imageDataUrl, coordinates: rasterOverlay.coordinates });
     map.setLayoutProperty(PLUME_RADAR_IMAGE_LAYER_ID, "visibility", "visible");
   } else if (map.getLayer(PLUME_RADAR_IMAGE_LAYER_ID)) {
+    if (radarImageSource?.updateImage) {
+      radarImageSource.updateImage({ url: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9WHm2e0AAAAASUVORK5CYII=", coordinates: [[-180, 85], [180, 85], [180, -85], [-180, -85]] });
+    }
     map.setLayoutProperty(PLUME_RADAR_IMAGE_LAYER_ID, "visibility", "none");
   }
   map.setPaintProperty(PLUME_LOW_HIT_LAYER_ID, "fill-opacity", rasterLayerVisible ? 0 : 0.08);
@@ -364,7 +369,9 @@ export function ForecastMap({
   onSelectFeature,
   center = null,
   autoFitKey = null,
-  rasterOverlay = null
+  rasterOverlay = null,
+  sourceMode = "none",
+  frameIndex = 0
 }: ForecastMapProps) {
   const mapContainerRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<Map | null>(null);
@@ -805,13 +812,23 @@ export function ForecastMap({
     if (!map) {
       return;
     }
+    if (import.meta.env.DEV) {
+      console.debug("[forecast-map] raster frame applied", {
+        sourceMode,
+        frameIndex,
+        hasRasterOverlay: Boolean(rasterOverlay),
+        imageWidth: rasterOverlay?.width ?? null,
+        imageHeight: rasterOverlay?.height ?? null,
+        bounds: rasterOverlay?.coordinates ?? null
+      });
+    }
     const shouldFit = autoFitKey ? autoFitKey !== lastFitKeyRef.current : !hasFittedRef.current;
     applyGeojsonToMap(map, geojson, shouldFit, rasterOverlay);
     if (shouldFit) {
       hasFittedRef.current = true;
       lastFitKeyRef.current = autoFitKey;
     }
-  }, [autoFitKey, geojson, rasterOverlay]);
+  }, [autoFitKey, geojson, rasterOverlay, sourceMode, frameIndex]);
 
   useEffect(() => {
     if (center && mapRef.current && (!geojson || !geojson.features?.some((f) => ["Polygon", "Point"].includes(f.geometry?.type ?? "")))) {
