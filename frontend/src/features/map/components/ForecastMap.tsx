@@ -300,10 +300,10 @@ function applyGeojsonToMap(
   } else if (map.getLayer(PLUME_RADAR_IMAGE_LAYER_ID)) {
     map.setLayoutProperty(PLUME_RADAR_IMAGE_LAYER_ID, "visibility", "none");
   }
-  map.setPaintProperty(PLUME_LOW_HIT_LAYER_ID, "fill-opacity", rasterLayerVisible ? 0 : 0);
-  map.setPaintProperty(PLUME_MEDIUM_HIT_LAYER_ID, "fill-opacity", rasterLayerVisible ? 0 : 0);
-  map.setPaintProperty(PLUME_HIGH_HIT_LAYER_ID, "fill-opacity", rasterLayerVisible ? 0 : 0);
-  map.setPaintProperty(PLUME_FALLBACK_FILL_LAYER_ID, "fill-opacity", 0);
+  map.setPaintProperty(PLUME_LOW_HIT_LAYER_ID, "fill-opacity", rasterLayerVisible ? 0 : 0.08);
+  map.setPaintProperty(PLUME_MEDIUM_HIT_LAYER_ID, "fill-opacity", rasterLayerVisible ? 0 : 0.12);
+  map.setPaintProperty(PLUME_HIGH_HIT_LAYER_ID, "fill-opacity", rasterLayerVisible ? 0 : 0.18);
+  map.setPaintProperty(PLUME_FALLBACK_FILL_LAYER_ID, "fill-opacity", rasterLayerVisible ? 0 : 0.08);
   map.setPaintProperty(PLUME_LOW_OUTLINE_LAYER_ID, "line-opacity", rasterLayerVisible ? 0 : 0.03);
   map.setPaintProperty(PLUME_MEDIUM_OUTLINE_LAYER_ID, "line-opacity", rasterLayerVisible ? 0 : 0.03);
   map.setPaintProperty(PLUME_HIGH_OUTLINE_LAYER_ID, "line-opacity", rasterLayerVisible ? 0 : 0.05);
