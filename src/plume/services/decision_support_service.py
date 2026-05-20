@@ -66,7 +66,8 @@ class DecisionSupportService:
 
     def latest(self, session_id: str | None = None) -> DecisionSupportResponse:
         if self.forecast_context_service is not None:
-            context = self.forecast_context_service.latest(session_id=session_id, source="auto").payload
+            context_source = "session" if session_id is not None else "auto"
+            context = self.forecast_context_service.latest(session_id=session_id, source=context_source).payload
             forecast = context.get("forecast", {}) if isinstance(context, dict) else {}
             plume_metrics = context.get("plume_metrics", {}) if isinstance(context, dict) else {}
             conditions = context.get("conditions", {}) if isinstance(context, dict) else {}
