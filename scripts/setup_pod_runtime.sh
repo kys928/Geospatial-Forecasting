@@ -230,19 +230,18 @@ export PLUME_WINDOWS_DIR="/workspace/Dataset/hysplit-plume-convlstm-multiyear-20
 export PLUME_DATASET_SCENARIO_SCAN_LIMIT="500"
 
 # AI Decision Support: safe frontend/dev default (context fallback, no local LLM required).
-export PLUME_EXPLANATION_BACKEND="stub"
-
-# Optional: uncomment to enable local in-process GGUF LLM.
-# export PLUME_EXPLANATION_BACKEND="llm"
-# export PLUME_LLM_PROVIDER="local-gguf"
-# export PLUME_LOCAL_LLM_GGUF_PATH="/workspace/llm_runtime/models/Qwen_Qwen2.5-7B-Instruct.Q4_K_M.gguf"
-# export PLUME_LOCAL_LLM_N_GPU_LAYERS="-1"
-# export PLUME_LOCAL_LLM_N_CTX="4096"
-# export PLUME_LOCAL_LLM_MAX_TOKENS="300"
-# export PLUME_LOCAL_LLM_TEMPERATURE="0.1"
-# export PLUME_LOCAL_LLM_TOP_P="0.9"
-# export PLUME_LOCAL_LLM_CHAT_FORMAT="chatml"
-# export PLUME_LOCAL_LLM_VERBOSE="false"
+export PLUME_EXPLANATION_BACKEND="llm"
+export PLUME_LLM_PROVIDER="local-gguf"
+export PLUME_LOCAL_LLM_GGUF_PATH="/workspace/llm_runtime/models/Qwen_Qwen2.5-7B-Instruct.Q4_K_M.gguf"
+export PLUME_LOCAL_LLM_N_GPU_LAYERS="-1"
+export PLUME_LOCAL_LLM_N_CTX="4096"
+export PLUME_LOCAL_LLM_MAX_TOKENS="300"
+export PLUME_LOCAL_LLM_TEMPERATURE="0.1"
+export PLUME_LOCAL_LLM_TOP_P="0.9"
+export PLUME_LOCAL_LLM_CHAT_FORMAT="chatml"
+export PLUME_LOCAL_LLM_VERBOSE="false"
+export PLUME_LOCAL_LLM_ISOLATED="true"
+export PLUME_LOCAL_LLM_WORKER_TIMEOUT_SECONDS="45"
 
 # Explanation persistence behavior.
 export PLUME_PERSIST_BATCH_EXPLANATION="false"
