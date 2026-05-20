@@ -37,3 +37,10 @@ print(f"rendered_point_count={rendered_points}")'
 
 raster_response="$(curl -sS "${BASE_URL}/sessions/${session_id}/forecast/latest/frames/${default_frame_index}/raster")"
 printf '%s' "${raster_response}" | python -c 'import sys,json; d=json.load(sys.stdin); print(f"raster_width={d.get(\"width\")}"); print(f"raster_height={d.get(\"height\")}"); print(f"raster_min={d.get(\"min_concentration\")}"); print(f"raster_max={d.get(\"max_concentration\")}")'
+
+echo
+echo "dataset-playback frame API checks"
+curl -fsS "${BASE_URL}/forecast-context/dataset-scenarios/active/frames" | jq '{frame_count, frame_indices}'
+curl -fsS "${BASE_URL}/forecast-context/dataset-scenarios/active/frames/0/raster" | jq '{shape,max,positive_count,bounds}'
+curl -fsS "${BASE_URL}/forecast-context/dataset-scenarios/active/frames/3/raster" | jq '{shape,max,positive_count,bounds}'
+curl -fsS "${BASE_URL}/forecast-context/dataset-scenarios/active/frames/0/overlay" | jq '{type, feature_count: (.features | length)}'
