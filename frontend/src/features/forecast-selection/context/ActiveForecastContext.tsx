@@ -27,21 +27,25 @@ export function ActiveForecastProvider({ children }: { children: ReactNode }) {
   const [selectedFeature, setSelectedFeature] = useState<SelectedFeatureState | null>(null);
   const [selectedFrameIndex, setSelectedFrameIndex] = useState(0);
   const runIdRef = useRef(0);
-  const inFlightRef = useRef(false);
+  const inFlightRunKeyRef = useRef<string | null>(null);
 
   const adoptActiveForecast = useCallback((input: AdoptActiveForecastInput) => {
     setActiveScenarioId(input.scenarioId); setActiveScenarioLabel(input.scenarioLabel); setActiveModelId(input.modelId); setActiveForecastKind(input.forecastKind); setActiveSessionId(input.sessionId); setActivePersistedForecastId(input.persistedForecastId); setActiveForecastBundle(input.bundle); setActiveFramesMetadata(input.framesMetadata); setSelectedFrameIndex(input.framesMetadata?.default_frame_index ?? 0); setSelectedFeature(null);
   }, []);
 
   const runActiveForecast = useCallback(async () => {
-    const requestId = ++runIdRef.current;
-    setStatus("running"); setError(null); inFlightRef.current = true;
     const model = MODEL_BY_ID[activeModelId];
     const scenarioIdForRun = activeScenarioId;
     const scenarioLabelForRun = activeScenarioLabel;
+    const runKey = `${activeModelId}:${scenarioIdForRun ?? "none"}`;
+    if (inFlightRunKeyRef.current === runKey) return;
+
+    const requestId = ++runIdRef.current;
+    inFlightRunKeyRef.current = runKey;
+    setStatus("running"); setError(null);
     try {
       if (activeModelId === "convlstm_multistep") {
-        const run = await sessionClient.runSessionForecast({ metadata: { selected_scenario_id: scenarioIdForRun, selected_model_id: activeModelId } });
+        const run = await sessionClient.runSessionForecast({ metadata: { selected_scenario_id: scenarioIdForRun, selected_model_id: activeModelId, scenario_mode: scenarioIdForRun ? "selected" : "degraded_default_input" } });
         const [bundle, frames] = await Promise.all([sessionClient.getLatestForecastBundle(run.sessionId, { includeExplanation: false }), sessionClient.getLatestForecastFrames(run.sessionId)]);
         if (requestId !== runIdRef.current) return;
         adoptActiveForecast({ scenarioId: scenarioIdForRun, scenarioLabel: scenarioLabelForRun, modelId: activeModelId, forecastKind: model.forecastKind, sessionId: run.sessionId, persistedForecastId: null, bundle, framesMetadata: frames });
@@ -64,12 +68,15 @@ export function ActiveForecastProvider({ children }: { children: ReactNode }) {
     } catch (e) {
       if (requestId === runIdRef.current) { setStatus("error"); setError(e instanceof Error ? e.message : String(e)); }
     } finally {
-      if (requestId === runIdRef.current) inFlightRef.current = false;
+      if (requestId === runIdRef.current) inFlightRunKeyRef.current = null;
     }
   }, [activeModelId, activeScenarioId, activeScenarioLabel, adoptActiveForecast]);
 
-  const clearActiveForecast = useCallback(() => { setActiveForecastKind("none"); setActiveSessionId(null); setActivePersistedForecastId(null); setActiveForecastBundle(null); setActiveFramesMetadata(null); setSelectedFeature(null); setSelectedFrameIndex(0); setStatus("idle"); setError(null); }, []);
-  const value = useMemo(() => ({ activeScenarioId, activeScenarioLabel, activeModelId, activeModelLabel: MODEL_BY_ID[activeModelId].label, activeForecastKind, activeSessionId, activePersistedForecastId, activeForecastBundle, activeFramesMetadata, status, error, selectedFeature, selectedFrameIndex, setActiveScenario: (id: string, label?: string | null) => { setActiveScenarioId(id); setActiveScenarioLabel(label ?? null); }, setActiveModel: setActiveModelId, runActiveForecast, clearActiveForecast, setSelectedFeature, setSelectedFrameIndex, adoptActiveForecast }), [activeScenarioId, activeScenarioLabel, activeModelId, activeForecastKind, activeSessionId, activePersistedForecastId, activeForecastBundle, activeFramesMetadata, status, error, selectedFeature, selectedFrameIndex, runActiveForecast, clearActiveForecast, adoptActiveForecast]);
+  const clearActiveForecast = useCallback(() => { runIdRef.current += 1; setActiveForecastKind("none"); setActiveSessionId(null); setActivePersistedForecastId(null); setActiveForecastBundle(null); setActiveFramesMetadata(null); setSelectedFeature(null); setSelectedFrameIndex(0); setStatus("idle"); setError(null); inFlightRunKeyRef.current = null; }, []);
+  const setActiveScenario = useCallback((id: string, label?: string | null) => { runIdRef.current += 1; setActiveScenarioId(id); setActiveScenarioLabel(label ?? null); setActiveForecastKind("none"); setActiveSessionId(null); setActivePersistedForecastId(null); setActiveForecastBundle(null); setActiveFramesMetadata(null); setSelectedFeature(null); setSelectedFrameIndex(0); setStatus("idle"); setError(null); }, []);
+  const setActiveModel = useCallback((modelId: ActiveModelId) => { runIdRef.current += 1; setActiveModelId(modelId); setActiveForecastKind("none"); setActiveSessionId(null); setActivePersistedForecastId(null); setActiveForecastBundle(null); setActiveFramesMetadata(null); setSelectedFeature(null); setSelectedFrameIndex(0); setStatus("idle"); setError(null); }, []);
+
+  const value = useMemo(() => ({ activeScenarioId, activeScenarioLabel, activeModelId, activeModelLabel: MODEL_BY_ID[activeModelId].label, activeForecastKind, activeSessionId, activePersistedForecastId, activeForecastBundle, activeFramesMetadata, status, error, selectedFeature, selectedFrameIndex, setActiveScenario, setActiveModel, runActiveForecast, clearActiveForecast, setSelectedFeature, setSelectedFrameIndex, adoptActiveForecast }), [activeScenarioId, activeScenarioLabel, activeModelId, activeForecastKind, activeSessionId, activePersistedForecastId, activeForecastBundle, activeFramesMetadata, status, error, selectedFeature, selectedFrameIndex, setActiveScenario, setActiveModel, runActiveForecast, clearActiveForecast, adoptActiveForecast]);
   return <ActiveForecastContext.Provider value={value}>{children}</ActiveForecastContext.Provider>;
 }
 export function useActiveForecast() { const ctx = useContext(ActiveForecastContext); if (!ctx) throw new Error("useActiveForecast must be used within ActiveForecastProvider"); return ctx; }
