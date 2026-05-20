@@ -132,6 +132,23 @@ def test_overlay_ignores_non_plume_target_channels(tmp_path: Path):
     assert max(f["properties"]["value"] for f in overlay["features"] if f["geometry"]["type"]=="Polygon") <= 0.2
 
 
+def test_raster_payload_normal_and_bounds(tmp_path: Path):
+    _write_dataset(tmp_path)
+    svc = DatasetScenarioService(DatasetScenarioConfig("enabled", tmp_path / "dataset_manifest.csv", tmp_path / "windows_manifest_enriched.csv", tmp_path / "windows", 10, tmp_path / "state.json", tmp_path / "online_learning_subset", tmp_path / "playback_state.json", tmp_path / "ridge.pkl"))
+    normal = svc.raster_for_scenario("dataset_normal")
+    assert normal["shape"] == [64, 64]
+    assert normal["max"] == 0.0
+    assert normal["positive_count"] == 0
+    assert set(normal["bounds"].keys()) == {"min_lon", "min_lat", "max_lon", "max_lat"}
+
+    non_normal = svc.raster_for_scenario("dataset_large_plume")
+    assert non_normal["shape"] == [64, 64]
+    assert np.isfinite(non_normal["bounds"]["min_lon"])
+    assert np.isfinite(non_normal["bounds"]["min_lat"])
+    assert np.isfinite(non_normal["bounds"]["max_lon"])
+    assert np.isfinite(non_normal["bounds"]["max_lat"])
+
+
 def test_playback_running_does_not_advance_by_elapsed_time(tmp_path: Path):
     _write_dataset(tmp_path)
     cfg = DatasetScenarioConfig("enabled", tmp_path / "dataset_manifest.csv", tmp_path / "windows_manifest_enriched.csv", tmp_path / "windows", 10, tmp_path / "state.json", tmp_path / "online_learning_subset", tmp_path / "playback_state.json", tmp_path / "ridge.pkl")
