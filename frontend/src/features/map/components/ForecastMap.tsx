@@ -15,6 +15,7 @@ import type {
 } from "../../forecast/types/forecast.types";
 import { isValidFeatureCollection } from "../utils/layerBuilders";
 import { MapCompassOverlay } from "./MapCompassOverlay";
+import { extractRadarPointsFromGeojson } from "../utils/plumeRadar";
 
 interface ForecastMapProps {
   geojson: GeoJsonFeatureCollection | null;
@@ -26,6 +27,7 @@ interface ForecastMapProps {
 
 const FORECAST_SOURCE_ID = "forecast-source";
 const SELECTED_SOURCE_ID = "selected-feature-source";
+const FORECAST_RADAR_SOURCE_ID = "forecast-radar-source";
 
 const DOMAIN_FILL_LAYER_ID = "forecast-domain-fill";
 const DOMAIN_OUTLINE_LAYER_ID = "forecast-domain-outline";
@@ -35,6 +37,7 @@ const PLUME_MEDIUM_HIT_LAYER_ID = "forecast-plume-medium-hit";
 const PLUME_HIGH_HIT_LAYER_ID = "forecast-plume-high-hit";
 
 const PLUME_HEATMAP_LAYER_ID = "forecast-plume-heatmap";
+const PLUME_RADAR_HEAT_LAYER_ID = "forecast-plume-radar-heat";
 const PLUME_FALLBACK_FILL_LAYER_ID = "forecast-plume-fallback-fill";
 
 const PLUME_LOW_OUTLINE_LAYER_ID = "forecast-plume-low-outline";
@@ -246,6 +249,7 @@ function moveForecastLayersToTop(map: Map) {
     PLUME_MEDIUM_HIT_LAYER_ID,
     PLUME_HIGH_HIT_LAYER_ID,
     PLUME_HEATMAP_LAYER_ID,
+    PLUME_RADAR_HEAT_LAYER_ID,
     PLUME_FALLBACK_FILL_LAYER_ID,
     PLUME_LOW_OUTLINE_LAYER_ID,
     PLUME_MEDIUM_OUTLINE_LAYER_ID,
@@ -287,10 +291,22 @@ function applyGeojsonToMap(
 
   source.setData(normalized as GeoJSON.FeatureCollection);
 
+  const radarSource = map.getSource(FORECAST_RADAR_SOURCE_ID) as GeoJSONSource | undefined;
+  const radarPoints = extractRadarPointsFromGeojson(normalized);
+  radarSource?.setData(radarPoints as GeoJSON.FeatureCollection);
+
   const plumeOnly: GeoJsonFeatureCollection = { ...normalized, features: normalized.features.filter((f) => ["plume_band", "plume_band_low", "plume_band_medium", "plume_band_high", "plume_point", "plume_cell", "source"].includes(typeof f.properties?.kind === "string" ? f.properties.kind : "")) };
   const bounds = plumeOnly.features.length ? getFeatureCollectionBounds(plumeOnly) : null;
   const kinds = Array.from(new Set(normalized.features.map((f) => (typeof f.properties?.kind === "string" ? f.properties.kind : "unknown"))));
   if (import.meta.env.DEV) {
+    const radarKinds = Array.from(new Set(radarPoints.features.map((f) => (typeof f.properties?.source_kind === "string" ? f.properties.source_kind : "unknown"))));
+    const maxWeight = radarPoints.features.reduce((acc, f) => Math.max(acc, typeof f.properties?.weight === "number" ? f.properties.weight : 0), 0);
+    console.debug("[forecast-map] radar source", {
+      radarPointCount: radarPoints.features.length,
+      radarKinds,
+      maxWeight,
+      sourceFeatureCount: normalized.features.length
+    });
     console.debug("[forecast-map] setData", {
       featureCount: normalized.features.length,
       kinds,
@@ -401,6 +417,14 @@ export function ForecastMap({
         }
       });
 
+      map.addSource(FORECAST_RADAR_SOURCE_ID, {
+        type: "geojson",
+        data: {
+          type: "FeatureCollection",
+          features: []
+        }
+      });
+
       map.addSource(SELECTED_SOURCE_ID, {
         type: "geojson",
         data: {
@@ -447,7 +471,7 @@ export function ForecastMap({
         source: FORECAST_SOURCE_ID,
         paint: {
           "fill-color": "#facc15",
-          "fill-opacity": 0.44
+          "fill-opacity": 0.08
         },
         filter: [
           "all",
@@ -466,7 +490,7 @@ export function ForecastMap({
         source: FORECAST_SOURCE_ID,
         paint: {
           "fill-color": "#f59e0b",
-          "fill-opacity": 0.56
+          "fill-opacity": 0.12
         },
         filter: [
           "all",
@@ -485,7 +509,7 @@ export function ForecastMap({
         source: FORECAST_SOURCE_ID,
         paint: {
           "fill-color": "#ef4444",
-          "fill-opacity": 0.68
+          "fill-opacity": 0.18
         },
         filter: [
           "all",
@@ -496,6 +520,29 @@ export function ForecastMap({
             ["all", ["==", ["get", "kind"], "plume_band"], ["==", ["get", "band"], "high"]]
           ]
         ]
+      });
+
+      map.addLayer({
+        id: PLUME_RADAR_HEAT_LAYER_ID,
+        type: "heatmap",
+        source: FORECAST_RADAR_SOURCE_ID,
+        paint: {
+          "heatmap-weight": ["coalesce", ["to-number", ["get", "weight"]], 0],
+          "heatmap-intensity": ["interpolate", ["linear"], ["zoom"], 8, 0.9, 12, 1.2, 18, 1.6],
+          "heatmap-radius": ["interpolate", ["linear"], ["zoom"], 8, 18, 12, 32, 15, 46, 18, 70],
+          "heatmap-opacity": 0.72,
+          "heatmap-color": [
+            "interpolate",
+            ["linear"],
+            ["heatmap-density"],
+            0, "rgba(255,255,255,0)",
+            0.2, "rgba(254,240,138,0.25)",
+            0.45, "rgba(251,191,36,0.55)",
+            0.7, "rgba(249,115,22,0.78)",
+            1, "rgba(220,38,38,0.92)"
+          ]
+        },
+        filter: ["all", ["==", "$type", "Point"], ["==", ["get", "kind"], "plume_radar_point"]]
       });
 
       map.addLayer({
