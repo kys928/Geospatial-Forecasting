@@ -22,3 +22,16 @@ export function countGeojsonKinds(geojson: Record<string, unknown> | null): GeoJ
     kinds: [...kindCounts.keys()]
   };
 }
+
+
+export function buildDatasetOverlayIdentity(
+  geojson: { features?: unknown[]; metadata?: Record<string, unknown> } | null
+): string {
+  const metadata = geojson?.metadata ?? {};
+  const scenarioId = metadata.active_scenario_id ?? "dataset";
+  const windowId = metadata.active_window_id ?? "window";
+  const featureCount = typeof metadata.feature_count === "number"
+    ? metadata.feature_count
+    : Array.isArray(geojson?.features) ? geojson.features.length : 0;
+  return `${String(scenarioId)}:${String(windowId)}:${featureCount}`;
+}

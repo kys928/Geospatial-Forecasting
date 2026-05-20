@@ -3,7 +3,7 @@ import { AppShell } from "../app/AppShell";
 import { ForecastMap } from "../features/map/components/ForecastMap";
 import { ForecastFrameTimeline } from "../features/map/components/ForecastFrameTimeline";
 import type { GeoJsonFeatureCollection } from "../features/forecast/types/forecast.types";
-import { countGeojsonKinds } from "../features/map/utils/geojsonDiagnostics";
+import { buildDatasetOverlayIdentity, countGeojsonKinds } from "../features/map/utils/geojsonDiagnostics";
 import { sessionClient } from "../features/sessions/api/sessionClient";
 import { useSessionForecastView } from "../features/sessions/context/SessionForecastViewContext";
 import { useSessionForecastFrames } from "../features/sessions/hooks/useSessionForecastFrames";
@@ -41,7 +41,8 @@ export function ForecastPage() {
       const forecast = (context.forecast as Record<string, unknown> | undefined) ?? {};
       const source = (context.source as Record<string, unknown> | undefined) ?? {};
       const inputSource = typeof forecast.input_source === "string" ? forecast.input_source : "";
-      const maxPlumeScore = typeof forecast.max_plume_score === "number" ? forecast.max_plume_score : null;
+      const plumeMetrics = (context.plume_metrics as Record<string, unknown> | undefined) ?? {}
+      const maxPlumeScore = typeof plumeMetrics.max_plume_score === "number" ? plumeMetrics.max_plume_score : null;
       const lat = typeof source.latitude === "number" ? source.latitude : null;
       const lon = typeof source.longitude === "number" ? source.longitude : null;
       if (import.meta.env.DEV) {
@@ -151,15 +152,36 @@ export function ForecastPage() {
 
   const hasMultiFrameSession = Boolean(framesMetadata && framesMetadata.frame_count > 1);
   const sessionGeojson = ((selectedFrameGeoJson ?? latestForecastBundle?.geojson) ?? null) as GeoJsonFeatureCollection | null;
-  const sourceMode: "dataset" | "session" = datasetOverlayGeoJson ? "dataset" : "session";
-  const mapGeojson = sourceMode === "dataset" ? datasetOverlayGeoJson : sessionGeojson;
+  const hasDatasetOverlay = Boolean(datasetOverlayGeoJson?.features?.length);
+  const sourceMode: "dataset" | "session" = hasDatasetOverlay ? "dataset" : "session";
+  const mapGeojson = hasDatasetOverlay ? datasetOverlayGeoJson : sessionGeojson;
 
   useEffect(() => {
     inspectGeoJson(mapGeojson as unknown as Record<string, unknown>, sourceMode);
   }, [mapGeojson, sourceMode]);
 
-  const forecastFitKey = `${sourceMode}:${datasetOverlayGeoJson ? "dataset" : (framesMetadata?.forecast_id ?? activeSessionId ?? "none")}`;
+  const datasetOverlayIdentity = hasDatasetOverlay
+    ? buildDatasetOverlayIdentity(datasetOverlayGeoJson as unknown as { features?: unknown[]; metadata?: Record<string, unknown> })
+    : "dataset";
+  const forecastFitKey = `${sourceMode}:${sourceMode === "dataset" ? datasetOverlayIdentity : (framesMetadata?.forecast_id ?? activeSessionId ?? "none")}`;
   const timelineDisabled = !hasMultiFrameSession;
+  const datasetKinds = countGeojsonKinds(datasetOverlayGeoJson as unknown as Record<string, unknown> | null).kinds;
+  const mapKinds = countGeojsonKinds(mapGeojson as unknown as Record<string, unknown> | null).kinds;
+
+  if (import.meta.env.DEV) {
+    console.debug("[forecast-map] render source", {
+      sourceMode,
+      datasetFeatures: datasetOverlayGeoJson?.features?.length ?? 0,
+      sessionFeatures: sessionGeojson?.features?.length ?? 0,
+      mapFeatures: mapGeojson?.features?.length ?? 0,
+      datasetKinds,
+      mapKinds,
+      firstDatasetFeature: datasetOverlayGeoJson?.features?.[0] ?? null,
+      autoFitKey: forecastFitKey,
+      datasetSourceCenter
+    });
+  }
+
 
   return (
     <AppShell title="Map / Forecast" subtitle="Current forecast map and plume overlay.">
