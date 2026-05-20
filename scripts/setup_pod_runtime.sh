@@ -9,6 +9,9 @@ DATASET_DIR="/workspace/Dataset/hysplit-plume-convlstm-multiyear-2024-2026"
 GGUF_PATH="/workspace/llm_runtime/models/Qwen_Qwen2.5-7B-Instruct.Q4_K_M.gguf"
 GGUF_SHA256_EXPECTED="11e1c92aa0175db460399af847179825301a1a91a31da01cae12a2386fcbf3a1"
 EXPECTED_WINDOWS_COUNT=40215
+NUMPY_VERSION="2.4.4"
+LLAMA_CPP_VERSION="0.3.22"
+DISKCACHE_VERSION="5.6.3"
 
 log() { echo "[setup] $*"; }
 warn() { echo "[setup][warn] $*"; }
@@ -74,7 +77,8 @@ python3 -m pip install \
   fastapi==0.136.1 \
   uvicorn==0.46.0 \
   pydantic==2.13.4 \
-  numpy==2.4.4 \
+  numpy=="$NUMPY_VERSION" \
+  diskcache=="$DISKCACHE_VERSION" \
   huggingface_hub==0.36.2 \
   openai==1.109.1 \
   shapely==2.1.2 \
@@ -93,8 +97,8 @@ python3 -m pip install \
   --index-url https://download.pytorch.org/whl/cu124 \
   torch==2.4.1+cu124 torchvision==0.19.1+cu124 torchaudio==2.4.1+cu124
 
-log "Installing llama-cpp-python with CUDA"
-CMAKE_ARGS="-DGGML_CUDA=on" FORCE_CMAKE=1 python3 -m pip install --force-reinstall --no-cache-dir --no-deps llama-cpp-python==0.3.22
+log "Installing llama-cpp-python with CUDA without dependency mutation"
+CMAKE_ARGS="-DGGML_CUDA=on" FORCE_CMAKE=1 python3 -m pip install --force-reinstall --no-cache-dir --no-deps llama-cpp-python=="$LLAMA_CPP_VERSION"
 
 python3 - <<'PY'
 from llama_cpp import Llama
@@ -102,16 +106,20 @@ print("llama-cpp-python import OK")
 PY
 
 log "Reasserting pinned numpy version"
-python3 -m pip install --force-reinstall --no-cache-dir numpy==2.4.4
+python3 -m pip install --force-reinstall --no-cache-dir --no-deps numpy=="$NUMPY_VERSION"
 python3 - <<'PY'
 import numpy
+import diskcache
+import llama_cpp
 print("numpy:", numpy.__version__)
+print("diskcache:", diskcache.__version__)
+print("llama_cpp:", llama_cpp.__file__)
 if numpy.__version__ != "2.4.4":
     raise SystemExit("numpy pin verification failed: expected 2.4.4")
 PY
 
 log "Installing repo package editable"
-python3 -m pip install -e .
+python3 -m pip install --no-deps -e .
 python3 - <<'PY'
 import importlib.metadata as md
 import sys
@@ -121,6 +129,7 @@ expected = {
     "uvicorn": "0.46.0",
     "pydantic": "2.13.4",
     "numpy": "2.4.4",
+    "diskcache": "5.6.3",
     "llama-cpp-python": "0.3.22",
     "huggingface-hub": "0.36.2",
     "openai": "1.109.1",
@@ -272,7 +281,7 @@ NPM_VER="$(npm --version)"
   echo "pip_version=$PIP_VER"
   echo "node_version=$NODE_VER"
   echo "npm_version=$NPM_VER"
-  python3 -m pip show fastapi uvicorn pydantic numpy llama-cpp-python torch torchvision torchaudio pandas scikit-learn 2>/dev/null \
+  python3 -m pip show fastapi uvicorn pydantic numpy diskcache llama-cpp-python torch torchvision torchaudio pandas scikit-learn 2>/dev/null \
     | awk '/^Name:|^Version:/{print}'
   echo "dataset_windows_count=$WINDOWS_COUNT"
   echo "gguf_sha256=$GGUF_SHA256_ACTUAL"
