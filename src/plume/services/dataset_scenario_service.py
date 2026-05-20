@@ -382,7 +382,12 @@ class DatasetScenarioService:
     def raster_active(self) -> dict[str, Any]:
         self.resolve_current_playback_state()
         active = self.get_active_payload()
-        scenario_id = active.get("selected_scenario_id")
+        scenario_id = active.get("selected_scenario_id") or active.get("active_scenario_id")
+        if not isinstance(scenario_id, str):
+            scenario_id = self.get_active()
+        if not isinstance(scenario_id, str):
+            scenarios = self.list_scenarios()
+            scenario_id = scenarios[0].get("scenario_id") if scenarios else None
         if not isinstance(scenario_id, str):
             raise KeyError("no active scenario")
         return self.raster_for_scenario(scenario_id)

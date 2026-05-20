@@ -149,6 +149,29 @@ def test_raster_payload_normal_and_bounds(tmp_path: Path):
     assert np.isfinite(non_normal["bounds"]["max_lat"])
 
 
+def test_raster_active_returns_normal_payload(tmp_path: Path):
+    _write_dataset(tmp_path)
+    cfg = DatasetScenarioConfig("enabled", tmp_path / "dataset_manifest.csv", tmp_path / "windows_manifest_enriched.csv", tmp_path / "windows", 10, tmp_path / "state.json", tmp_path / "online_learning_subset", tmp_path / "playback_state.json", tmp_path / "ridge.pkl")
+    svc = DatasetScenarioService(cfg)
+    svc.activate("dataset_normal")
+    payload = svc.raster_active()
+    assert payload["scenario_id"] == "dataset_normal"
+    assert payload["shape"] == [64, 64]
+    assert payload["max"] == 0.0
+    assert payload["positive_count"] == 0
+
+
+def test_raster_active_returns_payload_for_plume_scenarios(tmp_path: Path):
+    _write_dataset(tmp_path)
+    cfg = DatasetScenarioConfig("enabled", tmp_path / "dataset_manifest.csv", tmp_path / "windows_manifest_enriched.csv", tmp_path / "windows", 10, tmp_path / "state.json", tmp_path / "online_learning_subset", tmp_path / "playback_state.json", tmp_path / "ridge.pkl")
+    svc = DatasetScenarioService(cfg)
+    for scenario_id in ("dataset_low_plume", "dataset_medium_plume", "dataset_large_plume"):
+        svc.activate(scenario_id)
+        payload = svc.raster_active()
+        assert payload["scenario_id"] == scenario_id
+        assert payload["shape"] == [64, 64]
+
+
 def test_playback_running_does_not_advance_by_elapsed_time(tmp_path: Path):
     _write_dataset(tmp_path)
     cfg = DatasetScenarioConfig("enabled", tmp_path / "dataset_manifest.csv", tmp_path / "windows_manifest_enriched.csv", tmp_path / "windows", 10, tmp_path / "state.json", tmp_path / "online_learning_subset", tmp_path / "playback_state.json", tmp_path / "ridge.pkl")
