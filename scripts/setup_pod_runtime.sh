@@ -94,11 +94,20 @@ python3 -m pip install \
   torch==2.4.1+cu124 torchvision==0.19.1+cu124 torchaudio==2.4.1+cu124
 
 log "Installing llama-cpp-python with CUDA"
-CMAKE_ARGS="-DGGML_CUDA=on" FORCE_CMAKE=1 python3 -m pip install --force-reinstall --no-cache-dir llama-cpp-python==0.3.22
+CMAKE_ARGS="-DGGML_CUDA=on" FORCE_CMAKE=1 python3 -m pip install --force-reinstall --no-cache-dir --no-deps llama-cpp-python==0.3.22
 
 python3 - <<'PY'
 from llama_cpp import Llama
 print("llama-cpp-python import OK")
+PY
+
+log "Reasserting pinned numpy version"
+python3 -m pip install --force-reinstall --no-cache-dir numpy==2.4.4
+python3 - <<'PY'
+import numpy
+print("numpy:", numpy.__version__)
+if numpy.__version__ != "2.4.4":
+    raise SystemExit("numpy pin verification failed: expected 2.4.4")
 PY
 
 log "Installing repo package editable"
