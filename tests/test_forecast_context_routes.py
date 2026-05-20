@@ -42,6 +42,28 @@ class StubDatasetScenarioService:
         if scenario_id == "unknown":
             raise KeyError(scenario_id)
         return {"shape": [64, 64], "max": 1.0, "positive_count": 5, "bounds": {"min_lon": 0, "min_lat": 0, "max_lon": 1, "max_lat": 1}}
+    def frames_active(self):
+        return {"frame_count": 4, "frame_indices": [0, 1, 2, 3]}
+    def frame_raster_active(self, frame_index: int):
+        if frame_index not in {0, 1, 2, 3}:
+            raise IndexError(frame_index)
+        return {"shape": [64, 64], "frame_index": frame_index}
+    def frame_overlay_active(self, frame_index: int):
+        if frame_index not in {0, 1, 2, 3}:
+            raise IndexError(frame_index)
+        return {"type": "FeatureCollection", "features": []}
+    def frames_for_scenario(self, scenario_id: str):
+        if scenario_id == "unknown":
+            raise KeyError(scenario_id)
+        return {"frame_count": 4, "frame_indices": [0, 1, 2, 3]}
+    def frame_raster_for_scenario(self, scenario_id: str, frame_index: int):
+        if scenario_id == "unknown":
+            raise KeyError(scenario_id)
+        if frame_index not in {0, 1, 2, 3}:
+            raise IndexError(frame_index)
+        return {"shape": [64, 64], "frame_index": frame_index}
+    def frame_overlay_for_scenario(self, scenario_id: str, frame_index: int):
+        return self.frame_overlay_active(frame_index)
 
     def get_playback_state(self):
         return {"enabled": True, "active_scenario_id": "dataset_a"}
@@ -81,4 +103,23 @@ def test_unknown_scenario_raster_returns_404():
     register_forecast_context_routes(app, forecast_context_service=StubForecastContextService(), dataset_scenario_service=dataset)
     client = TestClient(app)
     response = client.get('/forecast-context/dataset-scenarios/unknown/raster')
+    assert response.status_code == 404
+
+
+def test_active_frames_route_returns_four_frames():
+    app = FastAPI()
+    dataset = StubDatasetScenarioService()
+    register_forecast_context_routes(app, forecast_context_service=StubForecastContextService(), dataset_scenario_service=dataset)
+    client = TestClient(app)
+    response = client.get('/forecast-context/dataset-scenarios/active/frames')
+    assert response.status_code == 200
+    assert response.json()["frame_count"] == 4
+
+
+def test_active_frame_raster_invalid_index_returns_404():
+    app = FastAPI()
+    dataset = StubDatasetScenarioService()
+    register_forecast_context_routes(app, forecast_context_service=StubForecastContextService(), dataset_scenario_service=dataset)
+    client = TestClient(app)
+    response = client.get('/forecast-context/dataset-scenarios/active/frames/99/raster')
     assert response.status_code == 404
