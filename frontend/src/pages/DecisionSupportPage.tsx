@@ -1,312 +1,91 @@
 import { useEffect, useRef, useState } from "react";
 import { AppShell } from "../app/AppShell";
-import { useSessionForecastView } from "../features/sessions/context/SessionForecastViewContext";
-import { sessionClient } from "../features/sessions/api/sessionClient";
-import type { SessionDetail, SessionStateSummary } from "../features/sessions/types/session.types";
-import { httpGet, httpPost } from "../services/api/http";
 import { DecisionChatPanel } from "../features/decision-support/components/DecisionChatPanel";
 import { ConditionsPanel } from "../features/decision-support/components/ConditionsPanel";
 import { CHAT_STORAGE_KEY } from "../features/decision-support/constants";
-import {
-  cleanAssistantText,
-  formatArea,
-  formatCoordinate,
-  formatDirection,
-  formatDurationMinutes,
-  formatGridSize,
-  formatNumber,
-  formatPercent,
-  formatPressure,
-  formatRiskLevel,
-  formatSpeed,
-  formatTemperature,
-  formatTimestamp,
-  formatUnknown,
-  getNestedValue,
-  safeText
-} from "../features/decision-support/formatters";
-import { hasMeaningfulPlume } from "../features/decision-support/plumeLogic";
-import type {
-  ActiveDatasetScenarioResponse,
-  ChatMessage,
-  DatasetPlaybackState,
-  DatasetScenarioPreview,
-  DecisionSupportLatest,
-  ForecastContextResponse
-} from "../features/decision-support/types";
+import type { ActiveDatasetScenarioResponse, ChatMessage, DatasetPlaybackState, DatasetScenarioPreview, DecisionSupportLatest, ForecastContextResponse } from "../features/decision-support/types";
+import { cleanAssistantText, safeText } from "../features/decision-support/formatters";
+import { getActiveForecastTechnicalDetails, isModelIdentityQuestion } from "../features/forecast-selection/activeForecastHelpers";
+import { httpGet, httpPost } from "../services/api/http";
+import { useActiveForecast } from "../features/forecast-selection/context/ActiveForecastContext";
 
 export function DecisionSupportPage() {
-  const { activeSessionId, latestForecastBundle } = useSessionForecastView();
-  const [data, setData] = useState<DecisionSupportLatest | null>(null);
-  const [context, setContext] = useState<ForecastContextResponse | null>(null);
-  const [, setSession] = useState<SessionDetail | null>(null);
+  const { activeScenarioId, activeModelId, activeModelLabel, activeForecastKind, activeSessionId, activePersistedForecastId, activeForecastBundle, setActiveScenario, setActiveModel, runActiveForecast } = useActiveForecast();
   const [datasetScenarios, setDatasetScenarios] = useState<DatasetScenarioPreview[]>([]);
-  const [activeScenario, setActiveScenario] = useState<string>("");
-  const [datasetModeEnabled, setDatasetModeEnabled] = useState(false);
-  const [, setSessionState] = useState<SessionStateSummary | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [context, setContext] = useState<ForecastContextResponse | null>(null);
+  const [data, setData] = useState<DecisionSupportLatest | null>(null);
   const [llmWarning, setLlmWarning] = useState<string | null>(null);
   const [chatQuestion, setChatQuestion] = useState("");
-  const [messages, setMessages] = useState<ChatMessage[]>(() => {
-    try {
-      const raw = sessionStorage.getItem(CHAT_STORAGE_KEY);
-      if (!raw) return [];
-      const parsed: unknown = JSON.parse(raw);
-      if (!Array.isArray(parsed)) return [];
-      return parsed
-        .filter((item): item is ChatMessage =>
-          Boolean(
-            item
-            && typeof item === "object"
-            && ((item as ChatMessage).role === "assistant" || (item as ChatMessage).role === "user")
-            && typeof (item as ChatMessage).content === "string"
-          )
-        )
-        .slice(-50);
-    } catch {
-      return [];
-    }
-  });
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
   const threadRef = useRef<HTMLDivElement>(null);
-  const lastBriefingKeyRef = useRef<string | null>(null);
+  const runKeyRef = useRef<string>("");
 
   useEffect(() => {
     Promise.all([
       httpGet<{ enabled: boolean; scenarios: DatasetScenarioPreview[] }>("/forecast-context/dataset-scenarios"),
       httpGet<ActiveDatasetScenarioResponse>("/forecast-context/dataset-scenarios/active"),
       httpGet<DatasetPlaybackState>("/forecast-context/dataset-playback/state")
-    ])
-      .then(([listResp, activeResp, playback]) => {
-        const scenarios = Array.isArray(listResp.scenarios) ? listResp.scenarios : [];
-        setDatasetScenarios(scenarios);
-        setDatasetModeEnabled(Boolean(playback.enabled));
-        const selectedId = playback.active_scenario_id ?? activeResp.selected_scenario_id ?? activeResp.active_scenario_id ?? scenarios[0]?.scenario_id ?? "";
-        setActiveScenario(selectedId);
-        const contextUrl = playback.enabled ? "/forecast-context/latest?source=dataset" : "/forecast-context/latest";
-        void httpGet<ForecastContextResponse>(contextUrl).then(setContext).catch(() => setContext(null));
-        void httpGet<DecisionSupportLatest>("/decision-support/latest")
-          .then((latest) => {
-            setData(latest);
-            setLlmWarning(null);
-          })
-          .catch(() => {
-            setLlmWarning("LLM unavailable; using forecast context.");
-          });
-      })
-      .catch(() => setDatasetScenarios([]));
-  }, []);
+    ]).then(([scn, active, playback]) => {
+      const scenarios = scn.scenarios ?? [];
+      setDatasetScenarios(scenarios);
+      const fallback = playback.active_scenario_id ?? active.selected_scenario_id ?? scenarios[0]?.scenario_id ?? null;
+      if (fallback && !activeScenarioId) setActiveScenario(fallback, scenarios.find((x) => x.scenario_id === fallback)?.label);
+    }).catch(() => setDatasetScenarios([]));
+  }, [activeScenarioId, setActiveScenario]);
 
   useEffect(() => {
-    if (!activeSessionId) {
-      setSession(null);
-      setSessionState(null);
-      return;
-    }
-    Promise.all([sessionClient.getSession(activeSessionId), sessionClient.getSessionState(activeSessionId)])
-      .then(([sessionDetail, state]) => {
-        setSession(sessionDetail);
-        setSessionState(state);
-      })
-      .catch(() => {
-        setSession(null);
-        setSessionState(null);
-      });
-  }, [activeSessionId]);
-
-  const explanation = datasetModeEnabled ? {} : (latestForecastBundle?.explanation ?? {});
-  const summary = datasetModeEnabled ? {} : (latestForecastBundle?.summary ?? {});
+    if (!activeScenarioId) return;
+    const runKey = `${activeModelId}:${activeScenarioId}`;
+    if (runKeyRef.current === runKey) return;
+    runKeyRef.current = runKey;
+    void runActiveForecast();
+  }, [activeScenarioId, activeModelId, runActiveForecast]);
 
   useEffect(() => {
-    try {
-      sessionStorage.setItem(CHAT_STORAGE_KEY, JSON.stringify(messages.slice(-50)));
-    } catch {
-      // ignore storage failures
-    }
-    const thread = threadRef.current;
-    if (!thread) return;
-    thread.scrollTop = thread.scrollHeight;
-  }, [messages]);
-
-  const hasContext = Boolean(latestForecastBundle || data || context || activeScenario || datasetScenarios.length);
-  const values = summary as Record<string, unknown>;
-  const ctxForecast = context?.forecast ?? {};
-  const ctxConditions = context?.conditions ?? {};
-  const ctxSource = context?.source ?? {};
-  const ctxPlume = context?.plume_metrics ?? {};
-
-  const riskLevel = formatRiskLevel(ctxForecast.risk_level ?? data?.risk_level ?? explanation.risk_level ?? values.risk_level);
-  const forecastEvidence = getNestedValue(data, "forecast_evidence") as Record<string, unknown> | undefined;
-  const forecastEvidenceStats = getNestedValue(forecastEvidence, "summary_statistics") as Record<string, unknown> | undefined;
-  const affectedAreaM2 = ctxPlume.affected_area_m2 ?? getNestedValue(summary, "affected_area_m2", "affected_area", "summary_statistics.affected_area_m2", "summary_statistics.affected_area") ?? getNestedValue(forecastEvidence, "affected_area_m2", "affected_area") ?? getNestedValue(forecastEvidenceStats, "affected_area_m2", "affected_area");
-  const affectedCellsRaw = ctxPlume.affected_cells_above_threshold ?? getNestedValue(summary, "affected_cells_above_threshold", "summary_statistics.affected_cells_above_threshold") ?? getNestedValue(forecastEvidence, "affected_cells_above_threshold") ?? getNestedValue(forecastEvidenceStats, "affected_cells_above_threshold");
-  const maxConcentration = ctxPlume.max_concentration ?? getNestedValue(summary, "max_concentration", "summary_statistics.max_concentration") ?? getNestedValue(forecastEvidence, "max_concentration") ?? getNestedValue(forecastEvidenceStats, "max_concentration");
-  const meanConcentration = ctxPlume.mean_concentration ?? getNestedValue(summary, "mean_concentration", "summary_statistics.mean_concentration") ?? getNestedValue(forecastEvidence, "mean_concentration") ?? getNestedValue(forecastEvidenceStats, "mean_concentration");
-  const dominantSpreadDirection = ctxPlume.dominant_spread_direction ?? getNestedValue(summary, "dominant_spread_direction", "summary_statistics.dominant_spread_direction", "wind_direction", "direction") ?? getNestedValue(forecastEvidence, "dominant_spread_direction") ?? getNestedValue(forecastEvidenceStats, "dominant_spread_direction");
-  const thresholdUsed = ctxPlume.threshold_used ?? getNestedValue(summary, "threshold_used", "threshold", "summary_statistics.threshold_used") ?? getNestedValue(forecastEvidence, "threshold_used") ?? getNestedValue(forecastEvidenceStats, "threshold_used");
-  const forecastTime = ctxForecast.timestamp ?? ctxForecast.issued_at ?? getNestedValue(data, "last_forecast_time") ?? getNestedValue(summary, "timestamp", "issued_at");
-  const plumePresent = hasMeaningfulPlume({ affectedAreaM2, affectedCellsAboveThreshold: affectedCellsRaw, maxConcentration, explanationSummary: explanation.summary, riskLevel });
-  const hasThreatSignal = safeText(data?.situation_summary ?? explanation.summary, "").toLowerCase().includes("threat");
-  const explicitNoPlumeSignal = Number(affectedAreaM2) === 0 || Number(affectedCellsRaw) === 0 || Number(maxConcentration) === 0 || safeText(explanation.summary, "").toLowerCase().includes("no meaningful plume");
-  const plumeStatus = plumePresent ? (hasThreatSignal ? "Threat detected" : "Plume detected above threshold") : (explicitNoPlumeSignal ? "No meaningful plume above threshold" : "Forecast unavailable");
-
-  const windSpeedValue = ctxConditions.wind_speed_ms;
-  const windDirectionValue = ctxConditions.wind_direction_label ?? ctxConditions.wind_direction_deg;
-  const uWindValue = ctxConditions.u10m_ms;
-  const vWindValue = ctxConditions.v10m_ms;
-  const meteorologyRows = [
-    ["Wind speed", formatSpeed(windSpeedValue)],
-    ["Wind direction", formatDirection(windDirectionValue)],
-    ["U wind", formatSpeed(uWindValue)],
-    ["V wind", formatSpeed(vWindValue)],
-    ["Temperature", formatTemperature(ctxConditions.temperature_c)],
-    ["Relative humidity", formatPercent(ctxConditions.humidity_pct)],
-    ["Surface pressure", formatPressure(ctxConditions.surface_pressure_hpa)],
-    ["PBL height", `${formatNumber(ctxConditions.pbl_height_m, 1)} m`],
-    ["Meteorology timestamp", formatTimestamp(ctxConditions.meteorology_timestamp)],
-    ["Meteorology source", formatUnknown(ctxConditions.meteorology_source)]
-  ] as Array<[string, string]>;
-
-  const windSpeed = formatSpeed(windSpeedValue);
-  const windDirection = formatDirection(windDirectionValue);
-  const uWind = formatSpeed(uWindValue);
-  const vWind = formatSpeed(vWindValue);
-  const windSummary = windSpeed !== "Unavailable" && windDirection !== "Unavailable" ? `${windSpeed} ${windDirection}` : (uWind !== "Unavailable" || vWind !== "Unavailable" ? `U ${uWind}, V ${vWind}`.replace("U Unavailable, ", "").replace(", V Unavailable", "") : "Unavailable");
-  const displayValue = (value: string, fallback = "Not available") => value === "Unavailable" ? fallback : value;
-
-  const weatherCompactRows = [
-    ["Wind", displayValue(windSummary)],
-    ["Temperature", displayValue(formatTemperature(ctxConditions.temperature_c))],
-    ["Humidity", displayValue(formatPercent(ctxConditions.humidity_pct))],
-    ["Pressure / PBL", (() => {
-      const pressure = formatPressure(ctxConditions.surface_pressure_hpa);
-      const pbl = `${formatNumber(ctxConditions.pbl_height_m, 1)} m`;
-      if (pressure === "Unavailable" && pbl === "Unavailable m") return "Not available";
-      if (pressure !== "Unavailable" && pbl !== "Unavailable m") return `${pressure} / ${pbl}`;
-      return pressure !== "Unavailable" ? pressure : pbl;
-    })()]
-  ] as Array<[string, string]>;
-  const sourceLatitude = formatCoordinate(ctxSource.latitude);
-  const sourceLongitude = formatCoordinate(ctxSource.longitude);
-  const sourceLocation = sourceLatitude !== "Unavailable" && sourceLongitude !== "Unavailable" ? `${sourceLatitude}, ${sourceLongitude}` : null;
-  const currentConditionsRows = [...weatherCompactRows, ["Source", sourceLocation ?? "Not configured"]] as Array<[string, string]>;
-
-  const lastForecastLabel = formatTimestamp(forecastTime);
-  const currentForecastRows = [["Status", formatUnknown(ctxForecast.status) || plumeStatus], ["Risk", riskLevel], ["Input source", formatUnknown(ctxForecast.input_source)]] as Array<[string, string]>;
-  const plumeDetailRows: Array<[string, string]> = plumePresent
-    ? [["Impact extent", formatArea(affectedAreaM2) === "Unavailable" ? "Estimated from plume grid" : formatArea(affectedAreaM2)], ["Peak plume score", formatNumber(maxConcentration)], ["Predicted spread", formatDirection(dominantSpreadDirection)], ...(lastForecastLabel !== "Unavailable" ? [["Forecast time", lastForecastLabel] as [string, string]] : [])]
-    : [];
-
-  const forecastHorizon = getNestedValue(summary, "forecast_horizon_minutes", "horizon_minutes", "summary_statistics.forecast_horizon_minutes") ?? getNestedValue(forecastEvidence, "forecast_horizon_minutes", "horizon_minutes");
-  const gridSizeValue = getNestedValue(summary, "grid", "grid_size", "grid_shape", "summary_statistics.grid_size") ?? getNestedValue(forecastEvidence, "grid", "grid_size", "grid_shape");
-
-  const detailsRows = [["Forecast horizon", formatDurationMinutes(forecastHorizon)], ["Mean plume score", formatNumber(meanConcentration)], ["Detection threshold", formatUnknown(thresholdUsed)], ["Grid size", formatGridSize([ctxPlume.grid_rows, ctxPlume.grid_columns]) === "Unavailable" ? formatGridSize(gridSizeValue) : formatGridSize([ctxPlume.grid_rows, ctxPlume.grid_columns])]] as Array<[string, string]>;
-
-  const filterAvailableRows = (rows: Array<[string, string]>, { allowZero = true } = {}) =>
-    rows.filter(([, value]) => {
-      const normalized = value.trim().toLowerCase();
-      if (!allowZero && normalized === "0") return false;
-      return normalized !== "unavailable" && normalized !== "not available" && normalized !== "unavailable m";
-    });
-  const weatherContext = Object.fromEntries(meteorologyRows.filter(([, value]) => value !== "Unavailable"));
-  const overlayMetadata = (context?.raw?.overlay_metadata as Record<string, unknown> | undefined) ?? {};
-  const overlayFeatures = (context?.raw?.overlay_features as Array<Record<string, unknown>> | undefined) ?? [];
-  const rawContext: Record<string, unknown> = {
-    selected_scenario: activeScenario || ctxForecast.scenario_id,
-    forecast: ctxForecast,
-    conditions: ctxConditions,
-    source: ctxSource,
-    plume_metrics: ctxPlume,
-    weather_context: weatherContext,
-    model_inference: getNestedValue(context, "raw.model_inference", "raw.model_inference") ?? getNestedValue(context, "raw.model_inference"),
-    overlay_summary: {
-      endpoint_path: "/forecast-context/dataset-scenarios/active/overlay",
-      feature_count: overlayMetadata.feature_count,
-      plume_polygon_count: overlayMetadata.plume_polygon_count,
-      source_point_count: overlayMetadata.source_point_count,
-      bbox: overlayMetadata.bbox,
-      first_3_feature_properties: overlayFeatures.slice(0, 3).map((feature) => feature.properties ?? {})
-    },
-    raw_reference: {
-      source_file: getNestedValue(context, "raw.source_file"),
-      scenario_id: ctxForecast.scenario_id,
-      window_id: getNestedValue(context, "raw.window_row.window_id"),
-      target_usage: getNestedValue(context, "raw.target_usage")
-    }
-  };
-
-  const buildOperatorBriefing = (briefingText?: string): string => {
-    const candidateBriefing = safeText(briefingText, "");
-    if (candidateBriefing && candidateBriefing.length > 40 && !/\b\d+[\d,]*\s+grid cells?\b/i.test(candidateBriefing)) return cleanAssistantText(candidateBriefing);
-    const status = formatUnknown(ctxForecast.status) || plumeStatus;
-    const scenarioName = datasetScenarios.find((item) => item.scenario_id === activeScenario)?.label ?? safeText(ctxForecast.scenario_id, "current scenario");
-    const windLine = windSpeed !== "Unavailable" && windDirection !== "Unavailable" ? `Wind is ${windDirection} at ${windSpeed}.` : "Wind details are partially available from current context.";
-    const sourceLine = sourceLocation ? `The modeled source location is ${sourceLocation}.` : "Source location is not fully configured in this context.";
-    const plumeLine = plumePresent ? `Predicted plume intensity remains limited with peak score near ${formatNumber(maxConcentration)} and spread trending ${formatDirection(dominantSpreadDirection)}.` : "The plume signal remains limited in this forecast window.";
-    const limitationLine = "This is demo dataset playback and model-based guidance, not live sensor-confirmed field truth.";
-    return cleanAssistantText(`Scenario ${scenarioName} is currently ${riskLevel.toLowerCase()} risk with status ${status}. ${windLine} ${plumeLine} ${sourceLine} ${limitationLine}`);
-  };
-
-  const briefingKey = String(activeScenario || ctxForecast.scenario_id || ctxForecast.forecast_id || forecastTime || "default");
-  const scenarioLabel = datasetScenarios.find((item) => item.scenario_id === activeScenario)?.label ?? safeText(ctxForecast.scenario_id, "Scenario");
-
-  useEffect(() => {
-    if (!hasContext) return;
-    const summaryText = buildOperatorBriefing(data?.briefing);
-    setMessages((prev) => {
-      if (prev.length === 0) {
-        lastBriefingKeyRef.current = briefingKey;
-        return [{ role: "assistant", content: summaryText }];
-      }
-      if (lastBriefingKeyRef.current === briefingKey) return prev;
-      lastBriefingKeyRef.current = briefingKey;
-      return [...prev, { role: "assistant", content: `Scenario changed: ${scenarioLabel}. ${summaryText}` }];
-    });
-  }, [briefingKey, hasContext, data?.briefing, scenarioLabel]);
+    const latestUrl = activeForecastKind === "session_convlstm" && activeSessionId ? `/decision-support/latest?session_id=${encodeURIComponent(activeSessionId)}` : "/decision-support/latest";
+    void httpGet<DecisionSupportLatest>(latestUrl).then(setData).catch(() => setLlmWarning("LLM unavailable; using active forecast context."));
+    const contextUrl = activeForecastKind === "dataset_ridge" ? "/forecast-context/latest?source=dataset" : (activeSessionId ? `/forecast-context/latest?session_id=${encodeURIComponent(activeSessionId)}` : "/forecast-context/latest");
+    void httpGet<ForecastContextResponse>(contextUrl).then(setContext).catch(() => setContext(null));
+  }, [activeForecastKind, activeSessionId]);
 
   async function activateDatasetScenario(scenarioId: string) {
-    setActiveScenario(scenarioId);
-    try {
-      await httpPost(`/forecast-context/dataset-scenarios/${scenarioId}/activate`, {});
-      await httpPost("/forecast-context/dataset-playback/state", { enabled: true, active_scenario_id: scenarioId, playback_running: false });
-      const refreshed = await httpGet<ForecastContextResponse>("/forecast-context/latest?source=dataset");
-      setContext(refreshed);
-      setDatasetModeEnabled(true);
-      try {
-        const latest = await httpGet<DecisionSupportLatest>("/decision-support/latest");
-        setData(latest);
-        setLlmWarning(null);
-      } catch {
-        setLlmWarning("LLM unavailable; using forecast context.");
-      }
-    } catch {
-      // ignore
-    }
+    const label = datasetScenarios.find((s) => s.scenario_id === scenarioId)?.label ?? scenarioId;
+    setActiveScenario(scenarioId, label);
   }
 
   async function sendQuestion(question: string) {
-    if (!question.trim() || !hasContext) return;
+    if (!question.trim()) return;
     setMessages((prev) => [...prev, { role: "user", content: question }]);
     setChatQuestion("");
+    if (isModelIdentityQuestion(question)) {
+      setMessages((prev) => [...prev, { role: "assistant", content: `Active model is ${activeModelLabel} (${activeForecastKind}).` }]);
+      return;
+    }
     try {
-      const response = await httpPost<{ answer?: string }>("/decision-support/chat", { message: question });
-      setLlmWarning(null);
+      const payload: Record<string, unknown> = { message: question };
+      if (activeForecastKind === "session_convlstm" && activeSessionId) payload.session_id = activeSessionId;
+      const response = await httpPost<{ answer?: string }>("/decision-support/chat", payload);
       setMessages((prev) => [...prev, { role: "assistant", content: cleanAssistantText(safeText(response.answer, "No answer available.")) }]);
     } catch {
-      setLlmWarning("LLM unavailable; using forecast context.");
-      const statusText = plumePresent ? "Plume detected above threshold" : safeText(ctxForecast.status, "No meaningful plume above threshold");
-      const riskText = riskLevel;
-      const windText = windSpeed !== "Unavailable" || windDirection !== "Unavailable" ? `Wind ${windSpeed} ${windDirection}`.trim() : "Wind details unavailable";
-      const datasetNote = "Uses current forecast context only.";
-      const fallback = cleanAssistantText(`${statusText}. Risk: ${riskText}. ${windText}. ${datasetNote}`);
-      setMessages((prev) => [...prev, { role: "assistant", content: fallback }]);
+      setMessages((prev) => [...prev, { role: "assistant", content: `Active model: ${activeModelLabel}. Forecast kind: ${activeForecastKind}.` }]);
     }
   }
 
+  const summary = activeForecastBundle?.summary ?? {};
+  const detailsRows = getActiveForecastTechnicalDetails({
+    activeModelId,
+    activeForecastKind,
+    activeSessionId,
+    activePersistedForecastId,
+    summary
+  });
+
+  const rows: Array<[string, string]> = [["Scenario", datasetScenarios.find((s) => s.scenario_id === activeScenarioId)?.label ?? activeScenarioId ?? "Unavailable"], ["Status", String((summary as any)?.status ?? "ready")]];
+
   return <AppShell title="Forecast Overview" subtitle="Forecast interpretation, current conditions, and plume result.">
-    {error ? <section className="panel"><p>{error}</p></section> : null}
     <div className="decision-support-layout">
-      <DecisionChatPanel hasContext={hasContext} llmWarning={llmWarning} messages={messages} chatQuestion={chatQuestion} setChatQuestion={setChatQuestion} sendQuestion={sendQuestion} threadRef={threadRef} />
-      <ConditionsPanel datasetScenarios={datasetScenarios} activeScenario={activeScenario} activateDatasetScenario={activateDatasetScenario} currentConditionsRows={currentConditionsRows} currentForecastRows={currentForecastRows} plumePresent={plumePresent} plumeDetailRows={plumeDetailRows} detailsRows={detailsRows} filterAvailableRows={filterAvailableRows} rawContext={rawContext} />
+      <DecisionChatPanel hasContext={true} llmWarning={llmWarning} messages={messages} chatQuestion={chatQuestion} setChatQuestion={setChatQuestion} sendQuestion={sendQuestion} threadRef={threadRef} />
+      <ConditionsPanel datasetScenarios={datasetScenarios} activeScenario={activeScenarioId ?? ""} activateDatasetScenario={activateDatasetScenario} activeModelId={activeModelId} setActiveModel={setActiveModel} currentConditionsRows={rows} currentForecastRows={rows} plumePresent={Boolean(activeForecastBundle)} plumeDetailRows={[]} detailsRows={detailsRows} filterAvailableRows={(r) => r} rawContext={{ active_model_id: activeModelId, active_forecast_kind: activeForecastKind, summary, decision_latest: data, context }} />
     </div>
   </AppShell>;
 }
