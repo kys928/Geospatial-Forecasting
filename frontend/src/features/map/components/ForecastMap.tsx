@@ -358,10 +358,15 @@ export function ForecastMap({
   const lastFitKeyRef = useRef<string | null>(null);
   const latestGeojsonRef = useRef<GeoJsonFeatureCollection | null>(geojson);
   const latestSelectedFeatureRef = useRef<SelectedFeatureState | null>(selectedFeature);
+  const latestRasterOverlayRef = useRef<PlumeRasterOverlay | null>(rasterOverlay);
 
   useEffect(() => {
     latestGeojsonRef.current = geojson;
   }, [autoFitKey, geojson]);
+
+  useEffect(() => {
+    latestRasterOverlayRef.current = rasterOverlay;
+  }, [rasterOverlay]);
 
   useEffect(() => {
     if (!center || !mapRef.current) return;
@@ -764,7 +769,7 @@ export function ForecastMap({
       });
 
       const shouldFit = autoFitKey ? autoFitKey !== lastFitKeyRef.current : !hasFittedRef.current;
-      applyGeojsonToMap(map, latestGeojsonRef.current, shouldFit, rasterOverlay);
+      applyGeojsonToMap(map, latestGeojsonRef.current, shouldFit, latestRasterOverlayRef.current);
       moveForecastLayersToTop(map);
       if (shouldFit) {
         hasFittedRef.current = true;
@@ -792,7 +797,7 @@ export function ForecastMap({
       hasFittedRef.current = true;
       lastFitKeyRef.current = autoFitKey;
     }
-  }, [autoFitKey, geojson]);
+  }, [autoFitKey, geojson, rasterOverlay]);
 
   useEffect(() => {
     if (center && mapRef.current && (!geojson || !geojson.features?.some((f) => ["Polygon", "Point"].includes(f.geometry?.type ?? "")))) {

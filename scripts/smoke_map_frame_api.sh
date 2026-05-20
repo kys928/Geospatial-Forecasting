@@ -34,3 +34,6 @@ print(f"plume_band={plume_band}")
 print(f"plume_cell={plume}")
 print(f"max_concentration={max_conc}")
 print(f"rendered_point_count={rendered_points}")'
+
+raster_response="$(curl -sS "${BASE_URL}/sessions/${session_id}/forecast/latest/frames/${default_frame_index}/raster")"
+printf '%s' "${raster_response}" | python -c 'import sys,json; d=json.load(sys.stdin); print(f"raster_width={d.get(\"width\")}"); print(f"raster_height={d.get(\"height\")}"); print(f"raster_min={d.get(\"min_concentration\")}"); print(f"raster_max={d.get(\"max_concentration\")}")'

@@ -17,7 +17,7 @@ export interface RefreshedFrameResult {
   selectedFrameIndex: number;
   selectedFrameSummary: Record<string, unknown>;
   selectedFrameGeoJson: Record<string, unknown>;
-  selectedFrameRaster: ForecastFrameRasterPayload;
+  selectedFrameRaster: ForecastFrameRasterPayload | null;
 }
 
 const INITIAL_STATE: UseSessionForecastFramesState = {
@@ -40,19 +40,36 @@ export function useSessionForecastFrames(sessionId: string | null, options?: { i
     setState(INITIAL_STATE);
   }, []);
 
-  const fetchFrame = useCallback(async (id: string, frameIndex: number): Promise<{ summary: Record<string, unknown>; geojson: Record<string, unknown>; raster: ForecastFrameRasterPayload }> => {
+  const fetchFrame = useCallback(async (id: string, frameIndex: number): Promise<{ summary: Record<string, unknown>; geojson: Record<string, unknown>; raster: ForecastFrameRasterPayload | null }> => {
     const requestId = ++sequenceRef.current;
     setState((previous) => ({ ...previous, selectedFrameIndex: frameIndex, frameLoading: true, frameError: null }));
     try {
-      const [summary, geojson, raster] = await Promise.all([
+      const [summary, geojson] = await Promise.all([
         includeFrameSummary
           ? sessionClient.getLatestForecastFrameSummary(id, frameIndex)
           : Promise.resolve({}),
-        sessionClient.getLatestForecastFrameGeoJson(id, frameIndex),
-        sessionClient.getLatestForecastFrameRaster(id, frameIndex)
+        sessionClient.getLatestForecastFrameGeoJson(id, frameIndex)
       ]);
+      let raster: ForecastFrameRasterPayload | null = null;
+      let rasterError: unknown = null;
+      try {
+        raster = await sessionClient.getLatestForecastFrameRaster(id, frameIndex);
+      } catch (error) {
+        rasterError = error;
+        if (import.meta.env.DEV) {
+          console.debug("[forecast-map] raster unavailable for frame", { sessionId: id, frameIndex, error });
+        }
+      }
       if (requestId !== sequenceRef.current) {
         throw new Error(`Frame request superseded before completion for /sessions/${id}/forecast/latest/frames/${frameIndex}`);
+      }
+      if (import.meta.env.DEV) {
+        console.debug("[forecast-map] frame payload", {
+          frameIndex,
+          hasGeojson: Boolean(geojson),
+          hasRaster: Boolean(raster),
+          rasterError: rasterError ? (rasterError instanceof Error ? rasterError.message : String(rasterError)) : null
+        });
       }
       setState((previous) => ({
         ...previous,
@@ -72,7 +89,7 @@ export function useSessionForecastFrames(sessionId: string | null, options?: { i
         ...previous,
         selectedFrameIndex: frameIndex,
         frameLoading: false,
-        frameError: `GET /sessions/${id}/forecast/latest/frames/${frameIndex}/summary|geojson|raster failed: ${error instanceof Error ? error.message : "Could not load selected frame"}`
+        frameError: `GET /sessions/${id}/forecast/latest/frames/${frameIndex}/summary|geojson failed: ${error instanceof Error ? error.message : "Could not load selected frame"}`
       }));
       throw error;
     }
