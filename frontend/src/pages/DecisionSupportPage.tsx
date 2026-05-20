@@ -157,7 +157,7 @@ export function DecisionSupportPage() {
     ["Forecast horizon", formatUnknown((summary as any).forecast_horizon ?? (context as any)?.forecast?.horizon)],
     ["Mean plume score", formatNumber((context as any)?.plume_metrics?.mean_concentration, 4)],
     ["Detection threshold", formatNumber((context as any)?.plume_metrics?.threshold_used ?? (summary as any).detection_threshold, 6)],
-    ["Grid size", formatUnknown((summary as any).grid_size ?? (activeFramesMetadata as any)?.shape?.join("x") ?? (context as any)?.plume_metrics?.affected_cells_above_threshold)],
+    ["Grid size", formatUnknown((summary as any).grid_size ?? (activeFramesMetadata as any)?.shape?.join(" × ") ?? ((context as any)?.plume_metrics?.grid_rows != null && (context as any)?.plume_metrics?.grid_columns != null ? `${(context as any).plume_metrics.grid_rows} × ${(context as any).plume_metrics.grid_columns}` : undefined))],
     ...detailsRows
   ] as DisplayRow[]), [summary, context, activeFramesMetadata, detailsRows]);
 
