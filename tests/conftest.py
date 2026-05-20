@@ -45,3 +45,25 @@ def sample_scenario() -> Scenario:
         duration=3600.0,
         release_height=10.0,
     )
+
+
+def make_lightweight_convlstm_config(tmp_path: Path):
+    import shutil
+    import yaml
+    from plume.utils.config import Config
+
+    cfg_dir = tmp_path / "config"
+    shutil.copytree(REPO_ROOT / "configs", cfg_dir)
+    backend_yaml = cfg_dir / "backend.yaml"
+    backend = yaml.safe_load(backend_yaml.read_text(encoding="utf-8"))
+    backend["convlstm_prediction_engine"] = "convlstm"
+    backend["convlstm_init_mode"] = "random_init"
+    backend["convlstm_checkpoint_path"] = None
+    backend["convlstm_device"] = "cpu"
+    backend_yaml.write_text(yaml.safe_dump(backend), encoding="utf-8")
+    return Config(config_dir=cfg_dir)
+
+
+@pytest.fixture
+def lightweight_convlstm_config(tmp_path: Path):
+    return make_lightweight_convlstm_config(tmp_path)

@@ -63,8 +63,9 @@ def test_online_service_missing_session_raises_clear_error():
 
 
 @pytest.mark.parametrize("backend_name", ["convlstm_online", "gaussian_fallback"])
-def test_online_service_can_create_non_mock_backends(backend_name: str):
-    service = OnlineForecastService(config=Config(), state_store=InMemoryStateStore())
+def test_online_service_can_create_non_mock_backends(backend_name: str, lightweight_convlstm_config):
+    config = lightweight_convlstm_config if backend_name == "convlstm_online" else Config()
+    service = OnlineForecastService(config=config, state_store=InMemoryStateStore())
     session = service.create_session(backend_name=backend_name)
     assert session.backend_name == backend_name
 
