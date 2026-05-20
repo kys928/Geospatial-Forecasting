@@ -15,7 +15,7 @@ import type {
 } from "../../forecast/types/forecast.types";
 import { isValidFeatureCollection } from "../utils/layerBuilders";
 import { MapCompassOverlay } from "./MapCompassOverlay";
-import { extractRadarPointsFromGeojson } from "../utils/plumeRadar";
+import { buildPlumeRasterOverlay } from "../utils/plumeRaster";
 
 interface ForecastMapProps {
   geojson: GeoJsonFeatureCollection | null;
@@ -27,7 +27,7 @@ interface ForecastMapProps {
 
 const FORECAST_SOURCE_ID = "forecast-source";
 const SELECTED_SOURCE_ID = "selected-feature-source";
-const FORECAST_RADAR_SOURCE_ID = "forecast-radar-source";
+const FORECAST_RADAR_IMAGE_SOURCE_ID = "forecast-radar-image-source";
 
 const DOMAIN_FILL_LAYER_ID = "forecast-domain-fill";
 const DOMAIN_OUTLINE_LAYER_ID = "forecast-domain-outline";
@@ -37,7 +37,7 @@ const PLUME_MEDIUM_HIT_LAYER_ID = "forecast-plume-medium-hit";
 const PLUME_HIGH_HIT_LAYER_ID = "forecast-plume-high-hit";
 
 const PLUME_HEATMAP_LAYER_ID = "forecast-plume-heatmap";
-const PLUME_RADAR_HEAT_LAYER_ID = "forecast-plume-radar-heat";
+const PLUME_RADAR_IMAGE_LAYER_ID = "forecast-plume-radar-image";
 const PLUME_FALLBACK_FILL_LAYER_ID = "forecast-plume-fallback-fill";
 
 const PLUME_LOW_OUTLINE_LAYER_ID = "forecast-plume-low-outline";
@@ -249,7 +249,7 @@ function moveForecastLayersToTop(map: Map) {
     PLUME_MEDIUM_HIT_LAYER_ID,
     PLUME_HIGH_HIT_LAYER_ID,
     PLUME_HEATMAP_LAYER_ID,
-    PLUME_RADAR_HEAT_LAYER_ID,
+    PLUME_RADAR_IMAGE_LAYER_ID,
     PLUME_FALLBACK_FILL_LAYER_ID,
     PLUME_LOW_OUTLINE_LAYER_ID,
     PLUME_MEDIUM_OUTLINE_LAYER_ID,
@@ -291,21 +291,25 @@ function applyGeojsonToMap(
 
   source.setData(normalized as GeoJSON.FeatureCollection);
 
-  const radarSource = map.getSource(FORECAST_RADAR_SOURCE_ID) as GeoJSONSource | undefined;
-  const radarPoints = extractRadarPointsFromGeojson(normalized);
-  radarSource?.setData(radarPoints as GeoJSON.FeatureCollection);
+  const raster = buildPlumeRasterOverlay(normalized);
+  const radarImageSource = map.getSource(FORECAST_RADAR_IMAGE_SOURCE_ID) as any;
+  if (raster && radarImageSource?.updateImage) {
+    radarImageSource.updateImage({ url: raster.imageDataUrl, coordinates: raster.coordinates });
+    map.setLayoutProperty(PLUME_RADAR_IMAGE_LAYER_ID, "visibility", "visible");
+  } else if (!raster && map.getLayer(PLUME_RADAR_IMAGE_LAYER_ID)) {
+    map.setLayoutProperty(PLUME_RADAR_IMAGE_LAYER_ID, "visibility", "none");
+  }
 
   const plumeOnly: GeoJsonFeatureCollection = { ...normalized, features: normalized.features.filter((f) => ["plume_band", "plume_band_low", "plume_band_medium", "plume_band_high", "plume_point", "plume_cell", "source"].includes(typeof f.properties?.kind === "string" ? f.properties.kind : "")) };
   const bounds = plumeOnly.features.length ? getFeatureCollectionBounds(plumeOnly) : null;
   const kinds = Array.from(new Set(normalized.features.map((f) => (typeof f.properties?.kind === "string" ? f.properties.kind : "unknown"))));
   if (import.meta.env.DEV) {
-    const radarKinds = Array.from(new Set(radarPoints.features.map((f) => (typeof f.properties?.source_kind === "string" ? f.properties.source_kind : "unknown"))));
-    const maxWeight = radarPoints.features.reduce((acc, f) => Math.max(acc, typeof f.properties?.weight === "number" ? f.properties.weight : 0), 0);
-    console.debug("[forecast-map] radar source", {
-      radarPointCount: radarPoints.features.length,
-      radarKinds,
-      maxWeight,
-      sourceFeatureCount: normalized.features.length
+    console.debug("[forecast-map] raster plume", {
+      hasRaster: Boolean(raster),
+      featureCount: raster?.featureCount ?? 0,
+      bounds: raster?.bounds ?? null,
+      width: raster?.width ?? null,
+      height: raster?.height ?? null
     });
     console.debug("[forecast-map] setData", {
       featureCount: normalized.features.length,
@@ -417,13 +421,11 @@ export function ForecastMap({
         }
       });
 
-      map.addSource(FORECAST_RADAR_SOURCE_ID, {
-        type: "geojson",
-        data: {
-          type: "FeatureCollection",
-          features: []
-        }
-      });
+      map.addSource(FORECAST_RADAR_IMAGE_SOURCE_ID, {
+        type: "image",
+        url: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9WHm2e0AAAAASUVORK5CYII=",
+        coordinates: [[-180, 85], [180, 85], [180, -85], [-180, -85]]
+      } as any);
 
       map.addSource(SELECTED_SOURCE_ID, {
         type: "geojson",
@@ -471,7 +473,7 @@ export function ForecastMap({
         source: FORECAST_SOURCE_ID,
         paint: {
           "fill-color": "#facc15",
-          "fill-opacity": 0.08
+          "fill-opacity": 0.02
         },
         filter: [
           "all",
@@ -490,7 +492,7 @@ export function ForecastMap({
         source: FORECAST_SOURCE_ID,
         paint: {
           "fill-color": "#f59e0b",
-          "fill-opacity": 0.12
+          "fill-opacity": 0.03
         },
         filter: [
           "all",
@@ -509,7 +511,7 @@ export function ForecastMap({
         source: FORECAST_SOURCE_ID,
         paint: {
           "fill-color": "#ef4444",
-          "fill-opacity": 0.18
+          "fill-opacity": 0.04
         },
         filter: [
           "all",
@@ -523,26 +525,14 @@ export function ForecastMap({
       });
 
       map.addLayer({
-        id: PLUME_RADAR_HEAT_LAYER_ID,
-        type: "heatmap",
-        source: FORECAST_RADAR_SOURCE_ID,
+        id: PLUME_RADAR_IMAGE_LAYER_ID,
+        type: "raster",
+        source: FORECAST_RADAR_IMAGE_SOURCE_ID,
         paint: {
-          "heatmap-weight": ["coalesce", ["to-number", ["get", "weight"]], 0],
-          "heatmap-intensity": ["interpolate", ["linear"], ["zoom"], 8, 0.9, 12, 1.2, 18, 1.6],
-          "heatmap-radius": ["interpolate", ["linear"], ["zoom"], 8, 18, 12, 32, 15, 46, 18, 70],
-          "heatmap-opacity": 0.72,
-          "heatmap-color": [
-            "interpolate",
-            ["linear"],
-            ["heatmap-density"],
-            0, "rgba(255,255,255,0)",
-            0.2, "rgba(254,240,138,0.25)",
-            0.45, "rgba(251,191,36,0.55)",
-            0.7, "rgba(249,115,22,0.78)",
-            1, "rgba(220,38,38,0.92)"
-          ]
-        },
-        filter: ["all", ["==", "$type", "Point"], ["==", ["get", "kind"], "plume_radar_point"]]
+          "raster-opacity": 0.9,
+          "raster-resampling": "linear",
+          "raster-fade-duration": 220
+        }
       });
 
       map.addLayer({
@@ -553,7 +543,7 @@ export function ForecastMap({
           "heatmap-weight": ["coalesce", ["to-number", ["get", "normalized_intensity"]], 0],
           "heatmap-intensity": ["interpolate", ["linear"], ["zoom"], 9, 0.8, 15, 1.15, 18, 1.35],
           "heatmap-radius": ["interpolate", ["linear"], ["zoom"], 8, 12, 12, 20, 15, 28, 18, 42],
-          "heatmap-opacity": 0.65,
+          "heatmap-opacity": 0,
           "heatmap-color": [
             "interpolate",
             ["linear"],
@@ -594,7 +584,7 @@ export function ForecastMap({
         paint: {
           "line-color": "#ca8a04",
           "line-width": 0.9,
-          "line-opacity": 0.45,
+          "line-opacity": 0.1,
         },
         filter: [
           "all",
@@ -614,7 +604,7 @@ export function ForecastMap({
         paint: {
           "line-color": "#d97706",
           "line-width": 0.8,
-          "line-opacity": 0.54,
+          "line-opacity": 0.1,
         },
         filter: [
           "all",
@@ -634,7 +624,7 @@ export function ForecastMap({
         paint: {
           "line-color": "#b91c1c",
           "line-width": 1,
-          "line-opacity": 0.62,
+          "line-opacity": 0.12,
         },
         filter: [
           "all",
