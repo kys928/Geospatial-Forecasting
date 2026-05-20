@@ -123,3 +123,38 @@ def test_active_frame_raster_invalid_index_returns_404():
     client = TestClient(app)
     response = client.get('/forecast-context/dataset-scenarios/active/frames/99/raster')
     assert response.status_code == 404
+
+
+def test_active_frame_raster_routes_cover_first_and_last_frames():
+    app = FastAPI()
+    dataset = StubDatasetScenarioService()
+    register_forecast_context_routes(app, forecast_context_service=StubForecastContextService(), dataset_scenario_service=dataset)
+    client = TestClient(app)
+    first = client.get('/forecast-context/dataset-scenarios/active/frames/0/raster')
+    last = client.get('/forecast-context/dataset-scenarios/active/frames/3/raster')
+    assert first.status_code == 200
+    assert last.status_code == 200
+    assert first.json()["frame_index"] == 0
+    assert last.json()["frame_index"] == 3
+
+
+def test_active_frame_overlay_route_returns_200():
+    app = FastAPI()
+    dataset = StubDatasetScenarioService()
+    register_forecast_context_routes(app, forecast_context_service=StubForecastContextService(), dataset_scenario_service=dataset)
+    client = TestClient(app)
+    response = client.get('/forecast-context/dataset-scenarios/active/frames/0/overlay')
+    assert response.status_code == 200
+    assert response.json()["type"] == "FeatureCollection"
+
+
+def test_active_frames_route_not_captured_as_scenario_id():
+    app = FastAPI()
+    dataset = StubDatasetScenarioService()
+    register_forecast_context_routes(app, forecast_context_service=StubForecastContextService(), dataset_scenario_service=dataset)
+    client = TestClient(app)
+    response = client.get('/forecast-context/dataset-scenarios/active/frames')
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["frame_count"] == 4
+    assert payload["frame_indices"] == [0, 1, 2, 3]
