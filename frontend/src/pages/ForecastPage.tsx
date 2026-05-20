@@ -31,7 +31,7 @@ export function ForecastPage() {
 
   return <AppShell title="Map / Forecast" subtitle="Current forecast map and plume overlay.">
     <main className="map-column">
-      <ForecastMap geojson={geojson} selectedFeature={selectedFeature} onSelectFeature={setSelectedFeature} center={null} autoFitKey={`${activeFramesMetadata?.forecast_id ?? "none"}:${selectedFrameIndex}`} />
+      <ForecastMap geojson={geojson} selectedFeature={selectedFeature} onSelectFeature={setSelectedFeature} center={null} autoFitKey={activeFramesMetadata?.forecast_id ?? activeSessionId ?? "none"} />
       <ForecastFrameTimeline frameCount={frameCount} frameIndices={activeFramesMetadata?.frame_indices ?? [0]} selectedFrameIndex={selectedFrameIndex} onSelectFrame={setSelectedFrameIndex} loading={status === "running" || status === "loading"} disabled={disabled} />
     </main>
   </AppShell>;

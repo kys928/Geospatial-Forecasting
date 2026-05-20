@@ -14,21 +14,26 @@ export function getActiveForecastTechnicalDetails(input: {
   activeSessionId: string | null;
   activePersistedForecastId: string | null;
   summary: Record<string, unknown>;
+  rasterMetadata?: Record<string, unknown> | null;
+  framesMetadata?: Record<string, unknown> | null;
+  forecastContextRuntime?: Record<string, unknown> | null;
 }): Array<[string, string]> {
   const metadata = (input.summary.metadata as Record<string, unknown> | undefined) ?? {};
+  const merged = { ...input.rasterMetadata, ...input.framesMetadata, ...input.forecastContextRuntime, ...input.summary, ...metadata } as Record<string, unknown>;
+  const read = (...keys: string[]) => keys.map((k) => merged[k]).find((v) => v !== undefined && v !== null && String(v).trim() !== "");
   return [
     ["selected_model", getActiveModelDisplayName(input.activeModelId)],
     ["forecast_kind", input.activeForecastKind],
     ["session_id", input.activeSessionId ?? "n/a"],
     ["persisted_forecast_id", input.activePersistedForecastId ?? "n/a"],
-    ["model_name", String(metadata.model_name ?? input.summary.model_name ?? "n/a")],
-    ["prediction_engine", String(metadata.prediction_engine ?? input.summary.prediction_engine ?? "n/a")],
-    ["frame_count", String(metadata.frame_count ?? input.summary.frame_count ?? (input.activeModelId === "convlstm_multistep" ? 4 : 1))],
-    ["input_source", String(metadata.input_source ?? input.summary.input_source ?? "n/a")],
-    ["georeferencing_status", String(metadata.georeferencing_status ?? input.summary.georeferencing_status ?? "n/a")],
-    ["prediction_trust", String(metadata.prediction_trust ?? input.summary.prediction_trust ?? "n/a")],
-    ["input_mode", String(metadata.input_mode ?? input.summary.input_mode ?? "n/a")],
-    ["scenario_usage", String(metadata.scenario_usage ?? "n/a")],
-    ["scenario_note", String(metadata.scenario_note ?? "n/a")],
+    ["model_name", String(read("model_name", "model") ?? "n/a")],
+    ["prediction_engine", String(read("prediction_engine", "engine") ?? "n/a")],
+    ["frame_count", String(read("frame_count") ?? (input.activeModelId === "convlstm_multistep" ? 4 : 1))],
+    ["input_source", String(read("input_source", "source") ?? "n/a")],
+    ["georeferencing_status", String(read("georeferencing_status") ?? "n/a")],
+    ["prediction_trust", String(read("prediction_trust") ?? "n/a")],
+    ["input_mode", String(read("input_mode") ?? "n/a")],
+    ["scenario_usage", String(read("scenario_usage") ?? "n/a")],
+    ["scenario_note", String(read("scenario_note") ?? "n/a")],
   ];
 }
