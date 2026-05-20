@@ -11,6 +11,42 @@ export interface PlumeRasterOverlay {
 }
 
 const VISUAL_CUTOFF = 0.04;
+const ALPHA_START_CUTOFF = 0.015;
+
+function percentile(sortedValues: number[], p: number): number {
+  if (sortedValues.length === 0) return 0;
+  const clampedP = clamp01(p);
+  const index = (sortedValues.length - 1) * clampedP;
+  const lower = Math.floor(index);
+  const upper = Math.ceil(index);
+  if (lower === upper) return sortedValues[lower];
+  const t = index - lower;
+  return sortedValues[lower] + (sortedValues[upper] - sortedValues[lower]) * t;
+}
+
+export function computeVisualWindow(values: number[]): {
+  positiveCount: number;
+  positiveMin: number;
+  p50: number;
+  p70: number;
+  p85: number;
+  p95: number;
+  max: number;
+  visualFloor: number;
+  visualCeil: number;
+} | null {
+  const positives = values.filter((value) => Number.isFinite(value) && value > 0).sort((a, b) => a - b);
+  if (!positives.length) return null;
+  const positiveMin = positives[0];
+  const max = positives[positives.length - 1];
+  const p50 = percentile(positives, 0.5);
+  const p70 = percentile(positives, 0.7);
+  const p85 = percentile(positives, 0.85);
+  const p95 = percentile(positives, 0.95);
+  const visualFloor = Math.max(positiveMin, p50 * 0.2, max * 0.01);
+  const visualCeil = Math.max(p95, max * 0.65, visualFloor + 1e-12);
+  return { positiveCount: positives.length, positiveMin, p50, p70, p85, p95, max, visualFloor, visualCeil };
+}
 
 export function clamp01(value: number): number {
   if (!Number.isFinite(value)) return 0;
@@ -104,13 +140,13 @@ export function bilinearSample(grid: number[][], x: number, y: number): number {
 
 export function colorRamp(value: number): [number, number, number, number] {
   const points: Array<[number, [number, number, number, number]]> = [
-    [0.0, [255, 245, 160, 0]],
-    [0.1, [255, 245, 160, 0.1]],
-    [0.25, [255, 214, 90, 0.28]],
-    [0.45, [251, 146, 60, 0.5]],
-    [0.65, [239, 68, 68, 0.68]],
-    [0.85, [185, 28, 28, 0.82]],
-    [1.0, [127, 29, 29, 0.92]]
+    [0.0, [255, 245, 170, 0]],
+    [0.05, [255, 245, 170, 0.12]],
+    [0.18, [255, 220, 90, 0.28]],
+    [0.35, [251, 146, 60, 0.48]],
+    [0.55, [249, 115, 22, 0.64]],
+    [0.75, [239, 68, 68, 0.78]],
+    [1.0, [153, 27, 27, 0.9]]
   ];
   const v = clamp01(value);
   for (let i = 1; i < points.length; i++) {
@@ -159,20 +195,32 @@ export function buildPlumeGridRasterOverlay(raster: ForecastFrameRasterPayload |
 
   if (!Number.isFinite(min) || !Number.isFinite(max) || max <= 0) return null;
 
-  const threshold = Number.isFinite(raster.threshold) ? Number(raster.threshold) : max * 0.08;
-  const denominator = Math.max(1e-12, max - threshold);
+  const visualWindow = computeVisualWindow(cleanGrid.flat());
+  if (!visualWindow) return null;
+  const {
+    positiveCount,
+    positiveMin,
+    p50,
+    p70,
+    p85,
+    p95,
+    visualFloor,
+    visualCeil
+  } = visualWindow;
+  const denominator = Math.max(1e-12, visualCeil - visualFloor);
 
   let normalizedNonZeroCount = 0;
   const normalizedGrid = cleanGrid.map((row) =>
     row.map((value) => {
-      if (value <= threshold) return 0;
-      const normalized = clamp01((value - threshold) / denominator);
-      if (normalized > 0) normalizedNonZeroCount += 1;
-      return normalized;
+      if (!Number.isFinite(value) || value <= 0) return 0;
+      const normalized = clamp01((value - visualFloor) / denominator);
+      const boosted = Math.pow(normalized, 0.55);
+      if (boosted > 0) normalizedNonZeroCount += 1;
+      return boosted;
     })
   );
 
-  const smoothedGrid = smoothGrid(normalizedGrid, 4, 1.9);
+  const smoothedGrid = smoothGrid(smoothGrid(normalizedGrid, 6, 2.8), 3, 1.4);
   let smoothedNonZeroCount = 0;
   for (const row of smoothedGrid) {
     for (const cell of row) {
@@ -187,19 +235,21 @@ export function buildPlumeGridRasterOverlay(raster: ForecastFrameRasterPayload |
   if (!ctx) return null;
 
   const image = ctx.createImageData(width, height);
+  let visiblePixelCount = 0;
   for (let py = 0; py < height; py++) {
     for (let px = 0; px < width; px++) {
       const gx = (px / Math.max(1, width - 1)) * (srcW - 1);
       const gy = (py / Math.max(1, height - 1)) * (srcH - 1);
       const sampled = bilinearSample(smoothedGrid, gx, gy);
       const idx = (py * width + px) * 4;
-      if (sampled < 0.05 || sampled < VISUAL_CUTOFF) {
+      if (sampled <= ALPHA_START_CUTOFF) {
         image.data[idx + 3] = 0;
         continue;
       }
       const [r, g, b, baseA] = colorRamp(sampled);
-      const alphaRamp = clamp01((sampled - 0.05) / 0.95);
+      const alphaRamp = clamp01((sampled - ALPHA_START_CUTOFF) / (1 - ALPHA_START_CUTOFF));
       const alpha = baseA * alphaRamp;
+      if (alpha > 0) visiblePixelCount += 1;
       image.data[idx] = r;
       image.data[idx + 1] = g;
       image.data[idx + 2] = b;
@@ -213,13 +263,34 @@ export function buildPlumeGridRasterOverlay(raster: ForecastFrameRasterPayload |
       shape: [srcH, srcW],
       min,
       max,
-      threshold,
+      modelThreshold: raster.threshold,
+      positiveCount,
+      positiveMin,
+      p50,
+      p70,
+      p85,
+      p95,
+      visualFloor,
+      visualCeil,
       normalizedNonZeroCount,
       smoothedNonZeroCount,
+      visiblePixelCount,
       bounds,
       imageWidth: width,
       imageHeight: height
     });
+    const visibleRatio = visiblePixelCount / Math.max(1, width * height);
+    if (visiblePixelCount < 200 || visibleRatio < 0.002) {
+      console.debug("[forecast-map] raster mostly transparent", {
+        visiblePixelCount,
+        visibleRatio,
+        width,
+        height,
+        modelThreshold: raster.threshold,
+        visualFloor,
+        visualCeil
+      });
+    }
   }
 
   return {

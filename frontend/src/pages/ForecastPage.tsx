@@ -171,6 +171,18 @@ export function ForecastPage() {
     [sourceMode, selectedFrameRaster]
   );
 
+  useEffect(() => {
+    if (!import.meta.env.DEV) return;
+    console.debug("[forecast-map] raster overlay ready", {
+      hasRasterPayload: Boolean(selectedFrameRaster),
+      hasRasterOverlay: Boolean(rasterOverlay),
+      frameIndex: selectedFrameRaster?.frame_index,
+      min: selectedFrameRaster?.min,
+      max: selectedFrameRaster?.max,
+      threshold: selectedFrameRaster?.threshold
+    });
+  }, [rasterOverlay, selectedFrameRaster]);
+
   const mapGeojson =
     sourceMode === "session-frame"
       ? (selectedFrameGeoJson as unknown as GeoJsonFeatureCollection)
