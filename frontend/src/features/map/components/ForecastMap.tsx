@@ -37,6 +37,7 @@ const PLUME_HIGH_HIT_LAYER_ID = "forecast-plume-high-hit";
 const PLUME_HEATMAP_LAYER_ID = "forecast-plume-heatmap";
 const PLUME_FALLBACK_FILL_LAYER_ID = "forecast-plume-fallback-fill";
 
+const PLUME_LOW_OUTLINE_LAYER_ID = "forecast-plume-low-outline";
 const PLUME_MEDIUM_OUTLINE_LAYER_ID = "forecast-plume-medium-outline";
 const PLUME_HIGH_OUTLINE_LAYER_ID = "forecast-plume-high-outline";
 
@@ -236,6 +237,35 @@ function add3DBuildingsIfPossible(map: Map) {
   }
 }
 
+
+function moveForecastLayersToTop(map: Map) {
+  const orderedLayerIds = [
+    DOMAIN_FILL_LAYER_ID,
+    DOMAIN_OUTLINE_LAYER_ID,
+    PLUME_LOW_HIT_LAYER_ID,
+    PLUME_MEDIUM_HIT_LAYER_ID,
+    PLUME_HIGH_HIT_LAYER_ID,
+    PLUME_HEATMAP_LAYER_ID,
+    PLUME_FALLBACK_FILL_LAYER_ID,
+    PLUME_LOW_OUTLINE_LAYER_ID,
+    PLUME_MEDIUM_OUTLINE_LAYER_ID,
+    PLUME_HIGH_OUTLINE_LAYER_ID,
+    SOURCE_HIT_LAYER_ID,
+    SOURCE_GLOW_LAYER_ID,
+    SOURCE_POINT_LAYER_ID,
+    SELECTED_POLYGON_GLOW_LAYER_ID,
+    SELECTED_POLYGON_OUTLINE_LAYER_ID,
+    SELECTED_SOURCE_RING_LAYER_ID
+  ];
+  for (const layerId of orderedLayerIds) {
+    try {
+      if (map.getLayer(layerId)) map.moveLayer(layerId);
+    } catch {
+      // Keep map rendering resilient while style/layers are loading.
+    }
+  }
+}
+
 function applyGeojsonToMap(
   map: Map,
   geojson: GeoJsonFeatureCollection | null,
@@ -249,6 +279,9 @@ function applyGeojsonToMap(
 
   const source = map.getSource(FORECAST_SOURCE_ID) as GeoJSONSource | undefined;
   if (!source) {
+    if (import.meta.env.DEV) {
+      console.debug("[forecast-map] source unavailable; delaying setData");
+    }
     return;
   }
 
@@ -256,6 +289,16 @@ function applyGeojsonToMap(
 
   const plumeOnly: GeoJsonFeatureCollection = { ...normalized, features: normalized.features.filter((f) => ["plume_band", "plume_band_low", "plume_band_medium", "plume_band_high", "plume_point", "plume_cell", "source"].includes(typeof f.properties?.kind === "string" ? f.properties.kind : "")) };
   const bounds = plumeOnly.features.length ? getFeatureCollectionBounds(plumeOnly) : null;
+  const kinds = Array.from(new Set(normalized.features.map((f) => (typeof f.properties?.kind === "string" ? f.properties.kind : "unknown"))));
+  if (import.meta.env.DEV) {
+    console.debug("[forecast-map] setData", {
+      featureCount: normalized.features.length,
+      kinds,
+      shouldFitBounds,
+      bounds: bounds ? bounds.toArray() : null,
+      firstFeature: normalized.features[0] ?? null
+    });
+  }
   if (shouldFitBounds && bounds && !bounds.isEmpty()) {
     map.fitBounds(bounds, {
       padding: { top: 56, right: 56, bottom: 56, left: 56 },
@@ -263,6 +306,7 @@ function applyGeojsonToMap(
       maxZoom: 18
     });
   }
+  moveForecastLayersToTop(map);
 }
 
 function applySelectedFeatureToMap(map: Map, selectedFeature: SelectedFeatureState | null) {
@@ -345,6 +389,7 @@ export function ForecastMap({
 
     map.on("style.load", () => {
       add3DBuildingsIfPossible(map);
+      moveForecastLayersToTop(map);
     });
 
     map.on("load", () => {
@@ -374,7 +419,7 @@ export function ForecastMap({
         },
         filter: [
           "all",
-          ["==", "$type", "Polygon"],
+          ["in", ["geometry-type"], ["literal", ["Polygon", "MultiPolygon"]]],
           ["==", ["get", "kind"], "forecast_extent"]
         ]
       });
@@ -391,7 +436,7 @@ export function ForecastMap({
         },
         filter: [
           "all",
-          ["==", "$type", "Polygon"],
+          ["in", ["geometry-type"], ["literal", ["Polygon", "MultiPolygon"]]],
           ["==", ["get", "kind"], "forecast_extent"]
         ]
       });
@@ -402,11 +447,11 @@ export function ForecastMap({
         source: FORECAST_SOURCE_ID,
         paint: {
           "fill-color": "#facc15",
-          "fill-opacity": 0.32
+          "fill-opacity": 0.44
         },
         filter: [
           "all",
-          ["==", "$type", "Polygon"],
+          ["in", ["geometry-type"], ["literal", ["Polygon", "MultiPolygon"]]],
           [
             "any",
             ["==", ["get", "kind"], "plume_band_low"],
@@ -421,11 +466,11 @@ export function ForecastMap({
         source: FORECAST_SOURCE_ID,
         paint: {
           "fill-color": "#f59e0b",
-          "fill-opacity": 0.38
+          "fill-opacity": 0.56
         },
         filter: [
           "all",
-          ["==", "$type", "Polygon"],
+          ["in", ["geometry-type"], ["literal", ["Polygon", "MultiPolygon"]]],
           [
             "any",
             ["==", ["get", "kind"], "plume_band_medium"],
@@ -440,11 +485,11 @@ export function ForecastMap({
         source: FORECAST_SOURCE_ID,
         paint: {
           "fill-color": "#ef4444",
-          "fill-opacity": 0.44
+          "fill-opacity": 0.68
         },
         filter: [
           "all",
-          ["==", "$type", "Polygon"],
+          ["in", ["geometry-type"], ["literal", ["Polygon", "MultiPolygon"]]],
           [
             "any",
             ["==", ["get", "kind"], "plume_band_high"],
@@ -489,10 +534,30 @@ export function ForecastMap({
               ["literal", ["plume_band", "plume_band_low", "plume_band_medium", "plume_band_high", "plume_cell", "source", "plume_point", "forecast_extent"]]
             ],
             0,
-            0.26
+            0.35
           ]
         },
-        filter: ["all", ["==", "$type", "Polygon"]]
+        filter: ["all", ["in", ["geometry-type"], ["literal", ["Polygon", "MultiPolygon"]]]]
+      });
+
+      map.addLayer({
+        id: PLUME_LOW_OUTLINE_LAYER_ID,
+        type: "line",
+        source: FORECAST_SOURCE_ID,
+        paint: {
+          "line-color": "#ca8a04",
+          "line-width": 0.9,
+          "line-opacity": 0.45,
+        },
+        filter: [
+          "all",
+          ["in", ["geometry-type"], ["literal", ["Polygon", "MultiPolygon"]]],
+          [
+            "any",
+            ["==", ["get", "kind"], "plume_band_low"],
+            ["all", ["==", ["get", "kind"], "plume_band"], ["==", ["get", "band"], "low"]]
+          ]
+        ]
       });
 
       map.addLayer({
@@ -502,9 +567,17 @@ export function ForecastMap({
         paint: {
           "line-color": "#d97706",
           "line-width": 0.8,
-          "line-opacity": 0.08,
+          "line-opacity": 0.54,
         },
-        filter: ["all", ["==", ["get", "kind"], "plume_band"], ["==", ["get", "band"], "medium"]]
+        filter: [
+          "all",
+          ["in", ["geometry-type"], ["literal", ["Polygon", "MultiPolygon"]]],
+          [
+            "any",
+            ["==", ["get", "kind"], "plume_band_medium"],
+            ["all", ["==", ["get", "kind"], "plume_band"], ["==", ["get", "band"], "medium"]]
+          ]
+        ]
       });
 
       map.addLayer({
@@ -514,13 +587,22 @@ export function ForecastMap({
         paint: {
           "line-color": "#b91c1c",
           "line-width": 1,
-          "line-opacity": 0.12,
+          "line-opacity": 0.62,
         },
-        filter: ["all", ["==", ["get", "kind"], "plume_band"], ["==", ["get", "band"], "high"]]
+        filter: [
+          "all",
+          ["in", ["geometry-type"], ["literal", ["Polygon", "MultiPolygon"]]],
+          [
+            "any",
+            ["==", ["get", "kind"], "plume_band_high"],
+            ["all", ["==", ["get", "kind"], "plume_band"], ["==", ["get", "band"], "high"]]
+          ]
+        ]
       });
 
       map.setPaintProperty(PLUME_HEATMAP_LAYER_ID, "heatmap-opacity-transition", { duration: 320 } as any);
       map.setPaintProperty(PLUME_HEATMAP_LAYER_ID, "heatmap-radius-transition", { duration: 320 } as any);
+      map.setPaintProperty(PLUME_LOW_OUTLINE_LAYER_ID, "line-opacity-transition", { duration: 320 } as any);
       map.setPaintProperty(PLUME_MEDIUM_OUTLINE_LAYER_ID, "line-opacity-transition", { duration: 320 } as any);
       map.setPaintProperty(PLUME_HIGH_OUTLINE_LAYER_ID, "line-opacity-transition", { duration: 320 } as any);
 
@@ -646,6 +728,7 @@ export function ForecastMap({
 
       const shouldFit = autoFitKey ? autoFitKey !== lastFitKeyRef.current : !hasFittedRef.current;
       applyGeojsonToMap(map, latestGeojsonRef.current, shouldFit);
+      moveForecastLayersToTop(map);
       if (shouldFit) {
         hasFittedRef.current = true;
         lastFitKeyRef.current = autoFitKey;
