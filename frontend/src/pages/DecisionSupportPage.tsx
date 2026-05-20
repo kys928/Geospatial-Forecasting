@@ -24,8 +24,30 @@ function parseStoredMessages(raw: string | null): ChatMessage[] {
   }
 }
 
+
+function formatPressureWithPbl(context: ForecastContextResponse | null): string {
+  const pressure = formatPressure((context as any)?.conditions?.surface_pressure_hpa);
+  const pbl = formatNumber((context as any)?.conditions?.pbl_height_m, 0);
+  if (pressure === "Unavailable" && pbl === "Unavailable") return "Unavailable";
+  return `${pressure} / ${pbl} m`;
+}
+
+function formatSourceCoordinates(context: ForecastContextResponse | null): string {
+  const latitude = formatCoordinate((context as any)?.source?.latitude);
+  const longitude = formatCoordinate((context as any)?.source?.longitude);
+  if (latitude === "Unavailable" && longitude === "Unavailable") return "Unavailable";
+  return `${latitude}, ${longitude}`;
+}
+
+function formatImpactExtent(context: ForecastContextResponse | null): string {
+  const area = formatArea((context as any)?.plume_metrics?.affected_area_m2);
+  const hectares = formatNumber((context as any)?.plume_metrics?.affected_area_hectares, 2);
+  if (area === "Unavailable" && hectares === "Unavailable") return "Unavailable";
+  return `${area} (${hectares} ha)`;
+}
+
 export function DecisionSupportPage() {
-  const { activeScenarioId, activeModelId, activeModelLabel, activeForecastKind, activeSessionId, activePersistedForecastId, activeForecastBundle, activeFramesMetadata, status, error, setActiveScenario, setActiveModel, runActiveForecast } = useActiveForecast();
+  const { activeScenarioId, activeModelId, activeModelLabel, activeForecastKind, activeSessionId, activePersistedForecastId, activeForecastBundle, activeFramesMetadata, status, error, lastSuccessfulRunKey, setActiveScenario, setActiveModel, runActiveForecast } = useActiveForecast();
   const [datasetScenarios, setDatasetScenarios] = useState<DatasetScenarioPreview[]>([]);
   const [context, setContext] = useState<ForecastContextResponse | null>(null);
   const [data, setData] = useState<DecisionSupportLatest | null>(null);
@@ -33,7 +55,6 @@ export function DecisionSupportPage() {
   const [chatQuestion, setChatQuestion] = useState("");
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const threadRef = useRef<HTMLDivElement>(null);
-  const completedRunKeyRef = useRef<string>("");
   const briefingKeyRef = useRef<string>("");
 
   useEffect(() => {
@@ -61,20 +82,15 @@ export function DecisionSupportPage() {
   const runKey = `${activeModelId}:${activeScenarioId ?? "none"}`;
   useEffect(() => {
     if (activeModelId === "ridge_baseline" && !activeScenarioId) return;
-    if (status === "ready" && completedRunKeyRef.current === runKey) return;
+    if (status === "ready" && lastSuccessfulRunKey === runKey) return;
     void runActiveForecast();
-  }, [activeModelId, activeScenarioId, runActiveForecast, runKey, status]);
-
-  useEffect(() => {
-    if (status === "ready") completedRunKeyRef.current = runKey;
-    if (status === "error") completedRunKeyRef.current = "";
-  }, [runKey, status]);
+  }, [activeModelId, activeScenarioId, lastSuccessfulRunKey, runActiveForecast, runKey, status]);
 
   const identityKey = `${activeForecastKind}|${activeSessionId ?? "none"}|${activePersistedForecastId ?? "none"}|${activeScenarioId ?? "none"}|${activeModelId}|${String(activeForecastBundle?.summary?.forecast_id ?? "none")}`;
   useEffect(() => {
     const latestUrl = activeForecastKind === "session_convlstm" && activeSessionId ? `/decision-support/latest?session_id=${encodeURIComponent(activeSessionId)}` : "/decision-support/latest";
     void httpGet<DecisionSupportLatest>(latestUrl).then(setData).catch(() => setLlmWarning("LLM unavailable; using active forecast context."));
-    const contextUrl = activeForecastKind === "dataset_ridge" ? "/forecast-context/latest?source=dataset" : (activeSessionId ? `/forecast-context/latest?session_id=${encodeURIComponent(activeSessionId)}` : "/forecast-context/latest");
+    const contextUrl = activeForecastKind === "dataset_ridge" ? "/forecast-context/latest?source=dataset" : (activeForecastKind === "session_convlstm" && activeSessionId ? `/forecast-context/latest?source=session&session_id=${encodeURIComponent(activeSessionId)}` : (activeSessionId ? `/forecast-context/latest?session_id=${encodeURIComponent(activeSessionId)}` : "/forecast-context/latest"));
     void httpGet<ForecastContextResponse>(contextUrl).then(setContext).catch(() => setContext(null));
   }, [identityKey, activeForecastKind, activeSessionId]);
 
@@ -121,8 +137,8 @@ export function DecisionSupportPage() {
     ["Wind", `${formatSpeed((context as any)?.conditions?.wind_speed_ms)} ${formatDirection((context as any)?.conditions?.wind_direction_label ?? (context as any)?.conditions?.wind_direction_deg)}`],
     ["Temperature", formatTemperature((context as any)?.conditions?.temperature_c)],
     ["Humidity", formatPercent((context as any)?.conditions?.humidity_pct)],
-    ["Pressure / PBL", `${formatPressure((context as any)?.conditions?.surface_pressure_hpa)} / ${formatNumber((context as any)?.conditions?.pbl_height_m, 0)} m`],
-    ["Source", `${formatCoordinate((context as any)?.source?.latitude)}, ${formatCoordinate((context as any)?.source?.longitude)}`]
+    ["Pressure / PBL", formatPressureWithPbl(context)],
+    ["Source", formatSourceCoordinates(context)]
   ];
   const currentForecastRows: DisplayRow[] = [
     ["Status", formatUnknown((context as any)?.forecast?.status ?? (summary as any).status ?? status)],
@@ -130,7 +146,7 @@ export function DecisionSupportPage() {
     ["Input source", formatUnknown((context as any)?.forecast?.input_source ?? metadata.input_source ?? (context as any)?.source?.label)]
   ];
   const plumeDetailRows: DisplayRow[] = [
-    ["Impact extent", `${formatArea((context as any)?.plume_metrics?.affected_area_m2)} (${formatNumber((context as any)?.plume_metrics?.affected_area_hectares, 2)} ha)`],
+    ["Impact extent", formatImpactExtent(context)],
     ["Peak plume score", formatNumber((context as any)?.plume_metrics?.max_concentration, 4)],
     ["Predicted spread", formatDirection((context as any)?.plume_metrics?.dominant_spread_direction)],
     ["Forecast time", formatTimestamp((context as any)?.forecast?.timestamp ?? (context as any)?.forecast?.issued_at ?? (summary as any).created_at)]
