@@ -6,6 +6,7 @@ import type {
   SessionDetail,
   SessionForecastBundle,
   ForecastFramesMetadata,
+  ForecastFrameRasterPayload,
   SessionPredictionRequest,
   SessionPredictionResponse,
   SessionStateSummary,
@@ -59,6 +60,9 @@ export const sessionClient = {
   },
   getLatestForecastFrameRasterMetadata(sessionId: string, frameIndex: number): Promise<Record<string, unknown>> {
     return httpGet<Record<string, unknown>>(`/sessions/${sessionId}/forecast/latest/frames/${frameIndex}/raster-metadata`);
+  },
+  getLatestForecastFrameRaster(sessionId: string, frameIndex: number): Promise<ForecastFrameRasterPayload> {
+    return httpGet<ForecastFrameRasterPayload>(`/sessions/${sessionId}/forecast/latest/frames/${frameIndex}/raster`);
   },
   clearSession() { localStorage.removeItem(ACTIVE_SESSION_STORAGE_KEY); },
   async ensureSession(): Promise<EnsureSessionResult> {

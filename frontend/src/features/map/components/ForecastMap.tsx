@@ -15,7 +15,7 @@ import type {
 } from "../../forecast/types/forecast.types";
 import { isValidFeatureCollection } from "../utils/layerBuilders";
 import { MapCompassOverlay } from "./MapCompassOverlay";
-import { buildPlumeRasterOverlay } from "../utils/plumeRaster";
+import type { PlumeRasterOverlay } from "../utils/plumeGridRaster";
 
 interface ForecastMapProps {
   geojson: GeoJsonFeatureCollection | null;
@@ -23,11 +23,12 @@ interface ForecastMapProps {
   onSelectFeature: (feature: SelectedFeatureState | null) => void;
   center?: [number, number] | null;
   autoFitKey?: string | null;
+  rasterOverlay?: PlumeRasterOverlay | null;
 }
 
 const FORECAST_SOURCE_ID = "forecast-source";
 const SELECTED_SOURCE_ID = "selected-feature-source";
-const FORECAST_RADAR_IMAGE_SOURCE_ID = "forecast-radar-image-source";
+const FORECAST_RADAR_IMAGE_SOURCE_ID = "forecast-raster-grid-source";
 
 const DOMAIN_FILL_LAYER_ID = "forecast-domain-fill";
 const DOMAIN_OUTLINE_LAYER_ID = "forecast-domain-outline";
@@ -37,7 +38,7 @@ const PLUME_MEDIUM_HIT_LAYER_ID = "forecast-plume-medium-hit";
 const PLUME_HIGH_HIT_LAYER_ID = "forecast-plume-high-hit";
 
 const PLUME_HEATMAP_LAYER_ID = "forecast-plume-heatmap";
-const PLUME_RADAR_IMAGE_LAYER_ID = "forecast-plume-radar-image";
+const PLUME_RADAR_IMAGE_LAYER_ID = "forecast-plume-raster-grid";
 const PLUME_FALLBACK_FILL_LAYER_ID = "forecast-plume-fallback-fill";
 
 const PLUME_LOW_OUTLINE_LAYER_ID = "forecast-plume-low-outline";
@@ -273,7 +274,8 @@ function moveForecastLayersToTop(map: Map) {
 function applyGeojsonToMap(
   map: Map,
   geojson: GeoJsonFeatureCollection | null,
-  shouldFitBounds: boolean
+  shouldFitBounds: boolean,
+  rasterOverlay: PlumeRasterOverlay | null
 ) {
   const normalized = normalizeGeojson(geojson);
 
@@ -290,13 +292,11 @@ function applyGeojsonToMap(
   }
 
   source.setData(normalized as GeoJSON.FeatureCollection);
-
-  const raster = buildPlumeRasterOverlay(normalized);
   const radarImageSource = map.getSource(FORECAST_RADAR_IMAGE_SOURCE_ID) as any;
-  if (raster && radarImageSource?.updateImage) {
-    radarImageSource.updateImage({ url: raster.imageDataUrl, coordinates: raster.coordinates });
+  if (rasterOverlay && radarImageSource?.updateImage) {
+    radarImageSource.updateImage({ url: rasterOverlay.imageDataUrl, coordinates: rasterOverlay.coordinates });
     map.setLayoutProperty(PLUME_RADAR_IMAGE_LAYER_ID, "visibility", "visible");
-  } else if (!raster && map.getLayer(PLUME_RADAR_IMAGE_LAYER_ID)) {
+  } else if (map.getLayer(PLUME_RADAR_IMAGE_LAYER_ID)) {
     map.setLayoutProperty(PLUME_RADAR_IMAGE_LAYER_ID, "visibility", "none");
   }
 
@@ -305,11 +305,10 @@ function applyGeojsonToMap(
   const kinds = Array.from(new Set(normalized.features.map((f) => (typeof f.properties?.kind === "string" ? f.properties.kind : "unknown"))));
   if (import.meta.env.DEV) {
     console.debug("[forecast-map] raster plume", {
-      hasRaster: Boolean(raster),
-      featureCount: raster?.featureCount ?? 0,
-      bounds: raster?.bounds ?? null,
-      width: raster?.width ?? null,
-      height: raster?.height ?? null
+      hasRaster: Boolean(rasterOverlay),
+      bounds: rasterOverlay?.coordinates ?? null,
+      width: rasterOverlay?.width ?? null,
+      height: rasterOverlay?.height ?? null
     });
     console.debug("[forecast-map] setData", {
       featureCount: normalized.features.length,
@@ -350,7 +349,8 @@ export function ForecastMap({
   selectedFeature,
   onSelectFeature,
   center = null,
-  autoFitKey = null
+  autoFitKey = null,
+  rasterOverlay = null
 }: ForecastMapProps) {
   const mapContainerRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<Map | null>(null);
@@ -473,7 +473,7 @@ export function ForecastMap({
         source: FORECAST_SOURCE_ID,
         paint: {
           "fill-color": "#facc15",
-          "fill-opacity": 0.02
+          "fill-opacity": 0
         },
         filter: [
           "all",
@@ -492,7 +492,7 @@ export function ForecastMap({
         source: FORECAST_SOURCE_ID,
         paint: {
           "fill-color": "#f59e0b",
-          "fill-opacity": 0.03
+          "fill-opacity": 0
         },
         filter: [
           "all",
@@ -511,7 +511,7 @@ export function ForecastMap({
         source: FORECAST_SOURCE_ID,
         paint: {
           "fill-color": "#ef4444",
-          "fill-opacity": 0.04
+          "fill-opacity": 0
         },
         filter: [
           "all",
@@ -571,7 +571,7 @@ export function ForecastMap({
               ["literal", ["plume_band", "plume_band_low", "plume_band_medium", "plume_band_high", "plume_cell", "source", "plume_point", "forecast_extent"]]
             ],
             0,
-            0.35
+            0
           ]
         },
         filter: ["all", ["in", ["geometry-type"], ["literal", ["Polygon", "MultiPolygon"]]]]
@@ -584,7 +584,7 @@ export function ForecastMap({
         paint: {
           "line-color": "#ca8a04",
           "line-width": 0.9,
-          "line-opacity": 0.1,
+          "line-opacity": 0.03,
         },
         filter: [
           "all",
@@ -604,7 +604,7 @@ export function ForecastMap({
         paint: {
           "line-color": "#d97706",
           "line-width": 0.8,
-          "line-opacity": 0.1,
+          "line-opacity": 0.03,
         },
         filter: [
           "all",
@@ -624,7 +624,7 @@ export function ForecastMap({
         paint: {
           "line-color": "#b91c1c",
           "line-width": 1,
-          "line-opacity": 0.12,
+          "line-opacity": 0.05,
         },
         filter: [
           "all",
@@ -699,7 +699,7 @@ export function ForecastMap({
         paint: {
           "line-color": "#ffffff",
           "line-width": 7,
-          "line-opacity": 0.12,
+          "line-opacity": 0.05,
         },
         filter: ["any", ["==", "$type", "Polygon"], ["==", "$type", "MultiPolygon"]]
       });
@@ -764,7 +764,7 @@ export function ForecastMap({
       });
 
       const shouldFit = autoFitKey ? autoFitKey !== lastFitKeyRef.current : !hasFittedRef.current;
-      applyGeojsonToMap(map, latestGeojsonRef.current, shouldFit);
+      applyGeojsonToMap(map, latestGeojsonRef.current, shouldFit, rasterOverlay);
       moveForecastLayersToTop(map);
       if (shouldFit) {
         hasFittedRef.current = true;
@@ -787,7 +787,7 @@ export function ForecastMap({
       return;
     }
     const shouldFit = autoFitKey ? autoFitKey !== lastFitKeyRef.current : !hasFittedRef.current;
-    applyGeojsonToMap(map, geojson, shouldFit);
+    applyGeojsonToMap(map, geojson, shouldFit, rasterOverlay);
     if (shouldFit) {
       hasFittedRef.current = true;
       lastFitKeyRef.current = autoFitKey;

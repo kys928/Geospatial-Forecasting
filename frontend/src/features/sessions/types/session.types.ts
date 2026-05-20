@@ -101,3 +101,18 @@ export interface ForecastFramesMetadata {
   shape: number[];
   metadata?: Record<string, unknown>;
 }
+
+export interface ForecastFrameRasterPayload {
+  forecast_id: string;
+  session_id: string;
+  frame_index: number;
+  shape: [number, number];
+  grid: number[][];
+  min: number;
+  max: number;
+  mean: number;
+  threshold: number | null;
+  bounds: { min_lon: number; min_lat: number; max_lon: number; max_lat: number };
+  georeferencing_status: string;
+  metadata?: Record<string, unknown>;
+}

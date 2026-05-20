@@ -256,3 +256,30 @@ def test_latest_forecast_after_restart_is_honest_when_only_linkage_is_persisted(
 
     assert latest.status_code == 404
     assert "persisted linkage only" in latest.json()["detail"]
+
+
+def test_session_frame_raster_endpoint_shape_stats_and_bounds():
+    app = create_app()
+    client = TestClient(app)
+    session_id = client.post("/sessions", json={"backend_name": "mock_online"}).json()["session_id"]
+    assert client.post(f"/sessions/{session_id}/predict", json={}).status_code == 200
+
+    response = client.get(f"/sessions/{session_id}/forecast/latest/frames/0/raster")
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["shape"] == [64, 64]
+    assert isinstance(payload.get("grid"), list)
+    assert payload["bounds"].keys() >= {"min_lon", "min_lat", "max_lon", "max_lat"}
+    assert payload["min"] == payload["min"]
+    assert payload["max"] == payload["max"]
+    assert payload["mean"] == payload["mean"]
+
+
+def test_session_frame_raster_endpoint_out_of_range_returns_404():
+    app = create_app()
+    client = TestClient(app)
+    session_id = client.post("/sessions", json={"backend_name": "mock_online"}).json()["session_id"]
+    assert client.post(f"/sessions/{session_id}/predict", json={}).status_code == 200
+
+    response = client.get(f"/sessions/{session_id}/forecast/latest/frames/999/raster")
+    assert response.status_code == 404
