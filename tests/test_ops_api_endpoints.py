@@ -547,3 +547,31 @@ def test_collect_gpu_metrics_parses_optional_fields(monkeypatch):
     assert payload["power_w"] is None
     assert payload["driver_version"] == "550.120"
     assert payload["cuda_version"] == "12.4"
+
+
+def test_ops_routes_forecast_context_filter(monkeypatch, tmp_path: Path):
+    for key, value in _seed_ops_files(tmp_path).items():
+        monkeypatch.setenv(key, value)
+    monkeypatch.setenv("PLUME_OPS_AUTH_ENABLED", "false")
+
+    client = TestClient(create_app())
+    response = client.get("/ops/routes", params={"prefix": "/forecast-context"})
+    assert response.status_code == 200
+    payload = response.json()
+    paths = {item["path"] for item in payload["routes"]}
+    assert "/forecast-context/dataset-scenarios/active/overlay" in paths
+    assert "/forecast-context/dataset-scenarios/active/frames" in paths
+    assert "/forecast-context/dataset-scenarios/active/frames/{frame_index}/raster" in paths
+
+
+def test_ops_forecast_context_route_health(monkeypatch, tmp_path: Path):
+    for key, value in _seed_ops_files(tmp_path).items():
+        monkeypatch.setenv(key, value)
+    monkeypatch.setenv("PLUME_OPS_AUTH_ENABLED", "false")
+
+    client = TestClient(create_app())
+    response = client.get("/ops/routes/forecast-context-health")
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["ok"] is True
+    assert payload["missing_routes"] == []

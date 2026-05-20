@@ -35,6 +35,10 @@ class DatasetScenarioService:
         "dataset_normal_stream": "dataset_normal",
         "dataset_lowest_plume": "dataset_low_plume",
         "dataset_small_plume": "dataset_medium_plume",
+        "normal": "dataset_normal",
+        "low": "dataset_low_plume",
+        "medium": "dataset_medium_plume",
+        "large": "dataset_large_plume",
     }
     CHANNELS = [
         "plume_concentration", "u10m_ms", "v10m_ms", "wspd10_ms", "wdir_sin", "wdir_cos", "pblh_m", "sfcp_hpa", "rh2m_pct", "t02m_k"
@@ -357,6 +361,66 @@ class DatasetScenarioService:
             "scenario": selected_payload,
         }
 
+    def debug_active_state(self) -> dict[str, Any]:
+        self.resolve_current_playback_state()
+        active_payload = self.get_active_payload()
+        available_ids = [item.get("scenario_id") for item in self.list_scenarios() if isinstance(item.get("scenario_id"), str)]
+        manifest_exists = self.config.dataset_manifest_path.exists()
+        windows_manifest_exists = self.config.windows_manifest_enriched_path.exists()
+        windows_dir_exists = self.config.windows_dir.exists()
+        missing_files: list[str] = []
+        if not manifest_exists:
+            missing_files.append(str(self.config.dataset_manifest_path))
+        if not windows_manifest_exists:
+            missing_files.append(str(self.config.windows_manifest_enriched_path))
+        if not windows_dir_exists:
+            missing_files.append(str(self.config.windows_dir))
+        reason_unavailable = None
+        if not self.is_enabled():
+            reason_unavailable = "dataset_scenario_mode_disabled"
+        elif missing_files:
+            reason_unavailable = "required_dataset_files_missing"
+        elif not available_ids:
+            reason_unavailable = "no_dataset_scenarios_selected_from_manifest"
+        resolved_scenario_id = None
+        try:
+            resolved_scenario_id = self._resolve_active_scenario_id(active_payload=active_payload)
+        except Exception:
+            resolved_scenario_id = None
+        return {
+            "available_scenario_ids": available_ids,
+            "scenario_count": len(available_ids),
+            "active_payload": {
+                "enabled": bool(active_payload.get("enabled", False)),
+                "available": bool(active_payload.get("available", False)),
+                "selected_scenario_id": active_payload.get("selected_scenario_id"),
+                "active_scenario_id": active_payload.get("active_scenario_id"),
+                "scenario_id": active_payload.get("scenario_id"),
+            },
+            "active_payload_keys": sorted(active_payload.keys()),
+            "selected_scenario_id": active_payload.get("selected_scenario_id"),
+            "active_scenario_id": active_payload.get("active_scenario_id"),
+            "resolved_scenario_id": resolved_scenario_id,
+            "dataset_root": str(self.config.windows_dir.parent),
+            "manifest_path": str(self.config.dataset_manifest_path),
+            "manifest_exists": manifest_exists,
+            "windows_manifest_path": str(self.config.windows_manifest_enriched_path),
+            "windows_manifest_exists": windows_manifest_exists,
+            "windows_dir_path": str(self.config.windows_dir),
+            "windows_dir_exists": windows_dir_exists,
+            "expected_env_var_names": [
+                "PLUME_DATASET_SCENARIO_MODE",
+                "PLUME_FULL_DATASET_PATH",
+                "PLUME_DATASET_MANIFEST_PATH",
+                "PLUME_WINDOWS_MANIFEST_ENRICHED_PATH",
+                "PLUME_WINDOWS_DIR",
+                "PLUME_DATASET_SCENARIO_SCAN_LIMIT",
+            ],
+            "missing_files": missing_files,
+            "reason_unavailable": reason_unavailable,
+            "manifest_available": self.config.dataset_manifest_path.exists() and self.config.windows_manifest_enriched_path.exists(),
+        }
+
     def overlay_geojson(self, scenario_key: str) -> dict[str, Any]:
         payload = self.get_scenario(scenario_key)
         if scenario_key == "dataset_normal":
@@ -367,10 +431,7 @@ class DatasetScenarioService:
 
     def overlay_active_geojson(self) -> dict[str, Any]:
         self.resolve_current_playback_state()
-        active = self.get_active_payload()
-        scenario_id = active.get("selected_scenario_id")
-        if not isinstance(scenario_id, str):
-            raise KeyError("no active scenario")
+        scenario_id = self._resolve_active_scenario_id()
         return self.overlay_geojson(scenario_id)
 
     def raster_for_scenario(self, scenario_key: str) -> dict[str, Any]:
@@ -399,10 +460,7 @@ class DatasetScenarioService:
 
     def frames_active(self) -> dict[str, Any]:
         self.resolve_current_playback_state()
-        active = self.get_active_payload()
-        scenario_id = active.get("selected_scenario_id") or active.get("active_scenario_id")
-        if not isinstance(scenario_id, str):
-            raise KeyError("no active scenario")
+        scenario_id = self._resolve_active_scenario_id()
         return self.frames_for_scenario(scenario_id)
 
     def frame_raster_for_scenario(self, scenario_id: str, frame_index: int) -> dict[str, Any]:
@@ -414,10 +472,7 @@ class DatasetScenarioService:
 
     def frame_raster_active(self, frame_index: int) -> dict[str, Any]:
         self.resolve_current_playback_state()
-        active = self.get_active_payload()
-        scenario_id = active.get("selected_scenario_id") or active.get("active_scenario_id")
-        if not isinstance(scenario_id, str):
-            raise KeyError("no active scenario")
+        scenario_id = self._resolve_active_scenario_id()
         return self.frame_raster_for_scenario(scenario_id, frame_index)
 
     def frame_overlay_for_scenario(self, scenario_id: str, frame_index: int) -> dict[str, Any]:
@@ -428,24 +483,41 @@ class DatasetScenarioService:
 
     def frame_overlay_active(self, frame_index: int) -> dict[str, Any]:
         self.resolve_current_playback_state()
-        active = self.get_active_payload()
-        scenario_id = active.get("selected_scenario_id") or active.get("active_scenario_id")
-        if not isinstance(scenario_id, str):
-            raise KeyError("no active scenario")
+        scenario_id = self._resolve_active_scenario_id()
         return self.frame_overlay_for_scenario(scenario_id, frame_index)
 
     def raster_active(self) -> dict[str, Any]:
         self.resolve_current_playback_state()
-        active = self.get_active_payload()
-        scenario_id = active.get("selected_scenario_id") or active.get("active_scenario_id")
-        if not isinstance(scenario_id, str):
-            scenario_id = self.get_active()
-        if not isinstance(scenario_id, str):
-            scenarios = self.list_scenarios()
-            scenario_id = scenarios[0].get("scenario_id") if scenarios else None
-        if not isinstance(scenario_id, str):
-            raise KeyError("no active scenario")
+        scenario_id = self._resolve_active_scenario_id()
         return self.raster_for_scenario(scenario_id)
+
+    def _resolve_active_scenario_id(self, *, active_payload: dict[str, Any] | None = None) -> str:
+        scenarios = self.list_scenarios()
+        available_ids = [item.get("scenario_id") for item in scenarios if isinstance(item.get("scenario_id"), str)]
+        available_set = set(available_ids)
+        active_payload = active_payload if active_payload is not None else self.get_active_payload()
+
+        def _normalize(value: Any) -> str | None:
+            if not isinstance(value, str):
+                return None
+            candidate = self.SCENARIO_ALIASES.get(value, value)
+            return candidate if candidate else None
+
+        candidates = [
+            _normalize(active_payload.get("selected_scenario_id")),
+            _normalize(active_payload.get("active_scenario_id")),
+            _normalize(active_payload.get("scenario_id")),
+            _normalize(self.get_active()),
+            _normalize(os.getenv("PLUME_DEFAULT_DATASET_SCENARIO_ID")),
+            _normalize(available_ids[0] if available_ids else None),
+        ]
+        for scenario_id in candidates:
+            if isinstance(scenario_id, str) and scenario_id in available_set:
+                return scenario_id
+        raise KeyError(
+            f"unable to resolve active dataset scenario; available_scenarios={available_ids}; "
+            f"active_payload_keys={sorted(active_payload.keys())}"
+        )
 
     def _build_dataset_frame_raster(self, scenario_id: str, frame_index: int) -> dict[str, Any]:
         payload = self.get_scenario(scenario_id)

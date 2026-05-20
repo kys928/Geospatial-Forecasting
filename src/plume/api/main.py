@@ -6,6 +6,7 @@ import os
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from plume.api.route_diagnostics import log_forecast_context_routes
 from plume.api.deps import (
     get_explain_service,
     get_export_service,
@@ -54,6 +55,7 @@ def create_app() -> FastAPI:
         app.state.openremote_service_registrar = registrar
         await registrar.register()
         registrar.start_background_heartbeat()
+        log_forecast_context_routes(app)
         try:
             yield
         finally:

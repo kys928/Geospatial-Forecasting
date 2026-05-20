@@ -22,6 +22,8 @@ class StubDatasetScenarioService:
 
     def get_active_payload(self):
         return {"enabled": True, "available": True, "selected_scenario_id": "dataset_a", "scenario": {"source": {"latitude": 1, "longitude": 2}}}
+    def debug_active_state(self):
+        return {"resolved_scenario_id": "dataset_a"}
 
     def get_scenario(self, scenario_id: str):
         raise KeyError(scenario_id)
@@ -158,3 +160,13 @@ def test_active_frames_route_not_captured_as_scenario_id():
     payload = response.json()
     assert payload["frame_count"] == 4
     assert payload["frame_indices"] == [0, 1, 2, 3]
+
+
+def test_debug_active_endpoint_returns_payload():
+    app = FastAPI()
+    dataset = StubDatasetScenarioService()
+    register_forecast_context_routes(app, forecast_context_service=StubForecastContextService(), dataset_scenario_service=dataset)
+    client = TestClient(app)
+    response = client.get('/forecast-context/dataset-scenarios/debug-active')
+    assert response.status_code == 200
+    assert response.json()["resolved_scenario_id"] == "dataset_a"

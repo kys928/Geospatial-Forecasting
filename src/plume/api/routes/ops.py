@@ -12,6 +12,7 @@ import re
 from fastapi import Depends, FastAPI, Header, HTTPException
 import yaml
 
+from plume.api.route_diagnostics import collect_route_diagnostics, collect_route_entries, forecast_context_route_health
 from plume.api.ops_schemas import (
     ActivateModelRequest,
     ActivationResponse,
@@ -302,6 +303,19 @@ def register_ops_routes(app: FastAPI, *, forecast_service, dispatch_worker=dispa
             registry_payload=registry_payload,
             recent_events=recent_events,
         )
+
+    @app.get("/ops/routes")
+    def get_ops_routes(prefix: str | None = None, _role: str = Depends(_require_ops_read_access)):
+        routes = collect_route_entries(app, prefix=prefix)
+        return {
+            "route_count": len(routes),
+            "routes": routes,
+            "diagnostics": collect_route_diagnostics(app),
+        }
+
+    @app.get("/ops/routes/forecast-context-health")
+    def get_ops_forecast_context_route_health(_role: str = Depends(_require_ops_read_access)):
+        return forecast_context_route_health(app)
 
     @app.get("/ops/status", response_model=OpsStatusResponse)
     def get_ops_status(_role: str = Depends(_require_ops_read_access)):

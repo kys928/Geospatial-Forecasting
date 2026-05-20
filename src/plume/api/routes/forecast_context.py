@@ -4,6 +4,29 @@ from typing import Literal
 
 from fastapi import FastAPI, HTTPException
 
+def _dataset_http_error(*, endpoint: str, exc: Exception, dataset_scenario_service, error: str) -> HTTPException:
+    active_payload = {}
+    debug = {}
+    try:
+        active_payload = dataset_scenario_service.get_active_payload()
+    except Exception:
+        active_payload = {}
+    try:
+        debug = dataset_scenario_service.debug_active_state()
+    except Exception:
+        debug = {}
+    return HTTPException(
+        status_code=404,
+        detail={
+            "error": error,
+            "endpoint": endpoint,
+            "exception_type": type(exc).__name__,
+            "message": str(exc),
+            "active_payload_keys": sorted(active_payload.keys()) if isinstance(active_payload, dict) else [],
+            "resolved_scenario_id": debug.get("resolved_scenario_id") if isinstance(debug, dict) else None,
+        },
+    )
+
 
 def register_forecast_context_routes(app: FastAPI, *, forecast_context_service, dataset_scenario_service) -> None:
     @app.get('/forecast-context/latest')
@@ -19,44 +42,44 @@ def register_forecast_context_routes(app: FastAPI, *, forecast_context_service, 
     def get_active_dataset_scenario():
         return dataset_scenario_service.get_active_payload()
 
+    @app.get('/forecast-context/dataset-scenarios/debug-active')
+    def get_debug_active_dataset_scenario():
+        return dataset_scenario_service.debug_active_state()
+
     @app.get('/forecast-context/dataset-scenarios/active/overlay')
     def get_active_dataset_scenario_overlay():
         try:
             return dataset_scenario_service.overlay_active_geojson()
-        except KeyError as exc:
-            raise HTTPException(status_code=404, detail="Dataset scenario overlay unavailable") from exc
+        except (KeyError, IndexError, ValueError, FileNotFoundError) as exc:
+            raise _dataset_http_error(endpoint="active_overlay", exc=exc, dataset_scenario_service=dataset_scenario_service, error="dataset_overlay_not_available") from exc
 
     @app.get('/forecast-context/dataset-scenarios/active/raster')
     def get_active_dataset_scenario_raster():
         try:
             return dataset_scenario_service.raster_active()
-        except KeyError as exc:
-            raise HTTPException(status_code=404, detail="Dataset scenario raster unavailable") from exc
+        except (KeyError, IndexError, ValueError, FileNotFoundError) as exc:
+            raise _dataset_http_error(endpoint="active_raster", exc=exc, dataset_scenario_service=dataset_scenario_service, error="dataset_raster_not_available") from exc
 
     @app.get('/forecast-context/dataset-scenarios/active/frames')
     def get_active_dataset_frames():
         try:
             return dataset_scenario_service.frames_active()
-        except KeyError as exc:
-            raise HTTPException(status_code=404, detail="Dataset scenario frames unavailable") from exc
+        except (KeyError, IndexError, ValueError, FileNotFoundError) as exc:
+            raise _dataset_http_error(endpoint="active_frames", exc=exc, dataset_scenario_service=dataset_scenario_service, error="dataset_frame_not_available") from exc
 
     @app.get('/forecast-context/dataset-scenarios/active/frames/{frame_index}/raster')
     def get_active_dataset_frame_raster(frame_index: int):
         try:
             return dataset_scenario_service.frame_raster_active(frame_index)
-        except IndexError as exc:
-            raise HTTPException(status_code=404, detail="Unknown dataset frame index") from exc
-        except KeyError as exc:
-            raise HTTPException(status_code=404, detail="Dataset scenario frame raster unavailable") from exc
+        except (KeyError, IndexError, ValueError, FileNotFoundError) as exc:
+            raise _dataset_http_error(endpoint="active_frame_raster", exc=exc, dataset_scenario_service=dataset_scenario_service, error="dataset_frame_raster_not_available") from exc
 
     @app.get('/forecast-context/dataset-scenarios/active/frames/{frame_index}/overlay')
     def get_active_dataset_frame_overlay(frame_index: int):
         try:
             return dataset_scenario_service.frame_overlay_active(frame_index)
-        except IndexError as exc:
-            raise HTTPException(status_code=404, detail="Unknown dataset frame index") from exc
-        except KeyError as exc:
-            raise HTTPException(status_code=404, detail="Dataset scenario frame overlay unavailable") from exc
+        except (KeyError, IndexError, ValueError, FileNotFoundError) as exc:
+            raise _dataset_http_error(endpoint="active_frame_overlay", exc=exc, dataset_scenario_service=dataset_scenario_service, error="dataset_frame_overlay_not_available") from exc
 
     @app.get('/forecast-context/dataset-scenarios/{scenario_id}')
     def get_dataset_scenario(scenario_id: str):

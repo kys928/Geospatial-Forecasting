@@ -216,6 +216,47 @@ def test_unknown_and_invalid_frame_index_errors(tmp_path: Path):
         pass
 
 
+def test_active_resolution_supports_payload_key_variants(tmp_path: Path):
+    _write_dataset(tmp_path)
+    cfg = DatasetScenarioConfig("enabled", tmp_path / "dataset_manifest.csv", tmp_path / "windows_manifest_enriched.csv", tmp_path / "windows", 10, tmp_path / "state.json", tmp_path / "online_learning_subset", tmp_path / "playback_state.json", tmp_path / "ridge.pkl")
+    svc = DatasetScenarioService(cfg)
+    assert svc._resolve_active_scenario_id(active_payload={"selected_scenario_id": "normal"}) == "dataset_normal"
+    assert svc._resolve_active_scenario_id(active_payload={"active_scenario_id": "medium"}) == "dataset_medium_plume"
+    assert svc._resolve_active_scenario_id(active_payload={"scenario_id": "dataset_large_plume"}) == "dataset_large_plume"
+
+
+def test_active_overlay_and_frames_resolve_same_scenario(tmp_path: Path):
+    _write_dataset(tmp_path)
+    cfg = DatasetScenarioConfig("enabled", tmp_path / "dataset_manifest.csv", tmp_path / "windows_manifest_enriched.csv", tmp_path / "windows", 10, tmp_path / "state.json", tmp_path / "online_learning_subset", tmp_path / "playback_state.json", tmp_path / "ridge.pkl")
+    svc = DatasetScenarioService(cfg)
+    svc.activate("dataset_large_plume")
+    overlay = svc.overlay_active_geojson()
+    frames = svc.frames_active()
+    assert overlay["metadata"]["source"] == "dataset_playback"
+    assert frames["scenario_id"] == svc._resolve_active_scenario_id()
+
+
+def test_debug_active_state_contains_safe_keys(tmp_path: Path):
+    _write_dataset(tmp_path)
+    cfg = DatasetScenarioConfig("enabled", tmp_path / "dataset_manifest.csv", tmp_path / "windows_manifest_enriched.csv", tmp_path / "windows", 10, tmp_path / "state.json", tmp_path / "online_learning_subset", tmp_path / "playback_state.json", tmp_path / "ridge.pkl")
+    svc = DatasetScenarioService(cfg)
+    payload = svc.debug_active_state()
+    assert "available_scenario_ids" in payload
+    assert "active_payload_keys" in payload
+    assert "resolved_scenario_id" in payload
+    assert "reason_unavailable" in payload
+    assert "expected_env_var_names" in payload
+
+
+def test_debug_active_state_reports_missing_files_when_unavailable(tmp_path: Path):
+    cfg = DatasetScenarioConfig("enabled", tmp_path / "missing_manifest.csv", tmp_path / "missing_windows_manifest.csv", tmp_path / "missing_windows", 10, tmp_path / "state.json", tmp_path / "online_learning_subset", tmp_path / "playback_state.json", tmp_path / "ridge.pkl")
+    svc = DatasetScenarioService(cfg)
+    payload = svc.debug_active_state()
+    assert payload["manifest_exists"] is False
+    assert payload["reason_unavailable"] == "required_dataset_files_missing"
+    assert str(tmp_path / "missing_manifest.csv") in payload["missing_files"]
+
+
 def test_playback_running_does_not_advance_by_elapsed_time(tmp_path: Path):
     _write_dataset(tmp_path)
     cfg = DatasetScenarioConfig("enabled", tmp_path / "dataset_manifest.csv", tmp_path / "windows_manifest_enriched.csv", tmp_path / "windows", 10, tmp_path / "state.json", tmp_path / "online_learning_subset", tmp_path / "playback_state.json", tmp_path / "ridge.pkl")
