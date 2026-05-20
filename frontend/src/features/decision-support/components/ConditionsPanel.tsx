@@ -1,14 +1,10 @@
 import { ScenarioSelector } from "./ScenarioSelector";
-import { ModelSelector } from "./ModelSelector";
-import type { ActiveModelId } from "../../forecast-selection/modelRegistry";
 import type { DatasetScenarioPreview, DisplayRow } from "../types";
 
 type Props = {
   datasetScenarios: DatasetScenarioPreview[];
   activeScenario: string;
   activateDatasetScenario: (scenarioId: string) => Promise<void>;
-  activeModelId: ActiveModelId;
-  setActiveModel: (modelId: ActiveModelId) => void;
   currentConditionsRows: DisplayRow[];
   currentForecastRows: DisplayRow[];
   plumePresent: boolean;
@@ -23,8 +19,6 @@ export function ConditionsPanel(props: Props) {
     datasetScenarios,
     activeScenario,
     activateDatasetScenario,
-    activeModelId,
-    setActiveModel,
     currentConditionsRows,
     currentForecastRows,
     plumePresent,
@@ -37,7 +31,6 @@ export function ConditionsPanel(props: Props) {
   return <section className="panel decision-support-live-panel">
     <h3>Geospatial Conditions</h3>
     <ScenarioSelector datasetScenarios={datasetScenarios} activeScenario={activeScenario} activateDatasetScenario={activateDatasetScenario} />
-    <ModelSelector activeModelId={activeModelId} setActiveModel={setActiveModel} />
     <div className="values-section">
       <h4>Current Conditions</h4>
       <div className="values-grid compact-values-grid">{currentConditionsRows.map(([label, value]) => <div key={label} className="status-row"><strong>{label}</strong><span>{value}</span></div>)}</div>
