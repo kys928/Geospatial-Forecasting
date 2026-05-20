@@ -22,6 +22,7 @@ export function ForecastPage() {
   const {
     framesMetadata,
     selectedFrameIndex,
+    selectedFrameSummary,
     selectedFrameGeoJson,
     frameLoading,
     frameError,
@@ -70,7 +71,7 @@ export function ForecastPage() {
     }
   };
 
-  const inspectGeoJson = (geojson: Record<string, unknown> | null, mode: "dataset" | "session") => {
+  const inspectGeoJson = (geojson: Record<string, unknown> | null, mode: "dataset" | "session-frame" | "session-bundle" | "none") => {
     const baseCounts = countGeojsonKinds(geojson);
     const plumePointCount = Array.isArray((geojson as { features?: unknown[] } | null)?.features)
       ? (geojson as { features: Array<{ properties?: { kind?: unknown } }> }).features.filter((feature) => feature?.properties?.kind === "plume_point").length
@@ -151,10 +152,26 @@ export function ForecastPage() {
   }, [mapPipelineStatus, selectedFrameGeoJson]);
 
   const hasMultiFrameSession = Boolean(framesMetadata && framesMetadata.frame_count > 1);
-  const sessionGeojson = ((selectedFrameGeoJson ?? latestForecastBundle?.geojson) ?? null) as GeoJsonFeatureCollection | null;
+  const selectedFrameFeatures = Array.isArray((selectedFrameGeoJson as { features?: unknown[] } | null)?.features)
+    ? (selectedFrameGeoJson as { features: unknown[] }).features.length
+    : 0;
+  const sessionBundleGeojson = (latestForecastBundle?.geojson ?? null) as GeoJsonFeatureCollection | null;
+  const sessionBundleFeatures = Array.isArray((sessionBundleGeojson as { features?: unknown[] } | null)?.features)
+    ? (sessionBundleGeojson as { features: unknown[] }).features.length
+    : 0;
+  const hasUsableSelectedFrame = hasMultiFrameSession && selectedFrameFeatures > 0;
+  const hasUsableSessionBundle = sessionBundleFeatures > 0;
   const hasDatasetOverlay = Boolean(datasetOverlayGeoJson?.features?.length);
-  const sourceMode: "dataset" | "session" = hasDatasetOverlay ? "dataset" : "session";
-  const mapGeojson = hasDatasetOverlay ? datasetOverlayGeoJson : sessionGeojson;
+  const sourceMode: "dataset" | "session-frame" | "session-bundle" | "none" =
+    hasUsableSelectedFrame ? "session-frame" : hasUsableSessionBundle ? "session-bundle" : hasDatasetOverlay ? "dataset" : "none";
+  const mapGeojson =
+    sourceMode === "session-frame"
+      ? (selectedFrameGeoJson as unknown as GeoJsonFeatureCollection)
+      : sourceMode === "session-bundle"
+        ? sessionBundleGeojson
+        : hasDatasetOverlay
+          ? datasetOverlayGeoJson
+          : null;
 
   useEffect(() => {
     inspectGeoJson(mapGeojson as unknown as Record<string, unknown>, sourceMode);
@@ -163,20 +180,54 @@ export function ForecastPage() {
   const datasetOverlayIdentity = hasDatasetOverlay
     ? buildDatasetOverlayIdentity(datasetOverlayGeoJson as unknown as { features?: unknown[]; metadata?: Record<string, unknown> })
     : "dataset";
-  const forecastFitKey = `${sourceMode}:${sourceMode === "dataset" ? datasetOverlayIdentity : (framesMetadata?.forecast_id ?? activeSessionId ?? "none")}`;
+  const sessionSourceIdentity = `${activeSessionId ?? "none"}:${framesMetadata?.forecast_id ?? "none"}`;
+  const forecastFitKey = `${sourceMode}:${sourceMode === "dataset" ? datasetOverlayIdentity : sessionSourceIdentity}`;
   const timelineDisabled = !hasMultiFrameSession;
   const datasetKinds = countGeojsonKinds(datasetOverlayGeoJson as unknown as Record<string, unknown> | null).kinds;
+  const selectedFrameKinds = countGeojsonKinds(selectedFrameGeoJson as unknown as Record<string, unknown> | null).kinds;
   const mapKinds = countGeojsonKinds(mapGeojson as unknown as Record<string, unknown> | null).kinds;
+
+  useEffect(() => {
+    if (!import.meta.env.DEV) return;
+    console.debug("[forecast-map] selected frame changed", {
+      selectedFrameIndex,
+      featureCount: selectedFrameFeatures,
+      kinds: selectedFrameKinds
+    });
+  }, [selectedFrameFeatures, selectedFrameIndex, selectedFrameKinds]);
+
+  useEffect(() => {
+    if (!import.meta.env.DEV || !hasUsableSelectedFrame) return;
+    const metadataSummary = (framesMetadata?.metadata as Record<string, unknown> | undefined)?.frame_summaries;
+    const frameSummaries = Array.isArray(metadataSummary) ? metadataSummary : [];
+    const frameSummary = selectedFrameSummary ?? {};
+    const maxConcentration =
+      typeof (frameSummary as { max_concentration?: unknown }).max_concentration === "number"
+        ? (frameSummary as { max_concentration: number }).max_concentration
+        : null;
+    const plumeCellCount =
+      typeof (frameSummary as { plume_cell_count?: unknown }).plume_cell_count === "number"
+        ? (frameSummary as { plume_cell_count: number }).plume_cell_count
+        : null;
+    console.debug("[forecast-map] selected frame summary", {
+      selectedFrameIndex,
+      maxConcentration,
+      plumeCellCount,
+      metadataFrameSummaries: frameSummaries.length
+    });
+  }, [framesMetadata?.metadata, hasUsableSelectedFrame, selectedFrameIndex, selectedFrameSummary]);
 
   if (import.meta.env.DEV) {
     console.debug("[forecast-map] render source", {
       sourceMode,
+      selectedFrameIndex,
+      frameCount: framesMetadata?.frame_count ?? 0,
+      selectedFrameFeatures,
+      sessionBundleFeatures,
       datasetFeatures: datasetOverlayGeoJson?.features?.length ?? 0,
-      sessionFeatures: sessionGeojson?.features?.length ?? 0,
       mapFeatures: mapGeojson?.features?.length ?? 0,
       datasetKinds,
       mapKinds,
-      firstDatasetFeature: datasetOverlayGeoJson?.features?.[0] ?? null,
       autoFitKey: forecastFitKey,
       datasetSourceCenter
     });
