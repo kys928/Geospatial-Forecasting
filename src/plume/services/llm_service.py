@@ -15,6 +15,7 @@ from ..schemas.ForecastSummary import ForecastSummary
 from ..schemas.LLMInterpretationResult import LLMInterpretationResult
 from ..schemas.grid import GridSpec
 from ..schemas.scenario import Scenario
+from .local_llm_worker_client import LocalLLMWorkerClient
 
 logger = logging.getLogger(__name__)
 
@@ -48,6 +49,8 @@ class LLMService:
         self.provider = provider_aliases.get(raw_provider, raw_provider)
         self.local_gguf_path: str | None = None
         self.local_llm: Any | None = None
+        self.local_llm_isolated = False
+        self.local_llm_worker_client: LocalLLMWorkerClient | None = None
         self.model_name = llm_config.model
         self.temperature = temperature
         self.max_output_tokens = max_output_tokens
@@ -67,6 +70,7 @@ class LLMService:
             )
 
         if self.provider == "local-gguf":
+            self.local_llm_isolated = os.getenv("PLUME_LOCAL_LLM_ISOLATED", "true").lower() in {"1", "true", "yes", "on"}
             self.local_gguf_path = str(Path(os.getenv(
                 "PLUME_LOCAL_LLM_GGUF_PATH",
                 "/workspace/llm_runtime/models/Qwen_Qwen2.5-7B-Instruct.Q4_K_M.gguf",
@@ -81,23 +85,28 @@ class LLMService:
             self.local_max_tokens = int(os.getenv("PLUME_LOCAL_LLM_MAX_TOKENS", "300"))
             self.local_temperature = float(os.getenv("PLUME_LOCAL_LLM_TEMPERATURE", "0.1"))
             self.local_top_p = float(os.getenv("PLUME_LOCAL_LLM_TOP_P", "0.9"))
-            chat_format = os.getenv("PLUME_LOCAL_LLM_CHAT_FORMAT", "chatml")
-            verbose = os.getenv("PLUME_LOCAL_LLM_VERBOSE", "false").lower() in {"1", "true", "yes", "on"}
-            try:
-                from llama_cpp import Llama
-            except ImportError as exc:
-                raise ValueError("llama-cpp-python is required for local-gguf provider.") from exc
-            logger.info("[llm] loading local GGUF model: %s", gguf)
-            self.local_llm = Llama(
-                model_path=str(gguf),
-                n_ctx=n_ctx,
-                n_gpu_layers=n_gpu_layers,
-                n_threads=n_threads,
-                n_batch=n_batch,
-                chat_format=chat_format,
-                verbose=verbose,
-            )
             self.model_name = os.getenv("PLUME_LOCAL_LLM_MODEL_NAME") or gguf.name
+            if self.local_llm_isolated:
+                self.local_llm_worker_client = LocalLLMWorkerClient()
+                logger.info("[llm] local GGUF isolation enabled for model=%s", self.model_name)
+            else:
+                chat_format = os.getenv("PLUME_LOCAL_LLM_CHAT_FORMAT", "chatml")
+                verbose = os.getenv("PLUME_LOCAL_LLM_VERBOSE", "false").lower() in {"1", "true", "yes", "on"}
+                try:
+                    from llama_cpp import Llama
+                except ImportError as exc:
+                    raise ValueError("llama-cpp-python is required for local-gguf provider.") from exc
+                logger.warning("[llm] UNSAFE in-process llama-cpp mode enabled; native crashes can kill API")
+                logger.info("[llm] loading local GGUF model: %s", gguf)
+                self.local_llm = Llama(
+                    model_path=str(gguf),
+                    n_ctx=n_ctx,
+                    n_gpu_layers=n_gpu_layers,
+                    n_threads=n_threads,
+                    n_batch=n_batch,
+                    chat_format=chat_format,
+                    verbose=verbose,
+                )
             self.client = None
             logger.info("[llm] local GGUF loaded: provider=local-gguf model=%s", self.model_name)
         else:
@@ -455,6 +464,22 @@ class LLMService:
         temperature: float | None = None,
     ) -> str:
         if self.local_llm is None:
+            if self.local_llm_isolated:
+                if self.local_llm_worker_client is None:
+                    raise RuntimeError("local LLM worker unavailable")
+                response = self.local_llm_worker_client.generate(
+                    messages=messages,
+                    max_tokens=max_tokens or self.local_max_tokens,
+                    temperature=temperature or self.local_temperature,
+                    top_p=self.local_top_p,
+                )
+                if not response.get("ok"):
+                    err = str(response.get("error") or "local LLM worker failed")
+                    raise RuntimeError(f"local LLM worker failed: {err}")
+                content = str(response.get("content") or "").strip()
+                if not content:
+                    raise RuntimeError("local LLM worker failed: empty response")
+                return content
             raise RuntimeError("Local GGUF provider is not initialized.")
         started = time.perf_counter()
         output = self.local_llm.create_chat_completion(

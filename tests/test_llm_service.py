@@ -21,6 +21,7 @@ def test_local_gguf_initializes_without_hf_token(monkeypatch, tmp_path):
     gguf = tmp_path / "model.gguf"
     gguf.write_text("x", encoding="utf-8")
     monkeypatch.delenv("HF_TOKEN", raising=False)
+    monkeypatch.setenv("PLUME_LOCAL_LLM_ISOLATED", "false")
     monkeypatch.setenv("PLUME_LOCAL_LLM_GGUF_PATH", str(gguf))
     ctor_calls = []
     class FakeLlama:
@@ -42,6 +43,7 @@ def test_local_json_shapes(monkeypatch, tmp_path):
     gguf = tmp_path / "model.gguf"
     gguf.write_text("x", encoding="utf-8")
     monkeypatch.setenv("PLUME_LOCAL_LLM_GGUF_PATH", str(gguf))
+    monkeypatch.setenv("PLUME_LOCAL_LLM_ISOLATED", "false")
     class FakeLlama:
         def __init__(self, **kwargs):
             pass
@@ -63,6 +65,7 @@ def test_local_invalid_json_and_empty(monkeypatch, tmp_path):
     gguf = tmp_path / "model.gguf"
     gguf.write_text("x", encoding="utf-8")
     monkeypatch.setenv("PLUME_LOCAL_LLM_GGUF_PATH", str(gguf))
+    monkeypatch.setenv("PLUME_LOCAL_LLM_ISOLATED", "false")
     class FakeLlama:
         def __init__(self, **kwargs):
             pass
@@ -92,6 +95,7 @@ def test_local_answer_context_question(monkeypatch, tmp_path):
             return {"choices": [{"message": {"content": "grounded"}}]}
     _install_fake_llama_module(monkeypatch, FakeLlama)
     monkeypatch.setenv("PLUME_LOCAL_LLM_GGUF_PATH", str(gguf))
+    monkeypatch.setenv("PLUME_LOCAL_LLM_ISOLATED", "false")
     svc = LLMService(_cfg())
     out = svc.answer_context_question(system_prompt="s", context={}, question="q")
     assert out["success"] is True
@@ -103,3 +107,21 @@ def test_hf_provider_still_requires_token(monkeypatch):
     monkeypatch.delenv("HUGGINGFACEHUB_API_TOKEN", raising=False)
     with pytest.raises(ValueError, match="HF_TOKEN is not set"):
         LLMService(_cfg(provider="hf-inference"))
+
+
+def test_local_isolated_mode_does_not_require_llama_cpp(monkeypatch, tmp_path):
+    gguf = tmp_path / "model.gguf"
+    gguf.write_text("x", encoding="utf-8")
+    monkeypatch.setenv("PLUME_LLM_PROVIDER", "local-gguf")
+    monkeypatch.setenv("PLUME_LOCAL_LLM_ISOLATED", "true")
+    monkeypatch.setenv("PLUME_LOCAL_LLM_GGUF_PATH", str(gguf))
+    monkeypatch.delitem(sys.modules, "llama_cpp", raising=False)
+    svc = LLMService(_cfg())
+    assert svc.local_llm_isolated is True
+    assert svc.local_llm is None
+    monkeypatch.setattr(
+        svc.local_llm_worker_client,
+        "generate",
+        lambda **_kwargs: {"ok": True, "content": "hello"},
+    )
+    assert svc._run_local_chat([{"role": "user", "content": "hi"}]) == "hello"
