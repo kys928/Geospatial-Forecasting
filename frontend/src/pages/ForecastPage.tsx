@@ -9,6 +9,19 @@ import { useSessionForecastView } from "../features/sessions/context/SessionFore
 import { useSessionForecastFrames } from "../features/sessions/hooks/useSessionForecastFrames";
 import { httpGet } from "../services/api/http";
 import { buildPlumeGridRasterOverlay } from "../features/map/utils/plumeGridRaster";
+import type { ForecastFrameRasterPayload } from "../features/sessions/types/session.types";
+
+interface ActiveDatasetScenarioResponse {
+  enabled: boolean;
+  available: boolean;
+  active_scenario_id?: string | null;
+  selected_scenario_id?: string | null;
+}
+interface DatasetPlaybackState { enabled: boolean }
+interface DatasetRasterPayload extends Omit<ForecastFrameRasterPayload, "session_id" | "frame_index"> {
+  scenario_id: string;
+  positive_count?: number;
+}
 
 export function ForecastPage() {
   const {
@@ -37,39 +50,45 @@ export function ForecastPage() {
   const hasAutoBootstrappedRef = useRef(false);
   const [mapPipelineStatus, setMapPipelineStatus] = useState("idle");
   const [datasetOverlayGeoJson, setDatasetOverlayGeoJson] = useState<GeoJsonFeatureCollection | null>(null);
+  const [datasetRaster, setDatasetRaster] = useState<DatasetRasterPayload | null>(null);
+  const [activeDataset, setActiveDataset] = useState<ActiveDatasetScenarioResponse | null>(null);
+  const [datasetPlaybackState, setDatasetPlaybackState] = useState<DatasetPlaybackState | null>(null);
   const [datasetSourceCenter, setDatasetSourceCenter] = useState<[number, number] | null>(null);
+  const getDatasetPlaybackState = () => httpGet<DatasetPlaybackState>("/forecast-context/dataset-playback/state");
+  const getActiveDatasetScenario = () => httpGet<ActiveDatasetScenarioResponse>("/forecast-context/dataset-scenarios/active");
+  const getActiveDatasetOverlay = () => httpGet<GeoJsonFeatureCollection>("/forecast-context/dataset-scenarios/active/overlay");
+  const getActiveDatasetRaster = () => httpGet<DatasetRasterPayload>("/forecast-context/dataset-scenarios/active/raster");
+  const getDatasetScenarioRaster = (scenarioId: string) => httpGet<DatasetRasterPayload>(`/forecast-context/dataset-scenarios/${scenarioId}/raster`);
+
   const refreshDatasetOverlay = async () => {
     try {
-      const context = await httpGet<Record<string, unknown>>("/forecast-context/latest?source=dataset");
-      const forecast = (context.forecast as Record<string, unknown> | undefined) ?? {};
-      const source = (context.source as Record<string, unknown> | undefined) ?? {};
-      const inputSource = typeof forecast.input_source === "string" ? forecast.input_source : "";
-      const plumeMetrics = (context.plume_metrics as Record<string, unknown> | undefined) ?? {}
-      const maxPlumeScore = typeof plumeMetrics.max_plume_score === "number" ? plumeMetrics.max_plume_score : null;
-      const lat = typeof source.latitude === "number" ? source.latitude : null;
-      const lon = typeof source.longitude === "number" ? source.longitude : null;
-      if (import.meta.env.DEV) {
-        console.debug("[forecast-map] dataset latest", { inputSource, maxPlumeScore, latitude: lat, longitude: lon });
-      }
-      if (inputSource !== "dataset_playback") {
+      const [playback, active] = await Promise.all([getDatasetPlaybackState(), getActiveDatasetScenario()]);
+      setDatasetPlaybackState(playback);
+      setActiveDataset(active);
+      const datasetActive = playback.enabled === true && active.enabled === true && Boolean(active.selected_scenario_id);
+      if (!datasetActive) {
         setDatasetOverlayGeoJson(null);
-        setDatasetSourceCenter(lat != null && lon != null ? [lon, lat] : null);
+        setDatasetRaster(null);
+        setDatasetSourceCenter(null);
         return;
       }
-      const overlay = await httpGet<GeoJsonFeatureCollection>("/forecast-context/dataset-scenarios/active/overlay");
+      const [overlay, raster] = await Promise.all([getActiveDatasetOverlay(), getActiveDatasetRaster()]);
       const features = Array.isArray(overlay.features) ? overlay.features : [];
+      const sourceFeature = features.find((f) => f?.properties?.kind === "source");
+      const geometryCoordinates = (sourceFeature?.geometry as { coordinates?: unknown } | undefined)?.coordinates;
+      const coordinates = Array.isArray(geometryCoordinates) ? geometryCoordinates : null;
+      const lon = typeof coordinates?.[0] === "number" ? coordinates[0] : null;
+      const lat = typeof coordinates?.[1] === "number" ? coordinates[1] : null;
       const kinds = Array.from(new Set(features.map((f) => (typeof f?.properties?.kind === "string" ? f.properties.kind : "unknown"))));
       if (import.meta.env.DEV) {
-        console.debug("[forecast-map] dataset overlay fetched", {
-          featureCount: features.length,
-          metadata: (overlay as unknown as { metadata?: unknown }).metadata ?? null,
-          kinds,
-        });
+        console.debug("[forecast-map] dataset overlay+raster fetched", { featureCount: features.length, kinds, rasterMax: raster.max, positiveCount: raster.positive_count ?? null });
       }
       setDatasetOverlayGeoJson(overlay);
+      setDatasetRaster(raster);
       setDatasetSourceCenter(lat != null && lon != null ? [lon, lat] : null);
     } catch {
       setDatasetOverlayGeoJson(null);
+      setDatasetRaster(null);
     }
   };
 
@@ -114,7 +133,8 @@ export function ForecastPage() {
   }, []);
 
   useEffect(() => {
-    if (inFlightRef.current || hasAutoBootstrappedRef.current) {
+    const datasetActive = datasetPlaybackState?.enabled === true && activeDataset?.enabled === true && Boolean(activeDataset?.selected_scenario_id);
+    if (datasetActive || inFlightRef.current || hasAutoBootstrappedRef.current) {
       return;
     }
     inFlightRef.current = true;
@@ -144,7 +164,7 @@ export function ForecastPage() {
     }).finally(() => {
       inFlightRef.current = false;
     });
-  }, [activeSessionId, latestForecastBundle, refreshFrames, refreshFramesForSession, setActiveSessionId, setLatestForecastBundle]);
+  }, [activeSessionId, latestForecastBundle, refreshFrames, refreshFramesForSession, setActiveSessionId, setLatestForecastBundle, datasetPlaybackState, activeDataset]);
 
   useEffect(() => {
     if (!selectedFrameGeoJson) return;
@@ -164,11 +184,13 @@ export function ForecastPage() {
   const hasUsableSelectedFrame = hasMultiFrameSession && selectedFrameFeatures > 0;
   const hasUsableSessionBundle = sessionBundleFeatures > 0;
   const hasDatasetOverlay = Boolean(datasetOverlayGeoJson?.features?.length);
+  const datasetActive = datasetPlaybackState?.enabled === true && activeDataset?.enabled === true && Boolean(activeDataset?.selected_scenario_id);
   const sourceMode: "dataset" | "session-frame" | "session-bundle" | "none" =
-    hasUsableSelectedFrame ? "session-frame" : hasUsableSessionBundle ? "session-bundle" : hasDatasetOverlay ? "dataset" : "none";
+    datasetActive && hasDatasetOverlay ? "dataset" : hasUsableSelectedFrame ? "session-frame" : hasUsableSessionBundle ? "session-bundle" : "none";
+  const datasetRasterHasPlume = (datasetRaster?.max ?? 0) > 0 && (datasetRaster?.positive_count ?? 0) > 0;
   const rasterOverlay = useMemo(
-    () => (sourceMode === "session-frame" ? buildPlumeGridRasterOverlay(selectedFrameRaster) : null),
-    [sourceMode, selectedFrameRaster]
+    () => (sourceMode === "dataset" ? (datasetRasterHasPlume ? buildPlumeGridRasterOverlay(datasetRaster as unknown as ForecastFrameRasterPayload) : null) : sourceMode === "session-frame" ? buildPlumeGridRasterOverlay(selectedFrameRaster) : null),
+    [sourceMode, selectedFrameRaster, datasetRaster, datasetRasterHasPlume]
   );
 
   useEffect(() => {
@@ -201,7 +223,7 @@ export function ForecastPage() {
     : "dataset";
   const sessionSourceIdentity = `${activeSessionId ?? "none"}:${framesMetadata?.forecast_id ?? "none"}`;
   const forecastFitKey = `${sourceMode}:${sourceMode === "dataset" ? datasetOverlayIdentity : sessionSourceIdentity}`;
-  const timelineDisabled = !hasMultiFrameSession;
+  const timelineDisabled = sourceMode === "dataset" || !hasMultiFrameSession;
   const datasetKinds = countGeojsonKinds(datasetOverlayGeoJson as unknown as Record<string, unknown> | null).kinds;
   const selectedFrameKinds = countGeojsonKinds(selectedFrameGeoJson as unknown as Record<string, unknown> | null).kinds;
   const mapKinds = countGeojsonKinds(mapGeojson as unknown as Record<string, unknown> | null).kinds;
@@ -246,8 +268,17 @@ export function ForecastPage() {
   }, [framesMetadata?.metadata, hasUsableSelectedFrame, selectedFrameIndex, selectedFrameSummary]);
 
   if (import.meta.env.DEV) {
-    console.debug("[forecast-map] render source", {
+    console.debug("[forecast-map] source ownership", {
       sourceMode,
+      datasetPlaybackEnabled: datasetPlaybackState?.enabled ?? false,
+      datasetAvailable: activeDataset?.available ?? false,
+      selectedDatasetScenarioId: activeDataset?.selected_scenario_id ?? null,
+      activeDatasetScenarioId: activeDataset?.active_scenario_id ?? null,
+      datasetRasterMax: datasetRaster?.max ?? null,
+      datasetRasterPositiveCount: datasetRaster?.positive_count ?? null,
+      datasetOverlayFeatures: datasetOverlayGeoJson?.features?.length ?? 0,
+      sessionFrameIgnoredBecauseDatasetActive: datasetActive && Boolean(selectedFrameGeoJson),
+      rasterOverlayReady: Boolean(rasterOverlay),
       selectedFrameIndex,
       frameCount: framesMetadata?.frame_count ?? 0,
       selectedFrameFeatures,
@@ -257,7 +288,9 @@ export function ForecastPage() {
       datasetKinds,
       mapKinds,
       autoFitKey: forecastFitKey,
-      datasetSourceCenter
+      datasetSourceCenter,
+      hasSessionFrame: Boolean((selectedFrameGeoJson as { features?: unknown[] } | null)?.features?.length),
+      hasSessionRaster: Boolean(selectedFrameRaster)
     });
   }
 
@@ -274,9 +307,9 @@ export function ForecastPage() {
           rasterOverlay={rasterOverlay}
         />
         <ForecastFrameTimeline
-          frameCount={framesMetadata?.frame_count ?? 0}
+          frameCount={sourceMode === "dataset" ? 1 : (framesMetadata?.frame_count ?? 0)}
           frameIndices={framesMetadata?.frame_indices ?? []}
-          selectedFrameIndex={selectedFrameIndex}
+          selectedFrameIndex={sourceMode === "dataset" ? 0 : selectedFrameIndex}
           onSelectFrame={setSelectedFrameIndex}
           loading={frameLoading}
           disabled={timelineDisabled}

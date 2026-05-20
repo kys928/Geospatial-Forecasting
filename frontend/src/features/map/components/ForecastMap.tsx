@@ -313,8 +313,8 @@ function applyGeojsonToMap(
   const bounds = plumeOnly.features.length ? getFeatureCollectionBounds(plumeOnly) : null;
   const kinds = Array.from(new Set(normalized.features.map((f) => (typeof f.properties?.kind === "string" ? f.properties.kind : "unknown"))));
   if (import.meta.env.DEV) {
-    console.debug("[forecast-map] raster visible", {
-      hasRaster: Boolean(rasterOverlay),
+    console.debug("[forecast-map] raster layer state", {
+      hasRasterOverlay: Boolean(rasterOverlay),
       rasterLayerVisible,
       polygonLayersHidden: Boolean(rasterOverlay)
     });

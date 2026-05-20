@@ -26,6 +26,13 @@ def register_forecast_context_routes(app: FastAPI, *, forecast_context_service, 
         except KeyError as exc:
             raise HTTPException(status_code=404, detail="Dataset scenario overlay unavailable") from exc
 
+    @app.get('/forecast-context/dataset-scenarios/active/raster')
+    def get_active_dataset_scenario_raster():
+        try:
+            return dataset_scenario_service.raster_active()
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="Dataset scenario raster unavailable") from exc
+
     @app.get('/forecast-context/dataset-scenarios/{scenario_id}')
     def get_dataset_scenario(scenario_id: str):
         try:
@@ -48,6 +55,13 @@ def register_forecast_context_routes(app: FastAPI, *, forecast_context_service, 
             return dataset_scenario_service.overlay_geojson(scenario_id)
         except KeyError as exc:
             raise HTTPException(status_code=404, detail="Dataset scenario overlay unavailable") from exc
+
+    @app.get('/forecast-context/dataset-scenarios/{scenario_id}/raster')
+    def get_dataset_scenario_raster(scenario_id: str):
+        try:
+            return dataset_scenario_service.raster_for_scenario(scenario_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="Dataset scenario raster unavailable") from exc
 
     @app.get('/forecast-context/dataset-playback/state')
     def get_dataset_playback_state():

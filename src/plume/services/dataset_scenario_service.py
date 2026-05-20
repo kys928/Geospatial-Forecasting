@@ -370,6 +370,22 @@ class DatasetScenarioService:
         if not isinstance(scenario_id, str):
             raise KeyError("no active scenario")
         return self.overlay_geojson(scenario_id)
+
+    def raster_for_scenario(self, scenario_key: str) -> dict[str, Any]:
+        payload = self.get_scenario(scenario_key)
+        if scenario_key == "dataset_normal":
+            plume = np.zeros((64, 64), dtype=float)
+        else:
+            plume = self._load_plume_channel(payload)
+        return self._build_raster_payload(payload, plume, scenario_key)
+
+    def raster_active(self) -> dict[str, Any]:
+        self.resolve_current_playback_state()
+        active = self.get_active_payload()
+        scenario_id = active.get("selected_scenario_id")
+        if not isinstance(scenario_id, str):
+            raise KeyError("no active scenario")
+        return self.raster_for_scenario(scenario_id)
     def _scenario_preview(self, key: str, value: dict[str, Any]) -> dict[str, Any]:
         p = value["payload"]
         labels={"dataset_normal":"Normal","dataset_low_plume":"Low plume","dataset_medium_plume":"Medium plume","dataset_large_plume":"Large plume"}
@@ -435,6 +451,46 @@ class DatasetScenarioService:
         raw = payload.get("raw", {})
         plume_feature_count = len([f for f in feats if f.get("geometry", {}).get("type") == "Polygon"])
         return {"type":"FeatureCollection","features":feats,"metadata":{"source":"dataset_playback","feature_count":len(feats),"plume_polygon_count":plume_feature_count,"source_latitude":lat0,"source_longitude":lon0,"model_source":"dataset_input_inference","output_space":"ridge_prediction","prediction_shape":raw.get("prediction_shape"),"input_shape":raw.get("input_shape"),"active_window_id":raw.get("window_row",{}).get("window_id"),"active_scenario_id":payload.get("forecast",{}).get("scenario_id"),"georeferencing":"approximate_source_centered_grid"}}
+
+    def _build_raster_payload(self, payload: dict[str, Any], plume: np.ndarray, scenario_key: str) -> dict[str, Any]:
+        span_km = float(os.getenv("PLUME_DATASET_OVERLAY_SPAN_KM", "20"))
+        src = payload.get("source", {})
+        lat0 = float(src.get("latitude", 0.0))
+        lon0 = float(src.get("longitude", 0.0))
+        rows, cols = int(plume.shape[-2]), int(plume.shape[-1])
+        lat_step = (span_km / max(rows, 1)) / 111.0
+        lon_step = (span_km / max(cols, 1)) / max(111.0 * max(math.cos(math.radians(lat0)), 1e-6), 1e-6)
+        min_lat = lat0 - (rows / 2.0) * lat_step
+        max_lat = lat0 + (rows / 2.0) * lat_step
+        min_lon = lon0 - (cols / 2.0) * lon_step
+        max_lon = lon0 + (cols / 2.0) * lon_step
+        plume_metrics = payload.get("plume_metrics", {})
+        threshold = plume_metrics.get("threshold_used")
+        if not isinstance(threshold, (int, float)) or not math.isfinite(float(threshold)):
+            threshold = plume_metrics.get("detection_threshold")
+        threshold_value = float(threshold) if isinstance(threshold, (int, float)) and math.isfinite(float(threshold)) else None
+        raw = payload.get("raw", {})
+        rounded_grid = np.round(plume.astype(float), 6).tolist()
+        return {
+            "scenario_id": scenario_key,
+            "forecast_id": payload.get("forecast", {}).get("forecast_id"),
+            "shape": [rows, cols],
+            "grid": rounded_grid,
+            "min": float(np.nanmin(plume)) if plume.size else 0.0,
+            "max": float(np.nanmax(plume)) if plume.size else 0.0,
+            "mean": float(np.nanmean(plume)) if plume.size else 0.0,
+            "threshold": threshold_value,
+            "positive_count": int(np.count_nonzero(plume > 0)),
+            "bounds": {"min_lon": min_lon, "min_lat": min_lat, "max_lon": max_lon, "max_lat": max_lat},
+            "georeferencing_status": "approximate_source_centered_grid",
+            "metadata": {
+                "source": "dataset_playback",
+                "model_source": "ridge_plume_baseline",
+                "selected_scenario_id": scenario_key,
+                "active_window_id": raw.get("window_row", {}).get("window_id"),
+                "output_space": "ridge_prediction",
+            },
+        }
 
 
     def _get_ridge_artifact(self) -> dict[str, Any]:
