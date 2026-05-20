@@ -1,4 +1,5 @@
 from plume.services.decision_support_service import DecisionSupportService
+import json
 
 
 class FakeRuntime:
@@ -7,9 +8,17 @@ class FakeRuntime:
 
 
 class FakeContextService:
+    def __init__(self, payload=None):
+        self.payload = payload or {
+            "forecast": {"status": "plume detected above threshold", "risk_level": "high", "input_source": "dataset_playback"},
+            "conditions": {"wind_direction_label": "NE", "wind_speed_ms": 4.234},
+            "plume_metrics": {"max_concentration": 1.2, "dominant_spread_direction": "NE"},
+            "runtime": {"source": "runtime"},
+        }
+
     def latest(self, session_id=None, source="auto"):
         assert source == "auto"
-        return type("R", (), {"payload": {"forecast": {"status": "plume detected above threshold", "risk_level": "high", "input_source": "dataset_playback"}, "conditions": {"wind_direction_label": "NE"}, "plume_metrics": {"max_concentration": 1.2}, "runtime": {"source": "runtime"}}})()
+        return type("R", (), {"payload": self.payload})()
 
 
 class FakeLlmResult:
@@ -31,14 +40,18 @@ class FakeLlmService:
         self.chat_answer = chat_answer
         self.error = error
         self.raw_text = raw_text
+        self.last_interpret_context = None
+        self.last_chat_context = None
 
     def interpret_context(self, *, system_prompt, context):
         assert "Return ONLY strict JSON" in system_prompt
         assert isinstance(context, dict)
+        self.last_interpret_context = context
         return FakeLlmResult(success=self.success, error=self.error, raw_text=self.raw_text)
 
     def answer_context_question(self, *, system_prompt, context, question):
         assert "Do not mention raw grid cell counts" in system_prompt
+        self.last_chat_context = context
         if self.chat_answer == "RAISE":
             return {"success": False, "answer": None, "error": "chat failure"}
         return {"success": True, "answer": self.chat_answer, "error": None}
@@ -49,10 +62,54 @@ class FakeExplain:
         self.llm_service = llm_service
 
 
+def test_build_compact_llm_context_is_bounded_and_smaller():
+    svc = DecisionSupportService(runtime_client=FakeRuntime(), explain_service=FakeExplain(), forecast_context_service=None)
+    original = {
+        "forecast": {
+            "forecast_id": "f-1",
+            "timestamp": "2026-05-20T00:00:00Z",
+            "status": "plume detected",
+            "risk_level": "high",
+            "input_source": "dataset_playback",
+            "scenario_id": "s-1",
+        },
+        "conditions": {"wind_speed_ms": 3.14159, "wind_direction_label": "SE", "temperature_c": 10.95},
+        "source": {"latitude": 50.9707123, "longitude": 4.4887234},
+        "plume_metrics": {"max_concentration": 6.26111, "dominant_spread_direction": "SE"},
+        "runtime": {"observations_available": False},
+        "model_inference": {"name": "gaussian", "output_space": "grid"},
+        "raw": {"model_inference": {"source": "baseline"}, "manifest_row": {"big": "x" * 4000}},
+        "overlay_summary": {"channel_arrays": [1] * 5000},
+        "raw_reference": {"window_row": {"x": "y"}},
+        "first_3_feature_properties": [{"a": 1}],
+        "limitations": [f"limitation-{i}" for i in range(10)],
+    }
+
+    compact = svc._build_compact_llm_context(original)
+    assert set(compact.keys()) == {"forecast", "model", "source", "weather", "plume", "truthfulness"}
+    compact_text = json.dumps(compact)
+    assert "raw_reference" not in compact_text
+    assert "overlay_summary" not in compact_text
+    assert "first_3_feature_properties" not in compact_text
+    assert "manifest_row" not in compact_text
+    assert "window_row" not in compact_text
+    assert len(json.dumps(compact)) < len(json.dumps(original))
+    assert compact["forecast"]["risk_level"] == "high"
+    assert compact["forecast"]["input_source"] == "dataset_playback"
+    assert compact["model"]["name"] == "gaussian"
+    assert compact["source"]["latitude"] == 50.97071
+    assert compact["source"]["longitude"] == 4.48872
+    assert compact["weather"]["wind_speed_ms"] == 3.14
+    assert compact["plume"]["max_score"] == 6.261
+    assert compact["plume"]["dominant_spread_direction"] == "SE"
+    assert len(compact["truthfulness"]["limitations"]) == 6
+
+
 def test_decision_support_latest_uses_llm_when_context_and_llm_available():
+    fake_llm = FakeLlmService(success=True)
     svc = DecisionSupportService(
         runtime_client=FakeRuntime(),
-        explain_service=FakeExplain(llm_service=FakeLlmService(success=True)),
+        explain_service=FakeExplain(llm_service=fake_llm),
         forecast_context_service=FakeContextService(),
     )
     payload = svc.latest().payload
@@ -61,6 +118,7 @@ def test_decision_support_latest_uses_llm_when_context_and_llm_available():
     assert payload["runtime_metadata"]["llm_attempted"] is True
     assert payload["runtime_metadata"]["llm_error"] is None
     assert payload["briefing"] == "LLM summary"
+    assert "raw" not in json.dumps(fake_llm.last_interpret_context)
 
 
 def test_decision_support_latest_falls_back_to_context_when_llm_fails():
@@ -78,15 +136,18 @@ def test_decision_support_latest_falls_back_to_context_when_llm_fails():
 
 
 def test_decision_support_chat_uses_llm_when_available():
+    large_payload = FakeContextService().payload | {"raw": {"model_inference": {"foo": "bar"}, "manifest_row": {"blob": "x" * 3000}}}
+    fake_llm = FakeLlmService(success=True, chat_answer="Grounded chat")
     svc = DecisionSupportService(
         runtime_client=FakeRuntime(),
-        explain_service=FakeExplain(llm_service=FakeLlmService(success=True, chat_answer="Grounded chat")),
-        forecast_context_service=FakeContextService(),
+        explain_service=FakeExplain(llm_service=fake_llm),
+        forecast_context_service=FakeContextService(payload=large_payload),
     )
     response = svc.chat("What should we do?")
     assert response["mode"] == "llm"
     assert response["answer"] == "Grounded chat"
     assert response["runtime_metadata"]["used_llm"] is True
+    assert "manifest_row" not in json.dumps(fake_llm.last_chat_context)
 
 
 def test_decision_support_chat_fallback_when_llm_chat_fails():

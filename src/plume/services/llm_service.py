@@ -216,7 +216,7 @@ class LLMService:
 
     def interpret_context(self, *, system_prompt: str, context: dict[str, Any]) -> LLMInterpretationResult:
         try:
-            user_prompt = "Forecast context:\n" + json.dumps(context, indent=2)
+            user_prompt = "Forecast context:\n" + json.dumps(context, separators=(",", ":"), ensure_ascii=False)
             if self.provider == "local-gguf":
                 raw_text = self._run_local_chat(
                     [{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}]
@@ -300,7 +300,7 @@ class LLMService:
 
     def answer_context_question(self, *, system_prompt: str, context: dict[str, Any], question: str) -> dict[str, Any]:
         try:
-            user_prompt = f"Question: {question}\n\nForecast context:\n{json.dumps(context, indent=2)}"
+            user_prompt = f"Question: {question}\n\nForecast context:\n{json.dumps(context, separators=(',', ':'), ensure_ascii=False)}"
             if self.provider == "local-gguf":
                 answer = self._run_local_chat(
                     [{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}]

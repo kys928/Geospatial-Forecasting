@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import json
 
 from plume.services.explanation_payloads import build_explanation_payload
 
@@ -28,6 +29,98 @@ class DecisionSupportService:
             "summary, risk_level, recommendation, uncertainty_note."
         )
 
+    def _truncate_string(self, value, max_len: int = 240) -> str | None:
+        if value is None:
+            return None
+        text = str(value).strip()
+        if not text:
+            return None
+        if len(text) <= max_len:
+            return text
+        return text[: max_len - 1].rstrip() + "…"
+
+    def _limit_list(self, values, max_items: int = 6) -> list:
+        if not isinstance(values, list):
+            return []
+        return values[:max_items]
+
+    def _round_float(self, value, digits: int):
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, (int, float)):
+            return round(float(value), digits)
+        return None
+
+    def _build_compact_llm_context(self, context: dict) -> dict:
+        if not isinstance(context, dict):
+            return {}
+
+        forecast = context.get("forecast", {}) if isinstance(context.get("forecast"), dict) else {}
+        conditions = context.get("conditions", {}) if isinstance(context.get("conditions"), dict) else {}
+        source = context.get("source", {}) if isinstance(context.get("source"), dict) else {}
+        plume_metrics = context.get("plume_metrics", {}) if isinstance(context.get("plume_metrics"), dict) else {}
+        runtime = context.get("runtime", {}) if isinstance(context.get("runtime"), dict) else {}
+        raw = context.get("raw", {}) if isinstance(context.get("raw"), dict) else {}
+        weather_context = context.get("weather_context", {}) if isinstance(context.get("weather_context"), dict) else {}
+        model_inference = context.get("model_inference", {}) if isinstance(context.get("model_inference"), dict) else {}
+        raw_model_inference = raw.get("model_inference", {}) if isinstance(raw.get("model_inference"), dict) else {}
+        model_meta = model_inference or raw_model_inference
+
+        compact = {
+            "forecast": {
+                "forecast_id": self._truncate_string(forecast.get("forecast_id")),
+                "timestamp": self._truncate_string(forecast.get("timestamp")),
+                "status": self._truncate_string(forecast.get("status")),
+                "risk_level": self._truncate_string(forecast.get("risk_level")),
+                "input_source": self._truncate_string(forecast.get("input_source")),
+                "scenario_id": self._truncate_string(forecast.get("scenario_id")),
+            },
+            "model": {
+                "name": self._truncate_string(model_meta.get("name") or model_meta.get("model_name")),
+                "source": self._truncate_string(model_meta.get("source") or runtime.get("model_source")),
+                "output_space": self._truncate_string(model_meta.get("output_space")),
+                "prediction_engine": self._truncate_string(model_meta.get("prediction_engine") or runtime.get("prediction_engine")),
+            },
+            "source": {
+                "latitude": self._round_float(source.get("latitude"), 5),
+                "longitude": self._round_float(source.get("longitude"), 5),
+                "pollutant": self._truncate_string(source.get("pollutant")),
+                "emission_rate": self._round_float(source.get("emission_rate"), 2),
+                "release_height_m": self._round_float(source.get("release_height_m"), 2),
+                "duration_minutes": self._round_float(source.get("duration_minutes"), 2),
+            },
+            "weather": {
+                "wind_speed_ms": self._round_float(conditions.get("wind_speed_ms"), 2),
+                "wind_direction_label": self._truncate_string(conditions.get("wind_direction_label")),
+                "wind_direction_deg": self._round_float(conditions.get("wind_direction_deg"), 1),
+                "temperature_c": self._round_float(conditions.get("temperature_c"), 1),
+                "humidity_pct": self._round_float(conditions.get("humidity_pct"), 1),
+                "surface_pressure_hpa": self._round_float(conditions.get("surface_pressure_hpa"), 1),
+                "pbl_height_m": self._round_float(conditions.get("pbl_height_m"), 1),
+                "meteorology_source": self._truncate_string(conditions.get("meteorology_source") or weather_context.get("meteorology_source")),
+                "meteorology_timestamp": self._truncate_string(conditions.get("meteorology_timestamp") or weather_context.get("meteorology_timestamp")),
+            },
+            "plume": {
+                "max_score": self._round_float(plume_metrics.get("max_concentration"), 3),
+                "mean_score": self._round_float(plume_metrics.get("mean_concentration"), 3),
+                "threshold": self._round_float(plume_metrics.get("threshold_used"), 3),
+                "plume_cell_count": plume_metrics.get("affected_cells_above_threshold"),
+                "plume_fraction": self._round_float(plume_metrics.get("plume_fraction"), 3),
+                "dominant_spread_direction": self._truncate_string(plume_metrics.get("dominant_spread_direction")),
+                "affected_area_hectares": self._round_float(plume_metrics.get("affected_area_hectares"), 3),
+                "grid_rows": plume_metrics.get("grid_rows"),
+                "grid_columns": plume_metrics.get("grid_columns"),
+            },
+            "truthfulness": {
+                "observations_available": bool(runtime.get("observations_available", False)),
+                "live_sensor_confirmed": bool(runtime.get("live_sensor_confirmed", False)),
+                "is_demo_dataset_playback": bool(forecast.get("input_source") == "dataset_playback"),
+                "georeferencing_status": self._truncate_string(runtime.get("georeferencing_status")),
+                "limitations": [self._truncate_string(item, max_len=120) for item in self._limit_list(context.get("limitations"), max_items=6) if self._truncate_string(item, max_len=120)],
+            },
+        }
+        return compact
+
     def _interpret_context_with_llm(self, context: dict) -> tuple[dict | None, bool, str | None]:
         llm_service = getattr(self.explain_service, "llm_service", None)
         if llm_service is None:
@@ -35,9 +128,16 @@ class DecisionSupportService:
             return None, False, None
 
         try:
+            try:
+                compact_context = self._build_compact_llm_context(context)
+            except Exception as compact_exc:
+                print(f"[decision-support] failed to build compact LLM context: {compact_exc}")
+                compact_context = {}
+            compact_size = len(json.dumps(compact_context, separators=(",", ":"), ensure_ascii=False))
+            print(f"[decision-support] compact LLM context size chars={compact_size} keys={list(compact_context.keys())}")
             llm_result = llm_service.interpret_context(
                 system_prompt=self._build_context_llm_prompt(context),
-                context=context,
+                context=compact_context,
             )
         except Exception as exc:
             error = str(exc).strip() or exc.__class__.__name__
@@ -150,6 +250,13 @@ class DecisionSupportService:
 
         if llm_service is not None and isinstance(context, dict):
             try:
+                try:
+                    compact_context = self._build_compact_llm_context(context)
+                except Exception as compact_exc:
+                    print(f"[decision-support] failed to build compact LLM context for chat: {compact_exc}")
+                    compact_context = {}
+                compact_size = len(json.dumps(compact_context, separators=(",", ":"), ensure_ascii=False))
+                print(f"[decision-support] compact LLM context size chars={compact_size} keys={list(compact_context.keys())}")
                 prompt = (
                     "You are an AI decision-support assistant for geospatial plume forecasts. "
                     "Answer the user's question using only the provided forecast context. "
@@ -158,7 +265,7 @@ class DecisionSupportService:
                 )
                 result = llm_service.answer_context_question(
                     system_prompt=prompt,
-                    context=context,
+                    context=compact_context,
                     question=message,
                 )
                 if result.get("success") and result.get("answer"):
