@@ -166,3 +166,69 @@ def test_decision_support_latest_no_session_stub_fallback():
     payload = svc.latest().payload
     assert payload["mode"] == "stub"
     assert payload["briefing"] == "No active session."
+
+
+def test_is_usable_forecast_context_all_unavailable_not_ready():
+    svc = DecisionSupportService(runtime_client=FakeRuntime(), explain_service=FakeExplain(), forecast_context_service=None)
+    ready, reason = svc._is_usable_forecast_context({
+        "forecast": {"status": "Unavailable", "risk_level": "unknown", "input_source": "Unavailable"},
+        "plume_metrics": {"max_concentration": None},
+        "conditions": {},
+        "source": {},
+    })
+    assert ready is False
+    assert reason == "no_usable_fields"
+
+
+def test_is_usable_forecast_context_with_dataset_playback_and_plume_metric_ready():
+    svc = DecisionSupportService(runtime_client=FakeRuntime(), explain_service=FakeExplain(), forecast_context_service=None)
+    ready, reason = svc._is_usable_forecast_context({
+        "forecast": {"input_source": "dataset_playback"},
+        "plume_metrics": {"max_concentration": 0.0},
+    })
+    assert ready is True
+    assert reason in {"forecast_input_source", "plume_metrics.max_concentration"}
+
+
+def test_is_usable_forecast_context_with_wind_or_source_ready():
+    svc = DecisionSupportService(runtime_client=FakeRuntime(), explain_service=FakeExplain(), forecast_context_service=None)
+    ready, reason = svc._is_usable_forecast_context({
+        "forecast": {"risk_level": "unknown"},
+        "conditions": {"wind_speed_ms": 3.3},
+    })
+    assert ready is True
+    assert reason == "conditions.wind_speed_ms"
+
+
+def test_decision_support_latest_returns_context_loading_when_context_not_ready():
+    svc = DecisionSupportService(
+        runtime_client=FakeRuntime(),
+        explain_service=FakeExplain(llm_service=FakeLlmService(success=True)),
+        forecast_context_service=FakeContextService(payload={
+            "forecast": {"status": "Unavailable", "risk_level": "unknown", "input_source": "Unavailable"},
+            "plume_metrics": {},
+            "conditions": {},
+            "source": {},
+            "runtime": {},
+        }),
+    )
+    payload = svc.latest().payload
+    assert payload["mode"] == "context_loading"
+    assert "loading" in payload["briefing"].lower()
+
+
+def test_decision_support_chat_returns_loading_when_context_not_ready():
+    svc = DecisionSupportService(
+        runtime_client=FakeRuntime(),
+        explain_service=FakeExplain(llm_service=FakeLlmService(success=True)),
+        forecast_context_service=FakeContextService(payload={
+            "forecast": {"status": "Unavailable", "risk_level": "unknown", "input_source": "Unavailable"},
+            "plume_metrics": {},
+            "conditions": {},
+            "source": {},
+            "runtime": {},
+        }),
+    )
+    response = svc.chat("Any update?")
+    assert response["mode"] == "context_loading"
+    assert "loading" in response["answer"].lower()

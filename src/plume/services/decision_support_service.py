@@ -121,6 +121,42 @@ class DecisionSupportService:
         }
         return compact
 
+
+
+    def _is_usable_forecast_context(self, context: dict | None) -> tuple[bool, str]:
+        if not isinstance(context, dict):
+            return False, "missing_context"
+        forecast = context.get("forecast", {}) if isinstance(context.get("forecast"), dict) else {}
+        plume_metrics = context.get("plume_metrics", {}) if isinstance(context.get("plume_metrics"), dict) else {}
+        conditions = context.get("conditions", {}) if isinstance(context.get("conditions"), dict) else {}
+        source = context.get("source", {}) if isinstance(context.get("source"), dict) else {}
+
+        def _usable_text(value, blocked: set[str]) -> bool:
+            text = str(value or "").strip().lower()
+            return bool(text) and text not in blocked
+
+        if _usable_text(forecast.get("status"), {"unavailable", "forecast unavailable"}):
+            return True, "forecast_status"
+        if _usable_text(forecast.get("risk_level"), {"unknown", "unavailable"}):
+            return True, "forecast_risk_level"
+        if _usable_text(forecast.get("input_source"), {"unavailable"}):
+            return True, "forecast_input_source"
+
+        for metric_key in ("max_plume_score", "max_concentration"):
+            metric = plume_metrics.get(metric_key)
+            if isinstance(metric, (int, float)) and not isinstance(metric, bool):
+                return True, f"plume_metrics.{metric_key}"
+
+        wind_speed = conditions.get("wind_speed_ms")
+        if isinstance(wind_speed, (int, float)) and not isinstance(wind_speed, bool):
+            return True, "conditions.wind_speed_ms"
+        latitude = source.get("latitude")
+        longitude = source.get("longitude")
+        if isinstance(latitude, (int, float)) and isinstance(longitude, (int, float)) and not isinstance(latitude, bool) and not isinstance(longitude, bool):
+            return True, "source.coordinates"
+
+        return False, "no_usable_fields"
+
     def _interpret_context_with_llm(self, context: dict) -> tuple[dict | None, bool, str | None]:
         llm_service = getattr(self.explain_service, "llm_service", None)
         if llm_service is None:
@@ -167,6 +203,24 @@ class DecisionSupportService:
     def latest(self, session_id: str | None = None) -> DecisionSupportResponse:
         if self.forecast_context_service is not None:
             context = self.forecast_context_service.latest(session_id=session_id, source="auto").payload
+            context_ready, readiness_reason = self._is_usable_forecast_context(context if isinstance(context, dict) else None)
+            if not context_ready:
+                return DecisionSupportResponse(payload={
+                    "mode": "context_loading",
+                    "briefing": "Forecast context is still loading.",
+                    "situation_summary": "Forecast context is still loading.",
+                    "risk_level": "unknown",
+                    "recommended_action": "Please wait a moment and try again.",
+                    "uncertainty_limitations": "Grounded only in current forecast context.",
+                    "forecast_evidence": context,
+                    "system_honesty": "Context loading",
+                    "follow_up_questions": [],
+                    "used_context_fields": ["forecast_context.latest"],
+                    "limitations": ["Context not ready"],
+                    "live_inputs": context.get("runtime", {}) if isinstance(context, dict) else {},
+                    "runtime_metadata": {"context_session_id": session_id, "used_llm": False, "context_ready": False, "readiness_reason": readiness_reason},
+                })
+
             forecast = context.get("forecast", {}) if isinstance(context, dict) else {}
             plume_metrics = context.get("plume_metrics", {}) if isinstance(context, dict) else {}
             conditions = context.get("conditions", {}) if isinstance(context, dict) else {}
@@ -245,6 +299,16 @@ class DecisionSupportService:
 
     def chat(self, message: str, session_id: str | None = None) -> dict[str, object]:
         latest = self.latest(session_id=session_id).payload
+        if latest.get("mode") == "context_loading":
+            return {
+                "mode": "context_loading",
+                "answer": "Forecast context is still loading. Please wait a moment and try again.",
+                "used_context_fields": latest.get("used_context_fields", []),
+                "limitations": latest.get("limitations", []),
+                "context_forecast_id": None,
+                "context_session_id": latest.get("runtime_metadata", {}).get("context_session_id"),
+                "runtime_metadata": {"used_llm": False},
+            }
         context = latest.get("forecast_evidence")
         llm_service = getattr(self.explain_service, "llm_service", None)
 

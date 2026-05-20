@@ -10,16 +10,17 @@ type Props = {
   setChatQuestion: (value: string) => void;
   sendQuestion: (question: string) => Promise<void>;
   threadRef: RefObject<HTMLDivElement>;
+  loadingMessage?: string;
 };
 
-export function DecisionChatPanel({ hasContext, llmWarning, messages, chatQuestion, setChatQuestion, sendQuestion, threadRef }: Props) {
+export function DecisionChatPanel({ hasContext, llmWarning, messages, chatQuestion, setChatQuestion, sendQuestion, threadRef, loadingMessage }: Props) {
   return <section className="panel decision-support-chat-panel polished-chat-panel">
     <header className="chat-panel-header">
       <h3>AI Decision Support</h3>
     </header>
 
     <div className="chat-thread polished-chat-thread" ref={threadRef}>
-      {!hasContext ? <p className="chat-empty-state">No forecast context is available yet.</p> : null}
+      {!hasContext ? <p className="chat-empty-state">{loadingMessage ?? "No forecast context is available yet."}</p> : null}
       {llmWarning ? <p className="chat-empty-state">{llmWarning}</p> : null}
       {messages.map((message, index) => <article key={`${message.role}-${index}`} className={`chat-message ${message.role}`}><p>{message.content}</p></article>)}
     </div>

@@ -26,6 +26,7 @@ import {
   safeText
 } from "../features/decision-support/formatters";
 import { hasMeaningfulPlume } from "../features/decision-support/plumeLogic";
+import { isUsableForecastContext } from "../features/decision-support/contextReadiness";
 import type {
   ActiveDatasetScenarioResponse,
   ChatMessage,
@@ -46,6 +47,7 @@ export function DecisionSupportPage() {
   const [, setSessionState] = useState<SessionStateSummary | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [llmWarning, setLlmWarning] = useState<string | null>(null);
+  const [isContextLoading, setIsContextLoading] = useState(true);
   const [chatQuestion, setChatQuestion] = useState("");
   const [messages, setMessages] = useState<ChatMessage[]>(() => {
     try {
@@ -84,14 +86,7 @@ export function DecisionSupportPage() {
         setActiveScenario(selectedId);
         const contextUrl = playback.enabled ? "/forecast-context/latest?source=dataset" : "/forecast-context/latest";
         void httpGet<ForecastContextResponse>(contextUrl).then(setContext).catch(() => setContext(null));
-        void httpGet<DecisionSupportLatest>("/decision-support/latest")
-          .then((latest) => {
-            setData(latest);
-            setLlmWarning(null);
-          })
-          .catch(() => {
-            setLlmWarning("LLM unavailable; using forecast context.");
-          });
+        setIsContextLoading(true);
       })
       .catch(() => setDatasetScenarios([]));
   }, []);
@@ -133,6 +128,22 @@ export function DecisionSupportPage() {
   const ctxConditions = context?.conditions ?? {};
   const ctxSource = context?.source ?? {};
   const ctxPlume = context?.plume_metrics ?? {};
+
+  const contextReadiness = isUsableForecastContext(context);
+  const isContextReady = contextReadiness.ready;
+
+  useEffect(() => {
+    console.debug("[decision-support] context readiness", {
+      ready: contextReadiness.ready,
+      reason: contextReadiness.reason,
+      forecastStatus: contextReadiness.forecastStatus,
+      riskLevel: contextReadiness.riskLevel,
+      inputSource: contextReadiness.inputSource,
+      hasPlumeMetric: contextReadiness.hasPlumeMetric,
+      hasConditions: contextReadiness.hasConditions,
+      scenarioId: contextReadiness.scenarioId || activeScenario
+    });
+  }, [contextReadiness, activeScenario]);
 
   const riskLevel = formatRiskLevel(ctxForecast.risk_level ?? data?.risk_level ?? explanation.risk_level ?? values.risk_level);
   const forecastEvidence = getNestedValue(data, "forecast_evidence") as Record<string, unknown> | undefined;
@@ -250,34 +261,42 @@ export function DecisionSupportPage() {
   const scenarioLabel = datasetScenarios.find((item) => item.scenario_id === activeScenario)?.label ?? safeText(ctxForecast.scenario_id, "Scenario");
 
   useEffect(() => {
-    if (!hasContext) return;
-    const summaryText = buildOperatorBriefing(data?.briefing);
-    setMessages((prev) => {
-      if (prev.length === 0) {
-        lastBriefingKeyRef.current = briefingKey;
-        return [{ role: "assistant", content: summaryText }];
-      }
-      if (lastBriefingKeyRef.current === briefingKey) return prev;
-      lastBriefingKeyRef.current = briefingKey;
-      return [...prev, { role: "assistant", content: `Scenario changed: ${scenarioLabel}. ${summaryText}` }];
-    });
-  }, [briefingKey, hasContext, data?.briefing, scenarioLabel]);
+    if (!hasContext || !isContextReady) {
+      setIsContextLoading(true);
+      return;
+    }
+    setIsContextLoading(false);
+    if (lastBriefingKeyRef.current === briefingKey && data?.briefing) return;
+    void httpGet<DecisionSupportLatest>("/decision-support/latest")
+      .then((latest) => {
+        if (latest.mode === "context_loading") return;
+        setData(latest);
+        setLlmWarning(null);
+        const summaryText = buildOperatorBriefing(latest.briefing);
+        setMessages((prev) => {
+          if (prev.length === 0) {
+            lastBriefingKeyRef.current = briefingKey;
+            return [{ role: "assistant", content: summaryText }];
+          }
+          if (lastBriefingKeyRef.current === briefingKey) return prev;
+          lastBriefingKeyRef.current = briefingKey;
+          return [...prev, { role: "assistant", content: `Scenario changed: ${scenarioLabel}. ${summaryText}` }];
+        });
+      })
+      .catch(() => {
+        setLlmWarning("LLM unavailable; using forecast context.");
+      });
+  }, [briefingKey, hasContext, isContextReady, data?.briefing, scenarioLabel]);
 
   async function activateDatasetScenario(scenarioId: string) {
     setActiveScenario(scenarioId);
+    setIsContextLoading(true);
     try {
       await httpPost(`/forecast-context/dataset-scenarios/${scenarioId}/activate`, {});
       await httpPost("/forecast-context/dataset-playback/state", { enabled: true, active_scenario_id: scenarioId, playback_running: false });
       const refreshed = await httpGet<ForecastContextResponse>("/forecast-context/latest?source=dataset");
       setContext(refreshed);
       setDatasetModeEnabled(true);
-      try {
-        const latest = await httpGet<DecisionSupportLatest>("/decision-support/latest");
-        setData(latest);
-        setLlmWarning(null);
-      } catch {
-        setLlmWarning("LLM unavailable; using forecast context.");
-      }
     } catch {
       // ignore
     }
@@ -285,6 +304,10 @@ export function DecisionSupportPage() {
 
   async function sendQuestion(question: string) {
     if (!question.trim() || !hasContext) return;
+    if (!isContextReady) {
+      setMessages((prev) => [...prev, { role: "assistant", content: "Forecast context is still loading. Please wait a moment and try again." }]);
+      return;
+    }
     setMessages((prev) => [...prev, { role: "user", content: question }]);
     setChatQuestion("");
     try {
@@ -305,7 +328,7 @@ export function DecisionSupportPage() {
   return <AppShell title="Forecast Overview" subtitle="Forecast interpretation, current conditions, and plume result.">
     {error ? <section className="panel"><p>{error}</p></section> : null}
     <div className="decision-support-layout">
-      <DecisionChatPanel hasContext={hasContext} llmWarning={llmWarning} messages={messages} chatQuestion={chatQuestion} setChatQuestion={setChatQuestion} sendQuestion={sendQuestion} threadRef={threadRef} />
+      <DecisionChatPanel hasContext={hasContext && !isContextLoading} llmWarning={llmWarning} messages={messages} chatQuestion={chatQuestion} setChatQuestion={setChatQuestion} sendQuestion={sendQuestion} threadRef={threadRef} loadingMessage={isContextLoading ? "Loading forecast context..." : undefined} />
       <ConditionsPanel datasetScenarios={datasetScenarios} activeScenario={activeScenario} activateDatasetScenario={activateDatasetScenario} currentConditionsRows={currentConditionsRows} currentForecastRows={currentForecastRows} plumePresent={plumePresent} plumeDetailRows={plumeDetailRows} detailsRows={detailsRows} filterAvailableRows={filterAvailableRows} rawContext={rawContext} />
     </div>
   </AppShell>;
