@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { AppShell } from "../app/AppShell";
 import { ForecastMap } from "../features/map/components/ForecastMap";
 import { ForecastFrameTimeline } from "../features/map/components/ForecastFrameTimeline";
@@ -166,7 +166,10 @@ export function ForecastPage() {
   const hasDatasetOverlay = Boolean(datasetOverlayGeoJson?.features?.length);
   const sourceMode: "dataset" | "session-frame" | "session-bundle" | "none" =
     hasUsableSelectedFrame ? "session-frame" : hasUsableSessionBundle ? "session-bundle" : hasDatasetOverlay ? "dataset" : "none";
-  const rasterOverlay = sourceMode === "session-frame" ? buildPlumeGridRasterOverlay(selectedFrameRaster) : null;
+  const rasterOverlay = useMemo(
+    () => (sourceMode === "session-frame" ? buildPlumeGridRasterOverlay(selectedFrameRaster) : null),
+    [sourceMode, selectedFrameRaster]
+  );
 
   const mapGeojson =
     sourceMode === "session-frame"
@@ -207,7 +210,7 @@ export function ForecastPage() {
       bounds: selectedFrameRaster?.bounds ?? null,
       hasImage: Boolean(rasterOverlay?.imageDataUrl)
     });
-  }, [selectedFrameFeatures, selectedFrameIndex, selectedFrameKinds]);
+  }, [selectedFrameFeatures, selectedFrameIndex, selectedFrameKinds, selectedFrameRaster, rasterOverlay]);
 
   useEffect(() => {
     if (!import.meta.env.DEV || !hasUsableSelectedFrame) return;

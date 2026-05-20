@@ -293,17 +293,31 @@ function applyGeojsonToMap(
 
   source.setData(normalized as GeoJSON.FeatureCollection);
   const radarImageSource = map.getSource(FORECAST_RADAR_IMAGE_SOURCE_ID) as any;
+  const rasterLayerVisible = Boolean(rasterOverlay && radarImageSource?.updateImage);
   if (rasterOverlay && radarImageSource?.updateImage) {
     radarImageSource.updateImage({ url: rasterOverlay.imageDataUrl, coordinates: rasterOverlay.coordinates });
     map.setLayoutProperty(PLUME_RADAR_IMAGE_LAYER_ID, "visibility", "visible");
   } else if (map.getLayer(PLUME_RADAR_IMAGE_LAYER_ID)) {
     map.setLayoutProperty(PLUME_RADAR_IMAGE_LAYER_ID, "visibility", "none");
   }
+  map.setPaintProperty(PLUME_LOW_HIT_LAYER_ID, "fill-opacity", rasterLayerVisible ? 0 : 0);
+  map.setPaintProperty(PLUME_MEDIUM_HIT_LAYER_ID, "fill-opacity", rasterLayerVisible ? 0 : 0);
+  map.setPaintProperty(PLUME_HIGH_HIT_LAYER_ID, "fill-opacity", rasterLayerVisible ? 0 : 0);
+  map.setPaintProperty(PLUME_FALLBACK_FILL_LAYER_ID, "fill-opacity", 0);
+  map.setPaintProperty(PLUME_LOW_OUTLINE_LAYER_ID, "line-opacity", rasterLayerVisible ? 0 : 0.03);
+  map.setPaintProperty(PLUME_MEDIUM_OUTLINE_LAYER_ID, "line-opacity", rasterLayerVisible ? 0 : 0.03);
+  map.setPaintProperty(PLUME_HIGH_OUTLINE_LAYER_ID, "line-opacity", rasterLayerVisible ? 0 : 0.05);
+  map.setPaintProperty(DOMAIN_OUTLINE_LAYER_ID, "line-opacity", rasterLayerVisible ? 0 : 0.18);
 
   const plumeOnly: GeoJsonFeatureCollection = { ...normalized, features: normalized.features.filter((f) => ["plume_band", "plume_band_low", "plume_band_medium", "plume_band_high", "plume_point", "plume_cell", "source"].includes(typeof f.properties?.kind === "string" ? f.properties.kind : "")) };
   const bounds = plumeOnly.features.length ? getFeatureCollectionBounds(plumeOnly) : null;
   const kinds = Array.from(new Set(normalized.features.map((f) => (typeof f.properties?.kind === "string" ? f.properties.kind : "unknown"))));
   if (import.meta.env.DEV) {
+    console.debug("[forecast-map] raster visible", {
+      hasRaster: Boolean(rasterOverlay),
+      rasterLayerVisible,
+      polygonLayersHidden: Boolean(rasterOverlay)
+    });
     console.debug("[forecast-map] raster plume", {
       hasRaster: Boolean(rasterOverlay),
       bounds: rasterOverlay?.coordinates ?? null,
