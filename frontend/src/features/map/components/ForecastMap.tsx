@@ -24,7 +24,7 @@ interface ForecastMapProps {
   center?: [number, number] | null;
   autoFitKey?: string | null;
   rasterOverlay?: PlumeRasterOverlay | null;
-  sourceMode?: "dataset" | "session-frame" | "session-bundle" | "none";
+  sourceMode?: "dataset-snapshot" | "session-frame" | "session-bundle" | "none";
   frameIndex?: number;
 }
 
