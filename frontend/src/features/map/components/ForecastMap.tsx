@@ -35,6 +35,7 @@ const PLUME_MEDIUM_HIT_LAYER_ID = "forecast-plume-medium-hit";
 const PLUME_HIGH_HIT_LAYER_ID = "forecast-plume-high-hit";
 
 const PLUME_HEATMAP_LAYER_ID = "forecast-plume-heatmap";
+const PLUME_FALLBACK_FILL_LAYER_ID = "forecast-plume-fallback-fill";
 
 const PLUME_MEDIUM_OUTLINE_LAYER_ID = "forecast-plume-medium-outline";
 const PLUME_HIGH_OUTLINE_LAYER_ID = "forecast-plume-high-outline";
@@ -66,6 +67,9 @@ function getFallbackTitle(kind: string | null): string {
     case "plume_cell":
       return "Plume cell";
     case "plume_band":
+    case "plume_band_low":
+    case "plume_band_medium":
+    case "plume_band_high":
       return "Plume band";
     case "forecast_extent":
       return "Forecast domain";
@@ -250,7 +254,7 @@ function applyGeojsonToMap(
 
   source.setData(normalized as GeoJSON.FeatureCollection);
 
-  const plumeOnly: GeoJsonFeatureCollection = { ...normalized, features: normalized.features.filter((f) => ["plume_band", "plume_point"].includes(typeof f.properties?.kind === "string" ? f.properties.kind : "")) };
+  const plumeOnly: GeoJsonFeatureCollection = { ...normalized, features: normalized.features.filter((f) => ["plume_band", "plume_band_low", "plume_band_medium", "plume_band_high", "plume_point", "plume_cell", "source"].includes(typeof f.properties?.kind === "string" ? f.properties.kind : "")) };
   const bounds = plumeOnly.features.length ? getFeatureCollectionBounds(plumeOnly) : null;
   if (shouldFitBounds && bounds && !bounds.isEmpty()) {
     map.fitBounds(bounds, {
@@ -397,10 +401,18 @@ export function ForecastMap({
         type: "fill",
         source: FORECAST_SOURCE_ID,
         paint: {
-          "fill-color": "#000000",
-          "fill-opacity": 0
+          "fill-color": "#facc15",
+          "fill-opacity": 0.32
         },
-        filter: ["all", ["==", ["get", "kind"], "plume_band"], ["==", ["get", "band"], "low"]]
+        filter: [
+          "all",
+          ["==", "$type", "Polygon"],
+          [
+            "any",
+            ["==", ["get", "kind"], "plume_band_low"],
+            ["all", ["==", ["get", "kind"], "plume_band"], ["==", ["get", "band"], "low"]]
+          ]
+        ]
       });
 
       map.addLayer({
@@ -408,10 +420,18 @@ export function ForecastMap({
         type: "fill",
         source: FORECAST_SOURCE_ID,
         paint: {
-          "fill-color": "#000000",
-          "fill-opacity": 0
+          "fill-color": "#f59e0b",
+          "fill-opacity": 0.38
         },
-        filter: ["all", ["==", ["get", "kind"], "plume_band"], ["==", ["get", "band"], "medium"]]
+        filter: [
+          "all",
+          ["==", "$type", "Polygon"],
+          [
+            "any",
+            ["==", ["get", "kind"], "plume_band_medium"],
+            ["all", ["==", ["get", "kind"], "plume_band"], ["==", ["get", "band"], "medium"]]
+          ]
+        ]
       });
 
       map.addLayer({
@@ -419,10 +439,18 @@ export function ForecastMap({
         type: "fill",
         source: FORECAST_SOURCE_ID,
         paint: {
-          "fill-color": "#000000",
-          "fill-opacity": 0
+          "fill-color": "#ef4444",
+          "fill-opacity": 0.44
         },
-        filter: ["all", ["==", ["get", "kind"], "plume_band"], ["==", ["get", "band"], "high"]]
+        filter: [
+          "all",
+          ["==", "$type", "Polygon"],
+          [
+            "any",
+            ["==", ["get", "kind"], "plume_band_high"],
+            ["all", ["==", ["get", "kind"], "plume_band"], ["==", ["get", "band"], "high"]]
+          ]
+        ]
       });
 
       map.addLayer({
@@ -446,6 +474,25 @@ export function ForecastMap({
           ]
         },
         filter: ["all", ["==", "$type", "Point"], ["==", ["get", "kind"], "plume_point"]]
+      });
+      map.addLayer({
+        id: PLUME_FALLBACK_FILL_LAYER_ID,
+        type: "fill",
+        source: FORECAST_SOURCE_ID,
+        paint: {
+          "fill-color": "rgba(245,158,11,0.85)",
+          "fill-opacity": [
+            "case",
+            [
+              "in",
+              ["get", "kind"],
+              ["literal", ["plume_band", "plume_band_low", "plume_band_medium", "plume_band_high", "plume_cell", "source", "plume_point", "forecast_extent"]]
+            ],
+            0,
+            0.26
+          ]
+        },
+        filter: ["all", ["==", "$type", "Polygon"]]
       });
 
       map.addLayer({

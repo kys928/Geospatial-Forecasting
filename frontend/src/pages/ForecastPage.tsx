@@ -35,6 +35,39 @@ export function ForecastPage() {
   const [mapPipelineStatus, setMapPipelineStatus] = useState("idle");
   const [datasetOverlayGeoJson, setDatasetOverlayGeoJson] = useState<GeoJsonFeatureCollection | null>(null);
   const [datasetSourceCenter, setDatasetSourceCenter] = useState<[number, number] | null>(null);
+  const refreshDatasetOverlay = async () => {
+    try {
+      const context = await httpGet<Record<string, unknown>>("/forecast-context/latest?source=dataset");
+      const forecast = (context.forecast as Record<string, unknown> | undefined) ?? {};
+      const source = (context.source as Record<string, unknown> | undefined) ?? {};
+      const inputSource = typeof forecast.input_source === "string" ? forecast.input_source : "";
+      const maxPlumeScore = typeof forecast.max_plume_score === "number" ? forecast.max_plume_score : null;
+      const lat = typeof source.latitude === "number" ? source.latitude : null;
+      const lon = typeof source.longitude === "number" ? source.longitude : null;
+      if (import.meta.env.DEV) {
+        console.debug("[forecast-map] dataset latest", { inputSource, maxPlumeScore, latitude: lat, longitude: lon });
+      }
+      if (inputSource !== "dataset_playback") {
+        setDatasetOverlayGeoJson(null);
+        setDatasetSourceCenter(lat != null && lon != null ? [lon, lat] : null);
+        return;
+      }
+      const overlay = await httpGet<GeoJsonFeatureCollection>("/forecast-context/dataset-scenarios/active/overlay");
+      const features = Array.isArray(overlay.features) ? overlay.features : [];
+      const kinds = Array.from(new Set(features.map((f) => (typeof f?.properties?.kind === "string" ? f.properties.kind : "unknown"))));
+      if (import.meta.env.DEV) {
+        console.debug("[forecast-map] dataset overlay fetched", {
+          featureCount: features.length,
+          metadata: (overlay as unknown as { metadata?: unknown }).metadata ?? null,
+          kinds,
+        });
+      }
+      setDatasetOverlayGeoJson(overlay);
+      setDatasetSourceCenter(lat != null && lon != null ? [lon, lat] : null);
+    } catch {
+      setDatasetOverlayGeoJson(null);
+    }
+  };
 
   const inspectGeoJson = (geojson: Record<string, unknown> | null, mode: "dataset" | "session") => {
     const baseCounts = countGeojsonKinds(geojson);
@@ -56,31 +89,24 @@ export function ForecastPage() {
   };
 
   useEffect(() => {
-    void (async () => {
-      try {
-        const [activeScenario, context] = await Promise.all([
-          httpGet<{ enabled: boolean; available: boolean; active_scenario_id?: string | null; selected_scenario_id?: string | null }>("/forecast-context/dataset-scenarios/active"),
-          httpGet<Record<string, unknown>>("/forecast-context/latest?source=dataset"),
-        ]);
-        const scenarioId = activeScenario.active_scenario_id ?? activeScenario.selected_scenario_id ?? null;
-        const inputSource = typeof (context.forecast as Record<string, unknown> | undefined)?.input_source === "string"
-          ? String((context.forecast as Record<string, unknown>).input_source)
-          : "";
-        const shouldUseDataset = Boolean(activeScenario.enabled && scenarioId && inputSource === "dataset_playback");
-        if (!shouldUseDataset) {
-          setDatasetOverlayGeoJson(null);
-          return;
-        }
-        const overlay = await httpGet<GeoJsonFeatureCollection>("/forecast-context/dataset-scenarios/active/overlay");
-        setDatasetOverlayGeoJson(overlay);
-        const src = (context.source as Record<string, unknown> | undefined) ?? {};
-        const lat = typeof src.latitude === "number" ? src.latitude : null;
-        const lon = typeof src.longitude === "number" ? src.longitude : null;
-        setDatasetSourceCenter(lat != null && lon != null ? [lon, lat] : null);
-      } catch {
-        setDatasetOverlayGeoJson(null);
+    void refreshDatasetOverlay();
+  }, []);
+
+  useEffect(() => {
+    const refreshIfVisible = () => {
+      if (document.visibilityState === "visible") {
+        void refreshDatasetOverlay();
       }
-    })();
+    };
+    const handleFocus = () => {
+      void refreshDatasetOverlay();
+    };
+    window.addEventListener("focus", handleFocus);
+    document.addEventListener("visibilitychange", refreshIfVisible);
+    return () => {
+      window.removeEventListener("focus", handleFocus);
+      document.removeEventListener("visibilitychange", refreshIfVisible);
+    };
   }, []);
 
   useEffect(() => {
@@ -105,6 +131,7 @@ export function ForecastPage() {
       setLatestForecastBundle(runResult.sessionId, bundle);
       setMapPipelineStatus("loading_frames");
       await refreshFramesForSession(runResult.sessionId);
+      await refreshDatasetOverlay();
       setMapPipelineStatus("ready");
       hasAutoBootstrappedRef.current = true;
     };
