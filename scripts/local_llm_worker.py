@@ -74,28 +74,52 @@ def main() -> int:
         try:
             payload = json.loads(line)
             request_id = str(payload.get("request_id") or "unknown")
-            messages = payload.get("messages") or []
-            max_tokens = int(payload.get("max_tokens") or os.getenv("PLUME_LOCAL_LLM_MAX_TOKENS", "300"))
-            temperature = float(payload.get("temperature") or os.getenv("PLUME_LOCAL_LLM_TEMPERATURE", "0.1"))
-            top_p = float(payload.get("top_p") or os.getenv("PLUME_LOCAL_LLM_TOP_P", "0.9"))
-            content = runtime.chat(messages=messages, max_tokens=max_tokens, temperature=temperature, top_p=top_p)
-            elapsed = time.perf_counter() - started
-            if not content:
-                response: dict[str, Any] = {
-                    "request_id": request_id,
-                    "ok": False,
-                    "error": "local GGUF produced empty output",
-                    "model": runtime.model_name,
-                    "elapsed_seconds": round(elapsed, 4),
-                }
+
+            if payload.get("type") == "warmup":
+                try:
+                    runtime.ensure_loaded()
+                    elapsed = time.perf_counter() - started
+                    response = {
+                        "request_id": request_id,
+                        "ok": True,
+                        "type": "warmup",
+                        "model": runtime.model_name,
+                        "elapsed_seconds": round(elapsed, 4),
+                    }
+                except Exception as exc:
+                    elapsed = time.perf_counter() - started
+                    print(f"[local-llm-worker] warmup failed: {exc}", file=sys.stderr, flush=True)
+                    response = {
+                        "request_id": request_id,
+                        "ok": False,
+                        "type": "warmup",
+                        "error": str(exc),
+                        "model": runtime.model_name,
+                        "elapsed_seconds": round(elapsed, 4),
+                    }
             else:
-                response = {
-                    "request_id": request_id,
-                    "ok": True,
-                    "content": content,
-                    "model": runtime.model_name,
-                    "elapsed_seconds": round(elapsed, 4),
-                }
+                messages = payload.get("messages") or []
+                max_tokens = int(payload.get("max_tokens") or os.getenv("PLUME_LOCAL_LLM_MAX_TOKENS", "300"))
+                temperature = float(payload.get("temperature") or os.getenv("PLUME_LOCAL_LLM_TEMPERATURE", "0.1"))
+                top_p = float(payload.get("top_p") or os.getenv("PLUME_LOCAL_LLM_TOP_P", "0.9"))
+                content = runtime.chat(messages=messages, max_tokens=max_tokens, temperature=temperature, top_p=top_p)
+                elapsed = time.perf_counter() - started
+                if not content:
+                    response: dict[str, Any] = {
+                        "request_id": request_id,
+                        "ok": False,
+                        "error": "local GGUF produced empty output",
+                        "model": runtime.model_name,
+                        "elapsed_seconds": round(elapsed, 4),
+                    }
+                else:
+                    response = {
+                        "request_id": request_id,
+                        "ok": True,
+                        "content": content,
+                        "model": runtime.model_name,
+                        "elapsed_seconds": round(elapsed, 4),
+                    }
         except Exception as exc:
             elapsed = time.perf_counter() - started
             print(f"[local-llm-worker] request failed: {exc}", file=sys.stderr, flush=True)
