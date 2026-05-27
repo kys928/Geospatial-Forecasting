@@ -243,13 +243,17 @@ export PLUME_EXPLANATION_BACKEND="llm"
 export PLUME_LLM_PROVIDER="local-gguf"
 export PLUME_LOCAL_LLM_GGUF_PATH="/workspace/llm_runtime/models/Qwen_Qwen2.5-7B-Instruct.Q4_K_M.gguf"
 export PLUME_LOCAL_LLM_N_GPU_LAYERS="-1"
-export PLUME_LOCAL_LLM_N_CTX="4096"
+# Temporary RunPod demo stability default:
+# in-process local GGUF currently answers reliably, while isolated worker warmup can hang.
+# Revisit before final release; isolated mode remains the preferred safer architecture once fixed.
+export PLUME_LOCAL_LLM_N_CTX="1024"
+export PLUME_LOCAL_LLM_N_BATCH="128"
 export PLUME_LOCAL_LLM_MAX_TOKENS="300"
 export PLUME_LOCAL_LLM_TEMPERATURE="0.1"
 export PLUME_LOCAL_LLM_TOP_P="0.9"
 export PLUME_LOCAL_LLM_CHAT_FORMAT="chatml"
 export PLUME_LOCAL_LLM_VERBOSE="false"
-export PLUME_LOCAL_LLM_ISOLATED="true"
+export PLUME_LOCAL_LLM_ISOLATED="false"
 export PLUME_LOCAL_LLM_WORKER_TIMEOUT_SECONDS="120"
 export PLUME_LOCAL_LLM_WORKER_STARTUP_TIMEOUT_SECONDS="240"
 
