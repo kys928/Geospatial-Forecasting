@@ -16,6 +16,11 @@ import numpy as np
 import yaml
 
 from plume.services.adaptation_buffer import AdaptationBuffer, AdaptationBufferConfig
+from plume.services.adaptation_promotion import (
+    AdaptationPromotionThresholds,
+    evaluate_adaptation_candidate,
+    validate_adaptation_checkpoint_for_activation,
+)
 from plume.services.adaptation_readiness import (
     AdaptationReadinessConfig,
     AdaptationReadinessService,
@@ -1042,6 +1047,75 @@ def reject_candidate(*, registry: ModelRegistry, candidate_model_id: str, actor:
     )
 
 
+def apply_adaptation_promotion_policy(
+    *,
+    registry: ModelRegistry,
+    candidate_model_id: str,
+    thresholds: AdaptationPromotionThresholds | None = None,
+) -> dict[str, object]:
+    payload = registry.load()
+    models = payload["models"]
+    candidate = next((m for m in models if m.get("model_id") == candidate_model_id), None)
+    if candidate is None:
+        raise ValueError(f"Unknown candidate model id: {candidate_model_id}")
+    active_id = payload.get("active_model_id")
+    active = next((m for m in models if isinstance(active_id, str) and m.get("model_id") == active_id), None)
+    decision = evaluate_adaptation_candidate(candidate_record=candidate, active_record=active, thresholds=thresholds)
+    decision_payload = decision.to_dict()
+    now = _utc_now_iso()
+
+    candidate["last_adaptation_promotion_decision"] = decision_payload
+    candidate["last_promotion_result"] = decision_payload
+
+    if decision.classification == "clearly_better":
+        previous_active_id = _optional_str(payload.get("active_model_id"))
+        for item in models:
+            if item.get("status") == "active":
+                item["status"] = "archived"
+        candidate["status"] = "active"
+        candidate["approval_status"] = "not_required"
+        candidate["parent_active_model_id"] = previous_active_id
+        payload["previous_active_model_id"] = previous_active_id
+        payload["active_model_id"] = candidate_model_id
+        _append_registry_event(
+            payload,
+            {
+                "timestamp": now,
+                "event_type": "adaptation_candidate_auto_activated",
+                "model_id": candidate_model_id,
+                "previous_active_model_id": previous_active_id,
+                "decision": decision_payload,
+            },
+        )
+    elif decision.classification == "uncertain":
+        candidate["status"] = "candidate"
+        candidate["approval_status"] = "pending_manual_approval"
+        _append_registry_event(
+            payload,
+            {
+                "timestamp": now,
+                "event_type": "adaptation_candidate_manual_review_required",
+                "model_id": candidate_model_id,
+                "decision": decision_payload,
+            },
+        )
+    else:
+        candidate["status"] = "rejected"
+        candidate["approval_status"] = "not_required"
+        _append_registry_event(
+            payload,
+            {
+                "timestamp": now,
+                "event_type": "adaptation_candidate_rejected",
+                "model_id": candidate_model_id,
+                "decision": decision_payload,
+            },
+        )
+
+    registry.save(payload)
+    return {"decision": decision_payload, "candidate_model_id": candidate_model_id, "active_model_id": payload.get("active_model_id")}
+
+
 def activate_approved_model(*, registry: ModelRegistry, model_id: str) -> dict[str, object]:
     payload = registry.load()
     models = payload["models"]
@@ -1050,8 +1124,13 @@ def activate_approved_model(*, registry: ModelRegistry, model_id: str) -> dict[s
         raise ValueError(f"Unknown model id: {model_id}")
     if record.get("status") != "approved":
         raise ValueError("Only approved candidate models may be activated")
-    _validate_serving_compatible_record(record, context="Approved model")
-    _validate_checkpoint_readable(Path(str(record.get("path"))), context="Approved model")
+    if _is_adaptation_candidate_record(record):
+        compatibility = validate_adaptation_checkpoint_for_activation(record)
+        if not compatibility.compatible:
+            raise ValueError("Approved adaptation model failed final compatibility check: " + ",".join(compatibility.reasons))
+    else:
+        _validate_serving_compatible_record(record, context="Approved model")
+        _validate_checkpoint_readable(Path(str(record.get("path"))), context="Approved model")
 
     previous_active_id = payload.get("active_model_id")
     for item in models:
@@ -2082,6 +2161,15 @@ def _validate_job_transition(*, current_status: str, next_status: str) -> None:
     }
     if next_status not in allowed.get(current_status, set()):
         raise ValueError(f"Invalid retraining job transition: {current_status} -> {next_status}")
+
+
+def _is_adaptation_candidate_record(record: dict[str, object]) -> bool:
+    path = record.get("path")
+    return (
+        isinstance(record.get("adaptation_run"), dict)
+        or record.get("contract_version") == "robust_convlstm_adaptation_v1"
+        or (isinstance(path, str) and Path(path).suffix.lower() == ".pt")
+    )
 
 
 def _validate_serving_compatible_record(record: dict[str, object], *, context: str) -> None:
