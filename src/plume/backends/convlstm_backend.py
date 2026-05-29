@@ -51,14 +51,14 @@ class ConvLSTMBackend(BaseBackend):
             input_mode=self.input_mode,
         )
         self.prediction_engine = str(self.backend_config.get("convlstm_prediction_engine", "convlstm")).strip().lower()
-        if self.prediction_engine not in {"convlstm", "ridge_baseline", "torch_multistep"}:
+        if self.prediction_engine not in {"convlstm", "ridge_baseline", "torch_multistep", "torch_robust_multistep"}:
             raise ValueError(f"Unsupported convlstm_prediction_engine: {self.prediction_engine}")
         self.ridge_model_path = self.backend_config.get("convlstm_ridge_model_path", "artifacts/models/ridge_plume_baseline.pkl")
         self.model = None
         self.torch_model = None
         self.ridge_artifact: dict[str, object] | None = None
         self.device = str(self.backend_config.get("convlstm_device", "cpu")).strip().lower()
-        if self.prediction_engine == "torch_multistep" and self.device == "cuda":
+        if self.prediction_engine in {"torch_multistep", "torch_robust_multistep"} and self.device == "cuda":
             torch_spec = importlib.util.find_spec("torch")
             if torch_spec is None:
                 self.device = "cpu"
@@ -67,7 +67,7 @@ class ConvLSTMBackend(BaseBackend):
 
                 if not torch.cuda.is_available():
                     self.device = "cpu"
-        if self.prediction_engine != "torch_multistep" and self.device != "cpu":
+        if self.prediction_engine not in {"torch_multistep", "torch_robust_multistep"} and self.device != "cpu":
             raise ValueError(
                 f"ConvLSTM backend currently supports only 'cpu' device for numpy inference, got: {self.device}"
             )
@@ -98,23 +98,36 @@ class ConvLSTMBackend(BaseBackend):
         return value
 
     def _initialize_model_weights(self) -> None:
-        if self.prediction_engine == "torch_multistep":
+        if self.prediction_engine in {"torch_multistep", "torch_robust_multistep"}:
             checkpoint = self.checkpoint_path
             if checkpoint is None or not str(checkpoint).strip():
-                raise ValueError("convlstm_prediction_engine=torch_multistep requires convlstm_checkpoint_path")
+                raise ValueError(
+                    "convlstm_prediction_engine=torch_multistep or torch_robust_multistep "
+                    "requires convlstm_checkpoint_path"
+                )
             if importlib.util.find_spec("torch") is None:
-                raise ModuleNotFoundError("torch is required for convlstm_prediction_engine=torch_multistep")
-            from plume.models.torch_multistep_convlstm import TorchMultiStepConvLSTMCheckpoint
-
+                raise ModuleNotFoundError(
+                    "torch is required for convlstm_prediction_engine=torch_multistep or torch_robust_multistep"
+                )
             resolved_checkpoint = Path(str(checkpoint)).expanduser()
             if not resolved_checkpoint.is_absolute():
                 resolved_checkpoint = Path.cwd() / resolved_checkpoint
             resolved_checkpoint = resolved_checkpoint.resolve()
-            self.torch_model = TorchMultiStepConvLSTMCheckpoint(
-                str(resolved_checkpoint),
-                device=self.device,
-                checkpoint_strict=self.checkpoint_strict,
-            )
+            if self.prediction_engine == "torch_robust_multistep":
+                from plume.models.torch_robust_multistep_convlstm import RobustMultiStepConvLSTMCheckpoint
+
+                self.torch_model = RobustMultiStepConvLSTMCheckpoint(
+                    str(resolved_checkpoint),
+                    device=self.device,
+                )
+            else:
+                from plume.models.torch_multistep_convlstm import TorchMultiStepConvLSTMCheckpoint
+
+                self.torch_model = TorchMultiStepConvLSTMCheckpoint(
+                    str(resolved_checkpoint),
+                    device=self.device,
+                    checkpoint_strict=self.checkpoint_strict,
+                )
             self.model_source = "checkpoint"
             stage_name = self.torch_model.metadata.get("stage_name")
             global_epoch = self.torch_model.metadata.get("global_epoch")
@@ -126,7 +139,7 @@ class ConvLSTMBackend(BaseBackend):
             self.load_metadata = {
                 **self.load_metadata,
                 "load_status": "loaded",
-                "prediction_engine": "torch_multistep",
+                "prediction_engine": self.prediction_engine,
                 "checkpoint_path": str(resolved_checkpoint),
                 "model_source": self.model_source,
                 "model_version": self.model_version,
@@ -254,7 +267,7 @@ class ConvLSTMBackend(BaseBackend):
                     "ConvLSTM backend API is active, but prediction is temporarily served by a Ridge plume baseline artifact. This is not the final ConvLSTM model."
                     if self.prediction_engine == "ridge_baseline"
                     else "ConvLSTM checkpoint inference only; gradient-based online training is not implemented."
-                    if self.prediction_engine == "torch_multistep"
+                    if self.prediction_engine in {"torch_multistep", "torch_robust_multistep"}
                     else "ConvLSTM runs inference with current state; gradient-based online training is not implemented."
                 )
             },
@@ -346,15 +359,23 @@ class ConvLSTMBackend(BaseBackend):
                 scenario=scenario,
                 grid_spec=grid_spec,
             )
-        if self.prediction_engine == "torch_multistep":
+        if self.prediction_engine in {"torch_multistep", "torch_robust_multistep"}:
             if self.torch_model is None:
                 raise RuntimeError("Torch Multi-step ConvLSTM model is not initialized")
-            sequence = self.torch_model.predict(adapter_result.tensor)
+            if self.prediction_engine == "torch_robust_multistep":
+                import torch
+
+                tensor = torch.as_tensor(adapter_result.tensor, dtype=torch.float32).unsqueeze(0)
+                prediction = self.torch_model.predict(tensor)
+                sequence = prediction.squeeze(0).squeeze(1).detach().cpu().numpy()
+                sequence = sequence.clip(min=0.0)
+            else:
+                sequence = self.torch_model.predict(adapter_result.tensor)
             return Forecast(
                 concentration_grid=sequence[0],
                 concentration_sequence=sequence,
                 metadata={
-                    "prediction_engine": "torch_multistep",
+                    "prediction_engine": self.prediction_engine,
                     "frame_count": int(sequence.shape[0]),
                     "frame_indices": list(range(sequence.shape[0])),
                     "default_frame_index": 0,
