@@ -97,6 +97,21 @@ python -m plume.workers.run --kind all
 See `docs/service_modes.md` for service mode guidance.
 See `docs/optional_features_audit.md` for a compact optional/provisional feature audit.
 
+Manual robust ConvLSTM three-stage adaptation smoke runner:
+
+```bash
+python scripts/train_three_stage_adaptation.py \
+  --reference-dataset-dir /path/to/reference_subset \
+  --buffer-root /path/to/adaptation_buffer \
+  --output-dir /path/to/run_output \
+  --resume-checkpoint /path/to/robust_checkpoint.pt \
+  --resume-mode model_only \
+  --start-stage stage3 \
+  --device cuda
+```
+
+The script is manual only: it builds a dataset manifest from CLI-provided reference and/or adaptation-buffer paths, optionally performs model-only resume, and writes run artifacts under the selected output directory. Use `--dry-run` to write `dataset_manifest_preview.json` without starting training.
+
 Online endpoints:
 - `POST /sessions`
 - `GET /sessions`
