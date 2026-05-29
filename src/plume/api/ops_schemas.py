@@ -131,3 +131,88 @@ class OpsSystemStatusResponse(BaseModel):
 
 class WorkerStatusResponse(BaseModel):
     worker_status: dict[str, Any] | None = None
+
+
+class AdaptationBufferStatusResponse(BaseModel):
+    root: str
+    pending: int = 0
+    accepted_train: int = 0
+    accepted_val: int = 0
+    rejected: int = 0
+    reserve_used: int = 0
+    fresh_accepted_total: int = 0
+    used_total: int = 0
+    manifest_readable: bool
+    latest_event_timestamp: str | None = None
+    warnings: list[str] = Field(default_factory=list)
+
+
+class AdaptationReadinessResponse(BaseModel):
+    ready: bool
+    status: str
+    checks: list[dict[str, Any]]
+    blocking_reasons: list[str]
+    warnings: list[str]
+    next_retry_at: str | None = None
+    summary: dict[str, Any]
+
+
+class AdaptationTrainingStatusResponse(BaseModel):
+    job_counts: dict[str, int]
+    latest_job: dict[str, Any] | None = None
+    latest_readiness_snapshot: dict[str, Any] | None = None
+    candidate_model_id: str | None = None
+    output_dir: str | None = None
+    result_run_dir: str | None = None
+    best_overall_checkpoint: str | None = None
+    final_checkpoint: str | None = None
+    error_message: str | None = None
+
+
+class AdaptationCandidateResponse(BaseModel):
+    model_id: str
+    status: str | None = None
+    approval_status: str | None = None
+    path: str | None = None
+    timestamp: str | None = None
+    created_at: str | None = None
+    run_id: str | None = None
+    adaptation_run: dict[str, Any] | None = None
+    last_adaptation_promotion_decision: dict[str, Any] | None = None
+    last_promotion_result: dict[str, Any] | None = None
+    best_overall_checkpoint: str | None = None
+    final_checkpoint: str | None = None
+    checkpoint_file_exists: bool
+
+
+class AdaptationCandidateListResponse(BaseModel):
+    candidates: list[AdaptationCandidateResponse]
+
+
+class AdaptationPromotionDecisionResponse(BaseModel):
+    decision: dict[str, Any] | None = None
+    candidate_model_id: str | None = None
+    active_model_id: str | None = None
+    result: dict[str, Any] | None = None
+
+
+class AdaptationStorageWarningResponse(BaseModel):
+    checkpoint_count: int
+    checkpoint_count_warning: bool
+    checkpoint_count_threshold: int
+    disk_usage_percent: float
+    disk_usage_warning: bool
+    disk_usage_threshold_percent: float
+    automatic_deletion: bool
+    message: str
+
+
+class CheckpointFileDeleteResponse(BaseModel):
+    model_id: str
+    deleted: bool
+    file_existed_before: bool
+    checkpoint_path: str | None = None
+    metadata_updated: bool
+    active_model_id: str | None = None
+    event_type: str | None = None
+    message: str
