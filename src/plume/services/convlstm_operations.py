@@ -1046,6 +1046,87 @@ def reject_candidate(*, registry: ModelRegistry, candidate_model_id: str, actor:
     )
 
 
+
+def evaluate_adaptation_candidate_for_registry(
+    *,
+    registry: ModelRegistry,
+    candidate_model_id: str,
+    thresholds: AdaptationPromotionThresholds | None = None,
+) -> dict[str, object]:
+    """Evaluate an adaptation candidate without mutating registry state."""
+    payload = registry.load()
+    models = payload["models"]
+    candidate = next((m for m in models if m.get("model_id") == candidate_model_id), None)
+    if candidate is None:
+        raise ValueError(f"Unknown candidate model id: {candidate_model_id}")
+    if not _is_adaptation_candidate_record(candidate):
+        raise ValueError(f"Model is not an adaptation candidate: {candidate_model_id}")
+    active_id = payload.get("active_model_id")
+    active = next((m for m in models if isinstance(active_id, str) and m.get("model_id") == active_id), None)
+    decision = evaluate_adaptation_candidate(candidate_record=dict(candidate), active_record=dict(active) if active is not None else None, thresholds=thresholds)
+    return {"decision": decision.to_dict(), "candidate_model_id": candidate_model_id, "active_model_id": payload.get("active_model_id")}
+
+
+def delete_adaptation_checkpoint_file(
+    *,
+    registry: ModelRegistry,
+    model_id: str,
+    actor: str = "api_operator",
+    comment: str | None = None,
+) -> dict[str, object]:
+    """Delete only a non-active adaptation checkpoint file while preserving registry metadata."""
+    payload = registry.load()
+    active_id = _optional_str(payload.get("active_model_id"))
+    if model_id == active_id:
+        raise ValueError("Refusing to delete checkpoint file for active model")
+    models = payload["models"]
+    record = next((m for m in models if m.get("model_id") == model_id), None)
+    if record is None:
+        raise ValueError(f"Unknown model id: {model_id}")
+    if record.get("status") == "active":
+        raise ValueError("Refusing to delete checkpoint file for active model")
+    if not _is_adaptation_candidate_record(record):
+        raise ValueError(f"Model is not an adaptation record: {model_id}")
+    path_value = record.get("path")
+    checkpoint_path = Path(str(path_value)) if isinstance(path_value, str) and path_value else None
+    existed = bool(checkpoint_path and checkpoint_path.exists())
+    deleted = False
+    if checkpoint_path is not None and checkpoint_path.exists():
+        if checkpoint_path.is_dir():
+            raise ValueError("Checkpoint path is a directory; refusing to delete")
+        checkpoint_path.unlink()
+        deleted = True
+    now = _utc_now_iso()
+    record["checkpoint_file_deleted"] = True
+    record["checkpoint_file_deleted_at"] = now
+    record["checkpoint_file_delete_reason"] = comment or "manual_ops_cleanup"
+    record["checkpoint_file_deleted_by"] = actor
+    _append_registry_event(
+        payload,
+        {
+            "timestamp": now,
+            "event_type": "adaptation_checkpoint_file_deleted",
+            "model_id": model_id,
+            "checkpoint_path": str(checkpoint_path) if checkpoint_path is not None else None,
+            "actor": actor,
+            "comment": comment,
+            "deleted": deleted,
+            "file_existed_before": existed,
+        },
+    )
+    registry.save(payload)
+    return {
+        "model_id": model_id,
+        "deleted": deleted,
+        "file_existed_before": existed,
+        "checkpoint_path": str(checkpoint_path) if checkpoint_path is not None else None,
+        "metadata_updated": True,
+        "active_model_id": active_id,
+        "event_type": "adaptation_checkpoint_file_deleted",
+        "message": "Checkpoint file deleted" if deleted else "Checkpoint file was already missing; metadata recorded",
+    }
+
+
 def apply_adaptation_promotion_policy(
     *,
     registry: ModelRegistry,
