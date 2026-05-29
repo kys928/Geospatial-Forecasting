@@ -1,0 +1,60 @@
+adaptation:
+  enabled: true
+
+  buffer_root_env: PLUME_ADAPTATION_BUFFER_DIR
+  default_buffer_root: artifacts/adaptation_buffer
+
+  canonical_window_format: npz
+
+  input_frames: 3
+  future_steps: 4
+  input_channels: 10
+  height: 64
+  width: 64
+  plume_channel: 0
+
+  train_split: 0.80
+  val_split: 0.20
+  split_seed: 42
+
+  quality_mode: medium
+  min_good_fresh_samples: 50
+  allow_used_reserve_when_fresh_insufficient: true
+
+  reference_dataset:
+    mode: stable_subset
+    path_env: PLUME_ADAPTATION_REFERENCE_DATASET_DIR
+    default_path: artifacts/reference_subset
+    configurable: true
+
+  training:
+    start_from: active_checkpoint
+    fallback_checkpoint: latest_best_checkpoint
+    allow_fresh_start: false
+
+    max_epochs: 20
+    early_stopping_patience: 4
+    early_stopping_metric: selection_score
+
+    initial_batch_size: 16
+    min_batch_size: 1
+    auto_reduce_batch_on_oom: true
+
+    training_device: cuda
+    allow_cpu_training_fallback: false
+    min_free_vram_gib_for_training: 2.0
+    retry_cooldown_seconds: 300
+    max_concurrent_training_jobs: 1
+
+  promotion:
+    clearly_better_requires:
+      val_loss_improved: true
+      plume_metrics_improved: true
+      late_horizons_not_collapsing: true
+    uncertain_goes_to_manual_candidate: true
+    worse_is_rejected: true
+
+  checkpoints:
+    warning_checkpoint_count: 20
+    warning_disk_usage_percent: 90
+    automatic_deletion: false
