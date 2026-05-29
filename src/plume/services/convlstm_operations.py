@@ -28,7 +28,6 @@ from plume.services.adaptation_readiness import (
 )
 from plume.training.adaptation_dataset import AdaptationDatasetConfig, build_adaptation_dataset_manifest
 from plume.training.three_stage_adaptation_trainer import (
-    StageConfig,
     ThreeStageTrainerConfig,
     TrainingRunSummary,
     train_three_stage_adaptation,
@@ -1161,8 +1160,13 @@ def rollback_to_previous_model(*, registry: ModelRegistry) -> dict[str, object]:
     target = next((m for m in models if m.get("model_id") == previous_id), None)
     if target is None:
         raise ValueError(f"Previous active model record not found: {previous_id}")
-    _validate_serving_compatible_record(target, context="Rollback target model")
-    _validate_checkpoint_readable(Path(str(target.get("path"))), context="Rollback target model")
+    if _is_adaptation_candidate_record(target):
+        compatibility = validate_adaptation_checkpoint_for_activation(target)
+        if not compatibility.compatible:
+            raise ValueError("Rollback adaptation model failed final compatibility check: " + ",".join(compatibility.reasons))
+    else:
+        _validate_serving_compatible_record(target, context="Rollback target model")
+        _validate_checkpoint_readable(Path(str(target.get("path"))), context="Rollback target model")
 
     for item in models:
         if item.get("status") == "active":
@@ -2164,11 +2168,9 @@ def _validate_job_transition(*, current_status: str, next_status: str) -> None:
 
 
 def _is_adaptation_candidate_record(record: dict[str, object]) -> bool:
-    path = record.get("path")
     return (
         isinstance(record.get("adaptation_run"), dict)
         or record.get("contract_version") == "robust_convlstm_adaptation_v1"
-        or (isinstance(path, str) and Path(path).suffix.lower() == ".pt")
     )
 
 
