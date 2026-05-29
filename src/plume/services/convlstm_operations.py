@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timezone
 from contextlib import contextmanager
 import sqlite3
@@ -14,6 +14,20 @@ import uuid
 
 import numpy as np
 import yaml
+
+from plume.services.adaptation_buffer import AdaptationBuffer, AdaptationBufferConfig
+from plume.services.adaptation_readiness import (
+    AdaptationReadinessConfig,
+    AdaptationReadinessService,
+    check_checkpoint_available,
+)
+from plume.training.adaptation_dataset import AdaptationDatasetConfig, build_adaptation_dataset_manifest
+from plume.training.three_stage_adaptation_trainer import (
+    StageConfig,
+    ThreeStageTrainerConfig,
+    TrainingRunSummary,
+    train_three_stage_adaptation,
+)
 
 from plume.models.convlstm import MinimalConvLSTMModel
 from plume.models.convlstm_contract import CONVLSTM_INPUT_CHANNELS
@@ -43,7 +57,7 @@ OPERATIONAL_PHASES = {
 }
 MODEL_STATUSES = {"candidate", "approved", "active", "rejected", "archived"}
 APPROVAL_STATUSES = {"not_required", "pending_manual_approval", "approved_for_activation", "rejected_by_operator"}
-RETRAINING_JOB_STATUSES = {"queued", "running", "succeeded", "failed", "cancelled"}
+RETRAINING_JOB_STATUSES = {"queued", "running", "waiting", "succeeded", "failed", "cancelled"}
 
 
 @dataclass(frozen=True)
@@ -150,6 +164,24 @@ class RetrainingJobRecord:
             worker_pid=_optional_int(payload.get("worker_pid")),
             metadata=_optional_dict(payload.get("metadata")),
         )
+
+
+@dataclass(frozen=True)
+class AdaptationResumeSelection:
+    checkpoint_path: str | None
+    source: str
+    resume_mode: str
+
+    def to_dict(self) -> dict[str, object]:
+        return asdict(self)
+
+
+class RetrainingJobDeferred(RuntimeError):
+    """Raised when a claimed retraining job should wait instead of train."""
+
+    def __init__(self, message: str, *, metadata: dict[str, object] | None = None) -> None:
+        super().__init__(message)
+        self.metadata = metadata or {}
 
 
 class RetrainingJobStore:
@@ -853,6 +885,60 @@ def register_candidate_from_run(
     return record
 
 
+def register_candidate_from_adaptation_run(
+    *,
+    registry: ModelRegistry,
+    run_dir: str | Path,
+    run_id: str | None = None,
+    metadata: dict[str, object] | None = None,
+    model_id: str | None = None,
+) -> dict[str, object]:
+    run_path = Path(run_dir)
+    training_summary_path = run_path / "training_summary.json"
+    if training_summary_path.exists():
+        training_summary = json.loads(training_summary_path.read_text(encoding="utf-8"))
+    else:
+        training_summary = dict((metadata or {}).get("training_summary", {})) if isinstance((metadata or {}).get("training_summary"), dict) else {}
+    best_checkpoint = training_summary.get("best_overall_checkpoint") or (metadata or {}).get("best_overall_checkpoint")
+    final_checkpoint = training_summary.get("final_checkpoint") or (metadata or {}).get("final_checkpoint")
+    checkpoint_path = Path(str(best_checkpoint or final_checkpoint or run_path / "best_overall_full_checkpoint.pt"))
+    if not checkpoint_path.exists():
+        raise FileNotFoundError(f"Adaptation candidate checkpoint does not exist: {checkpoint_path}")
+    best_metrics = training_summary.get("best_metrics") if isinstance(training_summary.get("best_metrics"), dict) else {}
+    metric_value = best_metrics.get("selection_score", best_metrics.get("val_rollout_weighted_mse", 0.0)) if isinstance(best_metrics, dict) else 0.0
+    if not isinstance(metric_value, (float, int)):
+        metric_value = 0.0
+
+    record_id = model_id or f"candidate_{run_path.name}"
+    now = _utc_now_iso()
+    record = {
+        "model_id": record_id,
+        "path": str(checkpoint_path),
+        "created_from_run_dir": str(run_path),
+        "run_id": run_id or run_path.name,
+        "status": "candidate",
+        "approval_status": "not_required",
+        "contract_version": "robust_convlstm_adaptation_v1",
+        "target_policy": "plume_only",
+        "normalization_mode": "robust_multistep",
+        "checkpoint_metric": {"name": "selection_score", "value": float(metric_value)},
+        "plume_metrics": {},
+        "timestamp": now,
+        "parent_active_model_id": None,
+        "adaptation_run": {**dict(metadata or {}), "training_summary": training_summary},
+    }
+    payload = registry.load()
+    if any(item.get("model_id") == record_id for item in payload["models"]):
+        raise ValueError(f"Model id already exists in registry: {record_id}")
+    payload["models"].append(record)
+    _append_registry_event(
+        payload,
+        {"timestamp": now, "event_type": "adaptation_candidate_registered", "model_id": record_id, "run_id": record["run_id"]},
+    )
+    registry.save(payload)
+    return record
+
+
 def evaluate_promotion(
     *,
     candidate_record: dict[str, object],
@@ -1199,6 +1285,7 @@ def execute_retraining_job(
         if not isinstance(run_dir, str):
             raise ValueError("train_fn must return payload with string run_dir")
         run_id = run_payload.get("run_id")
+        metadata = _merge_job_metadata(running_job.get("metadata"), run_payload.get("metadata"))
         return job_store.update_job(
             job_id=job_id,
             status="succeeded",
@@ -1207,8 +1294,22 @@ def execute_retraining_job(
             result_run_id=None if run_id is None else str(run_id),
             result_candidate_id=None if run_payload.get("result_candidate_id") is None else str(run_payload.get("result_candidate_id")),
             error_message=None,
+            metadata=metadata,
+        )
+    except RetrainingJobDeferred as exc:
+        metadata = _merge_job_metadata(running_job.get("metadata"), exc.metadata)
+        return job_store.update_job(
+            job_id=job_id,
+            status="waiting",
+            finished_at=_utc_now_iso(),
+            error_message=str(exc),
+            result_run_dir=_optional_str(running_job.get("result_run_dir")),
+            result_run_id=_optional_str(running_job.get("result_run_id")),
+            result_candidate_id=_optional_str(running_job.get("result_candidate_id")),
+            metadata=metadata,
         )
     except Exception as exc:
+        metadata = _merge_job_metadata(running_job.get("metadata"), {"failure": {"error_message": str(exc)}})
         return job_store.update_job(
             job_id=job_id,
             status="failed",
@@ -1217,6 +1318,7 @@ def execute_retraining_job(
             result_run_dir=_optional_str(running_job.get("result_run_dir")),
             result_run_id=_optional_str(running_job.get("result_run_id")),
             result_candidate_id=_optional_str(running_job.get("result_candidate_id")),
+            metadata=metadata,
         )
 
 
@@ -1248,6 +1350,101 @@ def run_local_retraining_job(
     if not isinstance(run_dir, str):
         raise ValueError("Training result missing string run_artifacts.output_dir")
     return {"run_dir": run_dir, "run_id": Path(run_dir).name}
+
+
+def run_adaptation_retraining_job(
+    job: dict[str, object],
+    *,
+    config_dir: str | Path | None = None,
+    registry: ModelRegistry | None = None,
+    job_store: RetrainingJobStore | None = None,
+) -> dict[str, object]:
+    """Run the robust automatic adaptation trainer for one claimed job.
+
+    This path only produces a candidate run artifact. It does not promote,
+    activate, delete, or serve checkpoints.
+    """
+    adaptation_config_path = _adaptation_config_path(config_dir)
+    readiness_config = AdaptationReadinessConfig.from_yaml(adaptation_config_path)
+    training_cfg_payload = _load_adaptation_training_payload(adaptation_config_path)
+    registry_payload = registry.load() if registry is not None else {"models": []}
+    active_checkpoint_path = _active_checkpoint_path(registry_payload)
+    latest_best_checkpoint_path = _latest_best_checkpoint_path(
+        registry_payload=registry_payload,
+        fallback_checkpoint=training_cfg_payload.get("fallback_checkpoint"),
+    )
+    statuses = [str(item.get("status")) for item in job_store.list_jobs()] if job_store is not None else []
+    running_others = sum(1 for item in (job_store.list_jobs() if job_store is not None else []) if item.get("status") == "running" and item.get("job_id") != job.get("job_id"))
+
+    readiness = AdaptationReadinessService(readiness_config).evaluate(
+        active_checkpoint_path=active_checkpoint_path,
+        latest_best_checkpoint_path=latest_best_checkpoint_path,
+        checkpoint_dir=_checkpoint_storage_root(registry_payload, latest_best_checkpoint_path),
+        current_training_jobs=running_others,
+        current_job_statuses=statuses,
+    )
+    readiness_payload = readiness.to_dict()
+    if not readiness.ready:
+        raise RetrainingJobDeferred(
+            "Adaptation retraining readiness is not green",
+            metadata={"readiness": readiness_payload, "deferred_reason": "adaptation_readiness_not_green"},
+        )
+
+    resume_selection = select_adaptation_resume_checkpoint(
+        active_checkpoint_path=active_checkpoint_path,
+        latest_best_checkpoint_path=latest_best_checkpoint_path,
+        allow_fresh_start=readiness_config.allow_fresh_start,
+    )
+
+    buffer = AdaptationBuffer(
+        AdaptationBufferConfig(
+            buffer_root=readiness_config.resolve_buffer_root(),
+            buffer_root_env=readiness_config.buffer_root_env,
+            default_buffer_root=readiness_config.default_buffer_root,
+        )
+    )
+    manifest = build_adaptation_dataset_manifest(
+        reference_dataset_dir=readiness_config.resolve_reference_dataset_path(),
+        adaptation_buffer=buffer,
+        config=_adaptation_dataset_config_from_payload(adaptation_config_path),
+    )
+    if int(manifest.counts.get("train_total", 0)) == 0 or int(manifest.counts.get("val_total", 0)) == 0:
+        raise ValueError(f"Adaptation dataset manifest requires non-empty train and validation samples: {manifest.counts}")
+
+    run_id = str(job.get("job_id") or f"adaptation-{uuid.uuid4().hex[:12]}")
+    output_root = Path(str(job.get("output_dir") or training_cfg_payload.get("output_dir") or Path("artifacts") / "runs"))
+    output_dir = output_root / run_id if output_root.name != run_id else output_root
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    trainer_config = _three_stage_trainer_config_from_payload(training_cfg_payload, run_name=run_id)
+    summary = train_three_stage_adaptation(
+        train_samples=manifest.train_samples,
+        val_samples=manifest.val_samples,
+        output_dir=output_dir,
+        config=trainer_config,
+        resume_checkpoint_path=resume_selection.checkpoint_path,
+        resume_mode=resume_selection.resume_mode,  # type: ignore[arg-type]
+        start_stage=str(training_cfg_payload.get("start_stage") or training_cfg_payload.get("start_from_stage") or "stage1"),  # type: ignore[arg-type]
+        device=str(training_cfg_payload.get("training_device", readiness_config.training_device)),
+    )
+    summary_payload = summary.to_dict() if isinstance(summary, TrainingRunSummary) else dict(summary)  # type: ignore[arg-type]
+    return {
+        "run_dir": str(output_dir),
+        "run_id": run_id,
+        "metadata": {
+            "adaptation": {
+                "run_id": run_id,
+                "output_dir": str(output_dir),
+                "best_overall_checkpoint": summary_payload.get("best_overall_checkpoint"),
+                "final_checkpoint": summary_payload.get("final_checkpoint"),
+                "selected_resume_checkpoint": resume_selection.to_dict(),
+                "dataset_counts": dict(manifest.counts),
+                "dataset_warnings": list(manifest.warnings),
+                "readiness": readiness_payload,
+                "training_summary": summary_payload,
+            }
+        },
+    }
 
 
 def dispatch_retraining_worker(
@@ -1440,6 +1637,129 @@ def _derive_retraining_output_dir(state: OperationalState) -> str | None:
     if state.active_model_path:
         return str(Path(state.active_model_path).parent)
     return None
+
+
+def select_adaptation_resume_checkpoint(
+    *,
+    active_checkpoint_path: str | Path | None,
+    latest_best_checkpoint_path: str | Path | None,
+    allow_fresh_start: bool,
+) -> AdaptationResumeSelection:
+    availability = check_checkpoint_available(active_checkpoint_path, latest_best_checkpoint_path, allow_fresh_start)
+    if not availability.passed:
+        raise RetrainingJobDeferred(
+            availability.message,
+            metadata={"selected_resume_checkpoint": {"source": availability.source, "checkpoint_path": availability.selected_checkpoint_path}},
+        )
+    if availability.source == "fresh_start":
+        return AdaptationResumeSelection(checkpoint_path=None, source="fresh_start", resume_mode="none")
+    path = Path(str(availability.selected_checkpoint_path))
+    _validate_adaptation_resume_checkpoint(path)
+    return AdaptationResumeSelection(checkpoint_path=str(path), source=str(availability.source), resume_mode="model_only")
+
+
+def _adaptation_config_path(config_dir: str | Path | None) -> Path:
+    return (Path(config_dir) if config_dir is not None else Path("configs")) / "adaptation.yaml"
+
+
+def _load_adaptation_training_payload(config_path: Path) -> dict[str, object]:
+    payload = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+    adaptation = payload.get("adaptation", {}) if isinstance(payload, dict) else {}
+    training = adaptation.get("training", {}) if isinstance(adaptation, dict) else {}
+    return dict(training) if isinstance(training, dict) else {}
+
+
+def _adaptation_dataset_config_from_payload(config_path: Path) -> AdaptationDatasetConfig:
+    payload = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+    adaptation = payload.get("adaptation", {}) if isinstance(payload, dict) else {}
+    if not isinstance(adaptation, dict):
+        return AdaptationDatasetConfig()
+    return AdaptationDatasetConfig(
+        input_frames=int(adaptation.get("input_frames", 3)),
+        input_channels=int(adaptation.get("input_channels", 10)),
+        future_steps=int(adaptation.get("future_steps", 4)),
+        height=int(adaptation.get("height", 64)),
+        width=int(adaptation.get("width", 64)),
+        train_split=float(adaptation.get("train_split", 0.80)),
+        val_split=float(adaptation.get("val_split", 0.20)),
+        split_seed=int(adaptation.get("split_seed", 42)),
+        min_fresh_samples=int(adaptation.get("min_good_fresh_samples", 50)),
+        allow_reserve_when_fresh_insufficient=bool(adaptation.get("allow_used_reserve_when_fresh_insufficient", True)),
+    )
+
+
+def _three_stage_trainer_config_from_payload(payload: dict[str, object], *, run_name: str) -> ThreeStageTrainerConfig:
+    cfg = ThreeStageTrainerConfig(
+        run_name=run_name,
+        initial_batch_size=int(payload.get("initial_batch_size", 16)),
+        min_batch_size=int(payload.get("min_batch_size", 1)),
+        auto_reduce_batch_on_oom=bool(payload.get("auto_reduce_batch_on_oom", True)),
+        allow_cpu_fallback_on_cuda_oom=bool(payload.get("allow_cpu_training_fallback", False)),
+    )
+    max_epochs = int(payload.get("max_epochs", cfg.stage3.max_epochs))
+    patience = int(payload.get("early_stopping_patience", cfg.stage3.patience))
+    cfg.stage1 = replace(cfg.stage1, max_epochs=min(cfg.stage1.max_epochs, max_epochs), patience=patience)
+    cfg.stage2 = replace(cfg.stage2, max_epochs=min(cfg.stage2.max_epochs, max_epochs), patience=patience)
+    cfg.stage3 = replace(cfg.stage3, max_epochs=min(cfg.stage3.max_epochs, max_epochs), patience=patience)
+    return cfg
+
+
+def _active_checkpoint_path(registry_payload: dict[str, object]) -> str | None:
+    active_id = registry_payload.get("active_model_id")
+    models = registry_payload.get("models") if isinstance(registry_payload.get("models"), list) else []
+    for item in models:
+        if isinstance(item, dict) and item.get("model_id") == active_id and item.get("path"):
+            path = Path(str(item["path"]))
+            return str(path) if path.exists() else None
+    return None
+
+
+def _latest_best_checkpoint_path(*, registry_payload: dict[str, object], fallback_checkpoint: object) -> str | None:
+    if isinstance(fallback_checkpoint, str) and fallback_checkpoint not in {"", "latest_best_checkpoint"}:
+        return fallback_checkpoint
+    active_id = registry_payload.get("active_model_id")
+    models = [
+        item
+        for item in registry_payload.get("models", [])
+        if isinstance(item, dict)
+        and item.get("path")
+        and item.get("model_id") != active_id
+        and Path(str(item.get("path"))).exists()
+    ]
+    if not models:
+        return None
+    models.sort(key=lambda item: str(item.get("timestamp") or item.get("created_at") or ""), reverse=True)
+    return str(models[0].get("path"))
+
+
+def _checkpoint_storage_root(registry_payload: dict[str, object], latest_best_checkpoint_path: str | None) -> str | None:
+    if latest_best_checkpoint_path:
+        return str(Path(latest_best_checkpoint_path).parent)
+    paths = [Path(str(item.get("path"))).parent for item in registry_payload.get("models", []) if isinstance(item, dict) and item.get("path")]
+    return str(paths[0]) if paths else None
+
+
+def _validate_adaptation_resume_checkpoint(path: Path) -> None:
+    if not path.exists():
+        raise RetrainingJobDeferred(f"Selected adaptation resume checkpoint does not exist: {path}")
+    if path.suffix.lower() != ".pt":
+        raise ValueError(f"Selected adaptation resume checkpoint must be a robust .pt checkpoint: {path}")
+    try:
+        import torch  # type: ignore
+    except ModuleNotFoundError:
+        return
+    raw = torch.load(path, map_location="cpu")
+    if not isinstance(raw, dict) or "model_state_dict" not in raw:
+        raise ValueError(f"Selected adaptation resume checkpoint is not a robust trainer checkpoint: {path}")
+
+
+def _merge_job_metadata(current: object, update: object) -> dict[str, object] | None:
+    if current is None and update is None:
+        return None
+    merged = dict(current) if isinstance(current, dict) else {}
+    if isinstance(update, dict):
+        merged.update(update)
+    return merged
 
 
 def _build_local_training_configs(
@@ -1754,7 +2074,8 @@ def _validate_job_transition(*, current_status: str, next_status: str) -> None:
         return
     allowed = {
         "queued": {"running", "cancelled"},
-        "running": {"succeeded", "failed", "cancelled"},
+        "running": {"waiting", "succeeded", "failed", "cancelled"},
+        "waiting": {"queued", "cancelled"},
         "succeeded": set(),
         "failed": set(),
         "cancelled": set(),

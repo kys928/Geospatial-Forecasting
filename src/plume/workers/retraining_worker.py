@@ -12,7 +12,9 @@ from plume.services.convlstm_operations import (
     OperationalStateStore,
     RetrainingJobStore,
     execute_retraining_job,
+    register_candidate_from_adaptation_run,
     register_candidate_from_run,
+    run_adaptation_retraining_job,
     run_local_retraining_job,
 )
 
@@ -55,11 +57,38 @@ def run_retraining_worker_once(
     state = state_store.load()
     state_store.save(OperationalState(**{**state.to_dict(), "phase": "training", "latest_warning_or_error": None}))
 
+    registry = ModelRegistry(registry_path)
+    if (config_dir / "adaptation.yaml").exists():
+        train_fn = lambda: run_adaptation_retraining_job(
+            claimed,
+            config_dir=config_dir,
+            registry=registry,
+            job_store=job_store,
+        )
+    else:
+        train_fn = lambda: run_local_retraining_job(claimed, config_dir=config_dir)
     completed = execute_retraining_job(
         job_store=job_store,
         job_id=job_id,
-        train_fn=lambda: run_local_retraining_job(claimed, config_dir=config_dir),
+        train_fn=train_fn,
     )
+
+    if completed.get("status") == "waiting":
+        event_log.append(
+            event_type="retraining_job_waiting",
+            payload={"job_id": job_id, "error_message": completed.get("error_message"), "metadata": completed.get("metadata")},
+        )
+        waiting_state = state_store.load()
+        state_store.save(
+            OperationalState(
+                **{
+                    **waiting_state.to_dict(),
+                    "phase": "collecting",
+                    "latest_warning_or_error": _optional_status_message(completed.get("error_message")),
+                }
+            )
+        )
+        return {"claimed": True, "status": "waiting", "job": completed, **recovery_info}
 
     if completed.get("status") != "succeeded":
         error_message = completed.get("error_message")
@@ -76,11 +105,21 @@ def run_retraining_worker_once(
         )
         return {"claimed": True, "status": "failed", "job": completed, **recovery_info}
 
-    candidate = register_candidate_from_run(
-        registry=ModelRegistry(registry_path),
-        run_dir=str(completed["result_run_dir"]),
-        run_id=completed.get("result_run_id"),
-    )
+    metadata = completed.get("metadata") if isinstance(completed.get("metadata"), dict) else {}
+    adaptation_metadata = metadata.get("adaptation") if isinstance(metadata, dict) else None
+    if isinstance(adaptation_metadata, dict):
+        candidate = register_candidate_from_adaptation_run(
+            registry=registry,
+            run_dir=str(completed["result_run_dir"]),
+            run_id=None if completed.get("result_run_id") is None else str(completed.get("result_run_id")),
+            metadata=adaptation_metadata,
+        )
+    else:
+        candidate = register_candidate_from_run(
+            registry=registry,
+            run_dir=str(completed["result_run_dir"]),
+            run_id=completed.get("result_run_id"),
+        )
     completed = job_store.update_job(job_id=job_id, result_candidate_id=candidate["model_id"])
     event_log.append(event_type="retraining_job_succeeded", payload={"job_id": job_id, "candidate_model_id": candidate["model_id"]})
     success_state = state_store.load()
@@ -104,6 +143,10 @@ def _env_flag(name: str, *, default: bool) -> bool:
     if value is None:
         return default
     return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _optional_status_message(value: object) -> str | None:
+    return None if value is None else str(value)
 
 
 def _build_parser() -> argparse.ArgumentParser:
