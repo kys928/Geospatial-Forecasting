@@ -371,6 +371,7 @@ def _adaptation_readiness(config: AdaptationReadinessConfig) -> dict[str, object
     active = _record_by_id(registry_payload.get("models", []), registry_payload.get("active_model_id"))
     active_checkpoint = active.get("path") if active else None
     latest_best = _latest_checkpoint_from_jobs(jobs)
+    latest_adaptation_training_at = _latest_adaptation_training_timestamp(jobs)
     active_job_statuses = [str(job.get("status")) for job in jobs if str(job.get("status")) in {"queued", "running", "starting"}]
     return AdaptationReadinessService(config).evaluate(
         active_checkpoint_path=str(active_checkpoint) if active_checkpoint else None,
@@ -379,6 +380,8 @@ def _adaptation_readiness(config: AdaptationReadinessConfig) -> dict[str, object
         models_root=Path(paths["registry"]).parent,
         current_training_jobs=len(active_job_statuses),
         current_job_statuses=active_job_statuses,
+        registry=registry_payload,
+        last_adaptation_training_at=latest_adaptation_training_at,
     ).to_dict()
 
 
@@ -388,6 +391,37 @@ def _record_by_id(models: object, model_id: object) -> dict[str, object] | None:
     for item in models:
         if isinstance(item, dict) and item.get("model_id") == model_id:
             return dict(item)
+    return None
+
+
+_TERMINAL_ADAPTATION_JOB_STATUSES = {"succeeded", "completed", "failed", "waiting", "cancelled"}
+_ACTIVE_ADAPTATION_JOB_STATUSES = {"queued", "running", "starting", "claimed"}
+_ADAPTATION_JOB_TIMESTAMP_FIELDS = (
+    "completed_at",
+    "finished_at",
+    "ended_at",
+    "updated_at",
+    "started_at",
+    "created_at",
+    "timestamp",
+)
+
+
+def _latest_adaptation_training_timestamp(jobs: list[dict[str, object]]) -> str | None:
+    for job in reversed(jobs):
+        if not isinstance(job, dict):
+            continue
+        status = str(job.get("status") or "").lower()
+        if status in _ACTIVE_ADAPTATION_JOB_STATUSES:
+            continue
+        if status not in _TERMINAL_ADAPTATION_JOB_STATUSES:
+            continue
+        if not _job_has_adaptation_metadata(job):
+            continue
+        for key in _ADAPTATION_JOB_TIMESTAMP_FIELDS:
+            value = job.get(key)
+            if isinstance(value, str) and value:
+                return value
     return None
 
 

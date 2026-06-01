@@ -1882,7 +1882,8 @@ def _adaptation_dataset_config_from_payload(config_path: Path) -> AdaptationData
         train_split=float(adaptation.get("train_split", 0.80)),
         val_split=float(adaptation.get("val_split", 0.20)),
         split_seed=int(adaptation.get("split_seed", 42)),
-        min_fresh_samples=int(adaptation.get("min_good_fresh_samples", 50)),
+        min_fresh_samples=int(adaptation.get("min_good_fresh_samples", 64)),
+        plume_channel=int(adaptation.get("plume_channel", 0)),
         allow_reserve_when_fresh_insufficient=bool(adaptation.get("allow_used_reserve_when_fresh_insufficient", True)),
     )
 

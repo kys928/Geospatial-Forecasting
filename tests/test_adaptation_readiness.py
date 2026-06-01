@@ -1,7 +1,8 @@
 import json
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+import numpy as np
 import pytest
 
 from plume.services.adaptation_buffer import AdaptationBuffer, AdaptationBufferConfig
@@ -32,10 +33,22 @@ LOW_FREE_GPU = GpuMemorySnapshot(
 NO_GPU = GpuMemorySnapshot(available=False, device="cuda:0", reason="cuda_unavailable")
 
 
+def _make_npz(path: Path) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    np.savez_compressed(
+        path,
+        input=np.zeros((3, 10, 64, 64), dtype=np.float32),
+        target=np.zeros((4, 1, 64, 64), dtype=np.float32),
+    )
+    return path
+
+
 def _make_buffer(root: Path, accepted_count: int, reserve_count: int = 0) -> AdaptationBuffer:
     buffer = AdaptationBuffer(AdaptationBufferConfig(buffer_root=root))
     samples = []
+    base_time = datetime.now(UTC) - timedelta(hours=2)
     for index in range(accepted_count):
+        timestamp = (base_time + timedelta(minutes=index * 2)).isoformat().replace("+00:00", "Z")
         status = "accepted_val" if index % 5 == 0 else "accepted_train"
         split_dir = "val" if status == "accepted_val" else "train"
         window_path = Path("accepted") / split_dir / f"accepted-{index}.npz"
@@ -51,8 +64,9 @@ def _make_buffer(root: Path, accepted_count: int, reserve_count: int = 0) -> Ada
                 "quality_score": None,
                 "quality_reasons": [],
                 "used_count": 0,
-                "created_at": "2026-01-01T00:00:00Z",
-                "updated_at": "2026-01-01T00:00:00Z",
+                "created_at": timestamp,
+                "accepted_at": timestamp,
+                "updated_at": timestamp,
             }
         )
     for index in range(reserve_count):
@@ -81,7 +95,8 @@ def _make_buffer(root: Path, accepted_count: int, reserve_count: int = 0) -> Ada
 
 def _service(tmp_path: Path, *, min_samples: int = 50, training_device: str = "cuda", allow_fresh_start: bool = False) -> AdaptationReadinessService:
     reference_dir = tmp_path / "reference"
-    reference_dir.mkdir(exist_ok=True)
+    _make_npz(reference_dir / "train" / "train-0.npz")
+    _make_npz(reference_dir / "val" / "val-0.npz")
     config = AdaptationReadinessConfig(
         buffer_root=tmp_path / "buffer",
         reference_dataset_path=reference_dir,
@@ -195,7 +210,7 @@ def test_gpu_low_memory_yields_yellow_with_retry(tmp_path):
 
     assert result.ready is False
     assert result.status == "yellow"
-    assert result.next_retry_at == "2026-05-29T00:05:00Z"
+    assert result.next_retry_at == "2026-05-29T01:00:00Z"
     assert "below the training threshold" in _check(result, "gpu_memory_ready").message
 
 

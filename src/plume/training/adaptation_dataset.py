@@ -12,6 +12,7 @@ import hashlib
 import json
 from pathlib import Path
 import random
+import re
 from typing import Any, Literal
 
 import numpy as np
@@ -19,6 +20,11 @@ import numpy as np
 
 DatasetSplit = Literal["train", "val"]
 DatasetSource = Literal["reference", "fresh_buffer", "reserve_buffer"]
+
+CANONICAL_CONTRACT = "canonical_ok"
+LEGACY_T1_SINGLE_CONTRACT = "legacy_t1_single_ok_but_needs_sequence"
+LEGACY_T1_SEQUENCE_CONTRACT = "legacy_t1_sequence"
+INVALID_CONTRACT = "invalid"
 
 
 @dataclass(frozen=True)
@@ -39,6 +45,12 @@ class AdaptationDatasetConfig:
     reference_weight: float = 1.0
     fresh_buffer_weight: float = 1.0
     reserve_buffer_weight: float = 0.25
+    plume_channel: int = 0
+
+    # One fixed model frame is configured by adaptation.frame_interval_minutes.
+    # Future observation inflow must resample/bucket raw sensor observations to
+    # that interval before writing NPZ windows; this dataset keeps the trainer
+    # contract unchanged: input (3,10,64,64), target (4,1,64,64).
 
     @property
     def expected_input_shape(self) -> tuple[int, int, int, int]:
@@ -47,6 +59,10 @@ class AdaptationDatasetConfig:
     @property
     def expected_target_shape(self) -> tuple[int, int, int, int]:
         return (self.future_steps, self.target_channels, self.height, self.width)
+
+    @property
+    def legacy_t1_target_shape(self) -> tuple[int, int, int, int]:
+        return (1, self.input_channels, self.height, self.width)
 
 
 @dataclass
@@ -87,22 +103,25 @@ def validate_npz_contract(
     path: Path | str,
     config: AdaptationDatasetConfig | None = None,
 ) -> dict[str, Any]:
-    """Validate the strict canonical adaptation NPZ tensor contract.
+    """Validate canonical and legacy t+1 adaptation NPZ tensor contracts.
 
-    Expected keys are ``input`` and ``target`` with shapes
-    ``(3, 10, 64, 64)`` and ``(4, 1, 64, 64)`` by default. Malformed NPZs are
-    reported as validation failures instead of raising.
+    Canonical samples are complete four-horizon samples with target shape
+    ``(4, 1, 64, 64)``. Legacy t+1 samples with target shape
+    ``(1, 10, 64, 64)`` are recognized as single future frames that must be
+    assembled with three consecutive legacy windows from the same scenario; the
+    channel axis is never treated as forecast time.
     """
 
     cfg = config or AdaptationDatasetConfig()
     npz_path = Path(path)
     reasons: list[str] = []
     shapes: dict[str, tuple[int, ...]] = {}
+    contract = INVALID_CONTRACT
 
     if not npz_path.exists():
-        return {"ok": False, "reasons": [f"file does not exist: {npz_path}"], "shapes": shapes}
+        return {"ok": False, "complete": False, "contract": contract, "reasons": [f"file does not exist: {npz_path}"], "shapes": shapes}
     if npz_path.suffix.lower() != ".npz":
-        return {"ok": False, "reasons": ["file extension must be .npz"], "shapes": shapes}
+        return {"ok": False, "complete": False, "contract": contract, "reasons": ["file extension must be .npz"], "shapes": shapes}
 
     try:
         with np.load(npz_path) as data:
@@ -117,12 +136,31 @@ def validate_npz_contract(
                 reasons.append("missing required key: target")
             else:
                 shapes["target"] = tuple(data["target"].shape)
-                if shapes["target"] != cfg.expected_target_shape:
-                    reasons.append(f"target shape {shapes['target']} != {cfg.expected_target_shape}")
     except Exception as exc:  # NPZ corruption should not crash manifest building.
         reasons.append(f"failed to read npz: {exc}")
 
-    return {"ok": not reasons, "reasons": reasons, "shapes": shapes}
+    if not reasons:
+        target_shape = shapes.get("target")
+        if target_shape == cfg.expected_target_shape:
+            contract = CANONICAL_CONTRACT
+        elif target_shape == cfg.legacy_t1_target_shape:
+            contract = LEGACY_T1_SINGLE_CONTRACT
+            reasons.append(
+                "legacy t+1 single-step target requires four consecutive windows to form canonical four-step target"
+            )
+        else:
+            reasons.append(
+                f"target shape {target_shape} is neither canonical {cfg.expected_target_shape} "
+                f"nor legacy t+1 {cfg.legacy_t1_target_shape}"
+            )
+
+    return {
+        "ok": contract == CANONICAL_CONTRACT,
+        "complete": contract == CANONICAL_CONTRACT,
+        "contract": contract,
+        "reasons": reasons,
+        "shapes": shapes,
+    }
 
 
 def discover_npz_samples(
@@ -183,9 +221,13 @@ def build_adaptation_dataset_manifest(
     if reference_dataset_dir is None or not Path(reference_dataset_dir).exists():
         warnings.append(f"reference dataset missing: {reference_dataset_dir}")
     else:
-        reference_train, reference_val = _discover_reference_dataset(Path(reference_dataset_dir), cfg)
-        reference_train = _valid_samples(reference_train, cfg, warnings)
-        reference_val = _valid_samples(reference_val, cfg, warnings)
+        reference_root = Path(reference_dataset_dir)
+        if _has_structured_npzs(reference_root):
+            reference_train, reference_val = _discover_reference_dataset(reference_root, cfg)
+            reference_train = _valid_samples(reference_train, cfg, warnings)
+            reference_val = _valid_samples(reference_val, cfg, warnings)
+        else:
+            reference_train, reference_val = _discover_flat_reference_dataset(reference_root, cfg, warnings)
         train_samples.extend(reference_train)
         val_samples.extend(reference_val)
 
@@ -257,7 +299,11 @@ class AdaptationNPZDataset:
         sample = self.samples[index]
         with np.load(sample.path) as data:
             input_array = data["input"].astype(np.float32, copy=False)
-            target_array = data["target"].astype(np.float32, copy=False)
+        if sample.metadata.get("sample_contract") == LEGACY_T1_SEQUENCE_CONTRACT:
+            target_array = _load_legacy_t1_sequence_target(sample)
+        else:
+            with np.load(sample.path) as data:
+                target_array = data["target"].astype(np.float32, copy=False)
 
         torch_module = _optional_torch()
         if torch_module is not None:
@@ -283,18 +329,46 @@ def _discover_reference_dataset(
 ) -> tuple[list[AdaptationSample], list[AdaptationSample]]:
     structured_train = _discover_structured_npzs(root, "train")
     structured_val = _discover_structured_npzs(root, "val")
-    if structured_train or structured_val:
-        return (
-            [_sample_from_reference(path, "train", config.reference_weight, root) for path in structured_train],
-            [_sample_from_reference(path, "val", config.reference_weight, root) for path in structured_val],
-        )
-
-    flat = sorted(root.glob("*.npz"))
-    train_paths, val_paths = _deterministic_path_split(flat, config)
     return (
-        [_sample_from_reference(path, "train", config.reference_weight, root) for path in train_paths],
-        [_sample_from_reference(path, "val", config.reference_weight, root) for path in val_paths],
+        [_sample_from_reference(path, "train", config.reference_weight, root) for path in structured_train],
+        [_sample_from_reference(path, "val", config.reference_weight, root) for path in structured_val],
     )
+
+
+def _discover_flat_reference_dataset(
+    root: Path,
+    config: AdaptationDatasetConfig,
+    warnings: list[str],
+) -> tuple[list[AdaptationSample], list[AdaptationSample]]:
+    raw = [_sample_from_reference(path, "train", config.reference_weight, root) for path in sorted(root.glob("*.npz"))]
+    valid = _valid_samples(raw, config, warnings)
+    shuffled = list(valid)
+    rng = random.Random(config.split_seed)
+    rng.shuffle(shuffled)
+    val_count = int(round(len(shuffled) * config.val_split))
+    val_ids = {sample.sample_id for sample in shuffled[:val_count]}
+    train_samples: list[AdaptationSample] = []
+    val_samples: list[AdaptationSample] = []
+    for sample in sorted(valid, key=lambda item: item.sample_id):
+        split: DatasetSplit = "val" if sample.sample_id in val_ids else "train"
+        updated = AdaptationSample(
+            sample_id=sample.sample_id,
+            path=sample.path,
+            split=split,
+            source=sample.source,
+            weight=sample.weight,
+            status=sample.status,
+            metadata=sample.metadata,
+        )
+        if split == "val":
+            val_samples.append(updated)
+        else:
+            train_samples.append(updated)
+    return train_samples, val_samples
+
+
+def _has_structured_npzs(root: Path) -> bool:
+    return any((root / split).exists() or (root / "accepted" / split).exists() for split in ("train", "val"))
 
 
 def _discover_structured_npzs(root: Path, split: DatasetSplit) -> list[Path]:
@@ -374,17 +448,136 @@ def _valid_samples(
     config: AdaptationDatasetConfig,
     warnings: list[str],
 ) -> list[AdaptationSample]:
-    valid: list[AdaptationSample] = []
+    canonical: list[AdaptationSample] = []
+    legacy: list[tuple[AdaptationSample, dict[str, Any]]] = []
     for sample in samples:
         result = validate_npz_contract(sample.path, config)
-        if result["ok"]:
+        contract = result.get("contract")
+        if contract == CANONICAL_CONTRACT:
             sample.metadata.setdefault("npz_shapes", _json_safe_shapes(result.get("shapes", {})))
-            valid.append(sample)
+            sample.metadata.setdefault("sample_contract", "canonical")
+            canonical.append(sample)
+        elif contract == LEGACY_T1_SINGLE_CONTRACT:
+            sample.metadata.setdefault("npz_shapes", _json_safe_shapes(result.get("shapes", {})))
+            sample.metadata.setdefault("sample_contract", LEGACY_T1_SINGLE_CONTRACT)
+            legacy.append((sample, _legacy_ordering_metadata(Path(sample.path))))
+        else:
+            warnings.append(
+                f"NPZ shape validation failed for {sample.path}: " + "; ".join(result.get("reasons", []))
+            )
+    return canonical + _assemble_legacy_t1_sequences(legacy, config, warnings)
+
+
+def _load_legacy_t1_sequence_target(sample: AdaptationSample) -> np.ndarray:
+    paths = [Path(path) for path in sample.metadata.get("target_sequence_paths", [])]
+    plume_channel = int(sample.metadata.get("plume_channel", 0))
+    frames: list[np.ndarray] = []
+    for path in paths:
+        with np.load(path) as data:
+            target = data["target"].astype(np.float32, copy=False)
+            frames.append(target[0, plume_channel])
+    return np.stack(frames, axis=0)[:, np.newaxis, :, :]
+
+
+def _assemble_legacy_t1_sequences(
+    legacy: list[tuple[AdaptationSample, dict[str, Any]]],
+    config: AdaptationDatasetConfig,
+    warnings: list[str],
+) -> list[AdaptationSample]:
+    grouped: dict[str, list[tuple[AdaptationSample, dict[str, Any]]]] = {}
+    for sample, meta in legacy:
+        scenario_id = meta.get("scenario_id")
+        if not scenario_id:
+            warnings.append(f"legacy t+1 sample rejected because scenario_id is missing: {sample.path}")
             continue
-        warnings.append(
-            f"NPZ shape validation failed for {sample.path}: " + "; ".join(result.get("reasons", []))
-        )
-    return valid
+        if meta.get("window_index") is None:
+            warnings.append(f"legacy t+1 sample rejected because window order cannot be parsed: {sample.path}")
+            continue
+        grouped.setdefault(str(scenario_id), []).append((sample, meta))
+
+    assembled: list[AdaptationSample] = []
+    covered_paths: set[str] = set()
+    for scenario_id, items in grouped.items():
+        by_index: dict[int, tuple[AdaptationSample, dict[str, Any]]] = {int(meta["window_index"]): (sample, meta) for sample, meta in items}
+        for start in sorted(by_index):
+            sequence = [by_index.get(start + offset) for offset in range(config.future_steps)]
+            if any(item is None for item in sequence):
+                continue
+            first = sequence[0][0]  # type: ignore[index]
+            paths = [str(item[0].path) for item in sequence if item is not None]
+            covered_paths.update(paths)
+            metadata = {
+                **first.metadata,
+                "sample_contract": LEGACY_T1_SEQUENCE_CONTRACT,
+                "target_sequence_paths": paths,
+                "scenario_id": scenario_id,
+                "start_window_id": start,
+                "plume_channel": config.plume_channel,
+            }
+            assembled.append(
+                AdaptationSample(
+                    sample_id=f"{first.sample_id}-legacy-t1-seq-{start}",
+                    path=first.path,
+                    split=first.split,
+                    source=first.source,
+                    weight=first.weight,
+                    status=first.status,
+                    metadata=metadata,
+                )
+            )
+
+    uncovered_count = sum(1 for sample, _meta in legacy if sample.path not in covered_paths)
+    if legacy and not assembled:
+        warnings.append("legacy t+1 samples found but no four consecutive same-scenario windows could be assembled")
+    elif uncovered_count:
+        warnings.append(f"{uncovered_count} legacy t+1 samples could not be assembled into four consecutive same-scenario windows")
+    return assembled
+
+
+def _legacy_ordering_metadata(path: Path) -> dict[str, Any]:
+    meta: dict[str, Any] = {}
+    try:
+        with np.load(path, allow_pickle=False) as data:
+            for key in ("scenario_id", "scenario", "case_id"):
+                if key in data.files:
+                    value = _npz_scalar_to_str(data[key])
+                    if value:
+                        meta["scenario_id"] = value
+                        break
+            for key in ("window_id", "window_index", "window", "t_index", "time_index"):
+                if key in data.files:
+                    value = _npz_scalar_to_int(data[key])
+                    if value is not None:
+                        meta["window_index"] = value
+                        break
+    except Exception:
+        pass
+    if "scenario_id" not in meta:
+        name_match = re.match(r"(?P<scenario>.+?)[_-](?:window|win|t)?(?P<idx>\d+)$", path.stem)
+        if name_match:
+            meta["scenario_id"] = name_match.group("scenario")
+            meta.setdefault("window_index", int(name_match.group("idx")))
+    if "window_index" not in meta:
+        matches = re.findall(r"\d+", path.stem)
+        if matches:
+            meta["window_index"] = int(matches[-1])
+    return meta
+
+
+def _npz_scalar_to_str(value: np.ndarray) -> str | None:
+    try:
+        item = value.item() if value.shape == () else value.reshape(-1)[0].item()
+    except Exception:
+        return None
+    return str(item) if item is not None else None
+
+
+def _npz_scalar_to_int(value: np.ndarray) -> int | None:
+    try:
+        item = value.item() if value.shape == () else value.reshape(-1)[0].item()
+        return int(item)
+    except Exception:
+        return None
 
 
 def _sample_from_reference(path: Path, split: DatasetSplit, weight: float, root: Path) -> AdaptationSample:

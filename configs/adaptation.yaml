@@ -6,6 +6,11 @@ adaptation:
 
   canonical_window_format: npz
 
+  # Temporal spacing for one model frame. Future inflow code must resample or
+  # bucket irregular incoming observations onto this interval before writing NPZ
+  # windows. Allowed values: 30 or 60 minutes. With the default, t+1 is +60m.
+  frame_interval_minutes: 60
+
   input_frames: 3
   future_steps: 4
   input_channels: 10
@@ -18,14 +23,30 @@ adaptation:
   split_seed: 42
 
   quality_mode: medium
-  min_good_fresh_samples: 50
+  min_good_fresh_samples: 64
   allow_used_reserve_when_fresh_insufficient: true
+
+  freshness:
+    min_observation_span_minutes: 60
+    max_sample_age_days: 7
 
   reference_dataset:
     mode: stable_subset
     path_env: PLUME_ADAPTATION_REFERENCE_DATASET_DIR
     default_path: artifacts/reference_subset
     configurable: true
+
+  discovery:
+    enable_smart_checkpoint_discovery: true
+    enable_smart_dataset_discovery: true
+    default_robust_checkpoint_globs:
+      - artifacts/models/**/final_full_checkpoint.pt
+      - artifacts/models/**/best_full_checkpoint.pt
+      - runs/**/final_full_checkpoint.pt
+      - runs/**/best_full_checkpoint.pt
+    default_reference_dataset_candidates:
+      - /workspace/online_sets/online_learning_subset
+      - artifacts/reference_subset
 
   training:
     start_from: active_checkpoint
@@ -43,7 +64,8 @@ adaptation:
     training_device: cuda
     allow_cpu_training_fallback: false
     min_free_vram_gib_for_training: 2.0
-    retry_cooldown_seconds: 300
+    retry_cooldown_seconds: 3600
+    min_seconds_between_training_runs: 3600
     max_concurrent_training_jobs: 1
 
   promotion:

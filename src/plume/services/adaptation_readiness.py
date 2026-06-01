@@ -8,6 +8,8 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime, timedelta
+import glob
+import json
 import os
 from pathlib import Path
 import shutil
@@ -16,6 +18,7 @@ from typing import Any, Iterable
 import yaml
 
 from plume.services.adaptation_buffer import AdaptationBuffer, AdaptationBufferConfig
+from plume.training.adaptation_dataset import AdaptationDatasetConfig, build_adaptation_dataset_manifest
 from plume.training.gpu_memory import GpuMemorySnapshot, classify_training_device_readiness
 
 
@@ -38,18 +41,43 @@ class AdaptationReadinessConfig:
     reference_dataset_path: Path | str | None = None
     reference_dataset_path_env: str = "PLUME_ADAPTATION_REFERENCE_DATASET_DIR"
     default_reference_dataset_path: Path | str = "artifacts/reference_subset"
-    min_good_fresh_samples: int = 50
+    frame_interval_minutes: int = 60
+    min_good_fresh_samples: int = 64
+    min_observation_span_minutes: int = 60
+    max_sample_age_days: int = 7
     allow_used_reserve_when_fresh_insufficient: bool = True
     training_device: str = "cuda"
     allow_cpu_training_fallback: bool = False
     min_free_vram_gib_for_training: float = 2.0
-    retry_cooldown_seconds: int = 300
+    retry_cooldown_seconds: int = 3600
+    min_seconds_between_training_runs: int = 3600
     max_concurrent_training_jobs: int = 1
     allow_fresh_start: bool = False
     warning_checkpoint_count: int = 20
     warning_disk_usage_percent: float = 90.0
     automatic_deletion: bool = False
     device_index: int = 0
+    enable_smart_checkpoint_discovery: bool = True
+    enable_smart_dataset_discovery: bool = True
+    default_robust_checkpoint_globs: list[str] = field(
+        default_factory=lambda: [
+            "artifacts/models/**/final_full_checkpoint.pt",
+            "artifacts/models/**/best_full_checkpoint.pt",
+            "runs/**/final_full_checkpoint.pt",
+            "runs/**/best_full_checkpoint.pt",
+        ]
+    )
+    default_reference_dataset_candidates: list[str] = field(
+        default_factory=lambda: ["/workspace/online_sets/online_learning_subset", "artifacts/reference_subset"]
+    )
+
+    def __post_init__(self) -> None:
+        if self.frame_interval_minutes not in {30, 60}:
+            raise ValueError("frame_interval_minutes must be 30 or 60")
+        if self.min_observation_span_minutes not in {30, 60}:
+            raise ValueError("min_observation_span_minutes must be 30 or 60")
+        if self.min_seconds_between_training_runs < 0:
+            raise ValueError("min_seconds_between_training_runs must be non-negative")
 
     @classmethod
     def from_yaml(cls, path: Path | str = "configs/adaptation.yaml") -> "AdaptationReadinessConfig":
@@ -59,15 +87,22 @@ class AdaptationReadinessConfig:
             payload = yaml.safe_load(handle) or {}
         adaptation = payload.get("adaptation", {})
         reference_dataset = adaptation.get("reference_dataset", {})
+        freshness = adaptation.get("freshness", {})
         training = adaptation.get("training", {})
         checkpoints = adaptation.get("checkpoints", {})
+        discovery = adaptation.get("discovery", {})
         return cls(
             enabled=bool(adaptation.get("enabled", True)),
             buffer_root_env=str(adaptation.get("buffer_root_env", cls.buffer_root_env)),
             default_buffer_root=adaptation.get("default_buffer_root", cls.default_buffer_root),
             reference_dataset_path_env=str(reference_dataset.get("path_env", cls.reference_dataset_path_env)),
             default_reference_dataset_path=reference_dataset.get("default_path", cls.default_reference_dataset_path),
+            frame_interval_minutes=int(adaptation.get("frame_interval_minutes", cls.frame_interval_minutes)),
             min_good_fresh_samples=int(adaptation.get("min_good_fresh_samples", cls.min_good_fresh_samples)),
+            min_observation_span_minutes=int(
+                freshness.get("min_observation_span_minutes", cls.min_observation_span_minutes)
+            ),
+            max_sample_age_days=int(freshness.get("max_sample_age_days", cls.max_sample_age_days)),
             allow_used_reserve_when_fresh_insufficient=bool(
                 adaptation.get(
                     "allow_used_reserve_when_fresh_insufficient",
@@ -82,6 +117,9 @@ class AdaptationReadinessConfig:
                 training.get("min_free_vram_gib_for_training", cls.min_free_vram_gib_for_training)
             ),
             retry_cooldown_seconds=int(training.get("retry_cooldown_seconds", cls.retry_cooldown_seconds)),
+            min_seconds_between_training_runs=int(
+                training.get("min_seconds_between_training_runs", cls.min_seconds_between_training_runs)
+            ),
             max_concurrent_training_jobs=int(
                 training.get("max_concurrent_training_jobs", cls.max_concurrent_training_jobs)
             ),
@@ -93,6 +131,18 @@ class AdaptationReadinessConfig:
                 checkpoints.get("warning_disk_usage_percent", cls.warning_disk_usage_percent)
             ),
             automatic_deletion=bool(checkpoints.get("automatic_deletion", cls.automatic_deletion)),
+            enable_smart_checkpoint_discovery=bool(
+                discovery.get("enable_smart_checkpoint_discovery", cls.enable_smart_checkpoint_discovery)
+            ),
+            enable_smart_dataset_discovery=bool(
+                discovery.get("enable_smart_dataset_discovery", cls.enable_smart_dataset_discovery)
+            ),
+            default_robust_checkpoint_globs=list(
+                discovery.get("default_robust_checkpoint_globs", cls().default_robust_checkpoint_globs)
+            ),
+            default_reference_dataset_candidates=list(
+                discovery.get("default_reference_dataset_candidates", cls().default_reference_dataset_candidates)
+            ),
         )
 
     def resolve_buffer_root(self) -> Path:
@@ -189,7 +239,10 @@ def _parse_datetime(value: datetime | str | None) -> datetime | None:
         return None
     if normalized.endswith("Z"):
         normalized = normalized[:-1] + "+00:00"
-    return datetime.fromisoformat(normalized).astimezone(UTC)
+    try:
+        return datetime.fromisoformat(normalized).astimezone(UTC)
+    except ValueError:
+        return None
 
 
 def check_checkpoint_available(
@@ -197,51 +250,227 @@ def check_checkpoint_available(
     latest_best_checkpoint_path: str | Path | None,
     allow_fresh_start: bool,
 ) -> CheckpointAvailability:
-    """Check checkpoint existence and select active, fallback, or fresh start."""
-    active = Path(active_checkpoint_path) if active_checkpoint_path else None
-    latest_best = Path(latest_best_checkpoint_path) if latest_best_checkpoint_path else None
-    details = {
-        "active_checkpoint_path": str(active) if active else None,
-        "active_checkpoint_exists": bool(active and active.exists()),
-        "latest_best_checkpoint_path": str(latest_best) if latest_best else None,
-        "latest_best_checkpoint_exists": bool(latest_best and latest_best.exists()),
+    """Check explicit checkpoint existence and select active, fallback, or fresh start."""
+    return discover_adaptation_checkpoint(
+        repo_root=Path.cwd(),
+        explicit_active_checkpoint=active_checkpoint_path,
+        explicit_latest_best_checkpoint=latest_best_checkpoint_path,
+        globs=[],
+        allow_fresh_start=allow_fresh_start,
+    )
+
+
+def discover_adaptation_checkpoint(
+    *,
+    repo_root: Path,
+    registry: Any | None = None,
+    explicit_active_checkpoint: str | Path | None = None,
+    explicit_latest_best_checkpoint: str | Path | None = None,
+    globs: list[str] | None = None,
+    allow_fresh_start: bool = False,
+) -> CheckpointAvailability:
+    """Discover a usable ConvLSTM adaptation checkpoint without requiring env vars."""
+
+    details: dict[str, Any] = {
+        "explicit_active_checkpoint": str(explicit_active_checkpoint) if explicit_active_checkpoint else None,
+        "explicit_latest_best_checkpoint": str(explicit_latest_best_checkpoint) if explicit_latest_best_checkpoint else None,
+        "searched_globs": list(globs or []),
         "allow_fresh_start": allow_fresh_start,
     }
-    if active and active.exists():
+    ordered: list[tuple[Path, str]] = []
+
+    def add(candidate: str | Path | None, source: str) -> None:
+        if candidate is None:
+            return
+        path = Path(candidate)
+        if not path.is_absolute():
+            path = repo_root / path
+        ordered.append((path, source))
+
+    add(explicit_active_checkpoint, "active_checkpoint")
+
+    registry_payload = _registry_payload(registry)
+    if registry_payload:
+        active_id = registry_payload.get("active_model_id")
+        models = [item for item in registry_payload.get("models", []) if isinstance(item, dict)]
+        active_model = next((item for item in models if item.get("model_id") == active_id), None)
+        add(_model_checkpoint_path(active_model), "registry_active_model")
+        for model in sorted(models, key=lambda item: str(item.get("created_at") or item.get("updated_at") or item.get("timestamp") or ""), reverse=True):
+            add(_model_checkpoint_path(model), "registry_latest_best_checkpoint")
+
+    add(explicit_latest_best_checkpoint, "latest_best_checkpoint")
+
+    for pattern in globs or []:
+        for candidate in _glob_candidates(repo_root, pattern):
+            ordered.append((candidate, "glob"))
+
+    seen: set[Path] = set()
+    valid: list[tuple[Path, str]] = []
+    for path, source in ordered:
+        try:
+            resolved = path.resolve()
+        except Exception:
+            resolved = path
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        if _valid_checkpoint_file(path):
+            valid.append((path, source))
+
+    details["candidate_count"] = len(valid)
+    if valid:
+        explicit = [(p, s) for p, s in valid if s in {"active_checkpoint", "registry_active_model", "latest_best_checkpoint", "registry_latest_best_checkpoint"}]
+        pool = explicit or sorted(valid, key=lambda item: item[0].stat().st_mtime, reverse=True)
+        selected, source = pool[0]
         return CheckpointAvailability(
             passed=True,
-            status=_GREEN,
-            message="Active checkpoint is available",
-            selected_checkpoint_path=str(active),
-            source="active_checkpoint",
+            status=_GREEN if source in {"active_checkpoint", "registry_active_model", "glob"} else _YELLOW,
+            message=f"Adaptation checkpoint is available via {source}",
+            selected_checkpoint_path=str(selected),
+            source=source,
             details=details,
         )
-    if latest_best and latest_best.exists():
-        return CheckpointAvailability(
-            passed=True,
-            status=_YELLOW,
-            message="Active checkpoint is missing; latest best checkpoint is available as fallback",
-            selected_checkpoint_path=str(latest_best),
-            source="latest_best_checkpoint",
-            details=details,
-        )
+
     if allow_fresh_start:
-        return CheckpointAvailability(
-            passed=True,
-            status=_YELLOW,
-            message="No checkpoint is available; fresh start is allowed",
-            selected_checkpoint_path=None,
-            source="fresh_start",
-            details=details,
-        )
-    return CheckpointAvailability(
-        passed=False,
-        status=_RED,
-        message="No checkpoint is available and fresh start is disabled",
-        selected_checkpoint_path=None,
-        source=None,
-        details=details,
-    )
+        return CheckpointAvailability(True, _YELLOW, "No checkpoint is available; fresh start is allowed", None, "fresh_start", details)
+    return CheckpointAvailability(False, _RED, "No adaptation checkpoint could be discovered and fresh start is disabled", None, None, details)
+
+
+def _glob_candidates(repo_root: Path, pattern: str) -> list[Path]:
+    search = pattern if Path(pattern).is_absolute() else str(repo_root / pattern)
+    return sorted(Path(match) for match in glob.glob(search, recursive=True))
+
+
+def _valid_checkpoint_file(path: Path) -> bool:
+    return path.exists() and path.is_file() and path.suffix.lower() in _CHECKPOINT_SUFFIXES and path.name not in {"manifest.json"}
+
+
+def _registry_payload(registry: Any | None) -> dict[str, Any] | None:
+    if registry is None:
+        return None
+    if isinstance(registry, dict):
+        return registry
+    load = getattr(registry, "load", None)
+    if callable(load):
+        try:
+            payload = load()
+        except Exception:
+            return None
+        return payload if isinstance(payload, dict) else None
+    return None
+
+
+def _model_checkpoint_path(model: dict[str, Any] | None) -> str | None:
+    if not model:
+        return None
+    for key in ("checkpoint_path", "path", "model_path", "best_checkpoint_path", "final_checkpoint"):
+        value = model.get(key)
+        if isinstance(value, str) and value:
+            return value
+    return None
+
+
+def discover_adaptation_reference_dataset(
+    *,
+    repo_root: Path,
+    explicit_path: str | Path | None = None,
+    candidates: list[str] | None = None,
+    config: AdaptationDatasetConfig | None = None,
+) -> Path | None:
+    """Find a dataset root with usable canonical or assembled legacy NPZ samples."""
+    cfg = config or AdaptationDatasetConfig()
+    roots: list[Path] = []
+    if explicit_path is not None:
+        roots.append(Path(explicit_path))
+    roots.extend(Path(candidate) for candidate in (candidates or []))
+
+    valid: list[tuple[Path, bool, int]] = []
+    for root in roots:
+        path = root if root.is_absolute() else repo_root / root
+        if not path.exists():
+            continue
+        manifest = build_adaptation_dataset_manifest(reference_dataset_dir=path, config=cfg)
+        train = int(manifest.counts.get("reference_train", 0))
+        val = int(manifest.counts.get("reference_val", 0))
+        total = train + val
+        if total > 0:
+            valid.append((path, train > 0 and val > 0, total))
+    if not valid:
+        return None
+    valid.sort(key=lambda item: (item[1], item[2]), reverse=True)
+    return valid[0][0]
+
+
+_ACCEPTED_FRESH_STATUSES = {"accepted_train", "accepted_val"}
+_TIMESTAMP_FIELDS = (
+    "accepted_at",
+    "created_at",
+    "timestamp",
+    "observation_time",
+    "window_start",
+    "window_end",
+    "source_timestamp",
+)
+
+
+def _record_timestamp(record: dict[str, Any], *, prefer_end: bool = False) -> datetime | None:
+    if record.get("window_start") and record.get("window_end"):
+        return _parse_datetime(record.get("window_end" if prefer_end else "window_start"))
+    preferred = ("accepted_at", "window_end", "created_at", "timestamp", "observation_time", "source_timestamp") if prefer_end else _TIMESTAMP_FIELDS
+    for field_name in preferred:
+        value = _parse_datetime(record.get(field_name))
+        if value is not None:
+            return value
+    return None
+
+
+def _accepted_fresh_records(buffer_summary_or_manifest: dict[str, Any]) -> list[dict[str, Any]]:
+    records = buffer_summary_or_manifest.get("samples", [])
+    if not isinstance(records, list):
+        return []
+    return [record for record in records if isinstance(record, dict) and record.get("status") in _ACCEPTED_FRESH_STATUSES]
+
+
+def _check_accepted_sample_time_span(
+    records: list[dict[str, Any]],
+    config: AdaptationReadinessConfig,
+    now: datetime,
+) -> ReadinessCheck:
+    del now
+    required = config.min_observation_span_minutes
+    timestamps = [_record_timestamp(record) for record in records]
+    if not records:
+        return ReadinessCheck("accepted_sample_time_span", _YELLOW, False, "No accepted fresh samples are available for time-span check", {"required_span_minutes": required, "actual_span_minutes": 0})
+    if any(value is None for value in timestamps):
+        return ReadinessCheck("accepted_sample_time_span", _YELLOW, False, "Accepted fresh samples are missing timestamps for time-span check", {"required_span_minutes": required, "missing_timestamp_count": sum(1 for value in timestamps if value is None)})
+    actual = (max(timestamps) - min(timestamps)).total_seconds() / 60.0  # type: ignore[arg-type]
+    details = {"required_span_minutes": required, "actual_span_minutes": actual}
+    if actual >= required:
+        return ReadinessCheck("accepted_sample_time_span", _GREEN, True, "Accepted fresh samples span enough observation time", details)
+    return ReadinessCheck("accepted_sample_time_span", _YELLOW, False, "Accepted fresh samples do not span enough observation time", details)
+
+
+def _check_accepted_sample_age(
+    records: list[dict[str, Any]],
+    config: AdaptationReadinessConfig,
+    now: datetime,
+) -> ReadinessCheck:
+    max_age = timedelta(days=config.max_sample_age_days)
+    timestamps = [_record_timestamp(record, prefer_end=True) for record in records]
+    if not records:
+        return ReadinessCheck("accepted_sample_age", _YELLOW, False, "No accepted fresh samples are available for age check", {"max_sample_age_days": config.max_sample_age_days})
+    if any(value is None for value in timestamps):
+        return ReadinessCheck("accepted_sample_age", _YELLOW, False, "Accepted fresh samples are missing timestamps for age check", {"max_sample_age_days": config.max_sample_age_days, "missing_timestamp_count": sum(1 for value in timestamps if value is None)})
+    oldest = min(timestamps)  # type: ignore[arg-type]
+    too_old = [value for value in timestamps if now - value > max_age]  # type: ignore[operator]
+    details = {
+        "max_sample_age_days": config.max_sample_age_days,
+        "oldest_sample_timestamp": _utc_iso(oldest),
+        "old_sample_count": len(too_old),
+    }
+    if too_old:
+        return ReadinessCheck("accepted_sample_age", _YELLOW, False, "Accepted fresh samples include data older than maximum sample age", details)
+    return ReadinessCheck("accepted_sample_age", _GREEN, True, "Accepted fresh samples are within the maximum sample age", details)
 
 
 class AdaptationReadinessService:
@@ -262,6 +491,8 @@ class AdaptationReadinessService:
         previous_resource_failure_at: datetime | str | None = None,
         now: datetime | None = None,
         gpu_snapshot: GpuMemorySnapshot | None = None,
+        registry: Any | None = None,
+        last_adaptation_training_at: datetime | str | None = None,
     ) -> AdaptationReadinessResult:
         """Run readiness checks and return a JSON-serializable result."""
         checks: list[ReadinessCheck] = []
@@ -274,9 +505,13 @@ class AdaptationReadinessService:
 
         buffer_check, buffer_summary = self._check_buffer_summary()
         checks.append(buffer_check)
+        accepted_records: list[dict[str, Any]] = []
         if buffer_summary:
             summary["buffer"] = buffer_summary
+            accepted_records = _accepted_fresh_records(buffer_summary)
             checks.append(self._check_enough_fresh_samples(buffer_summary))
+            checks.append(_check_accepted_sample_time_span(accepted_records, self.config, current_time))
+            checks.append(_check_accepted_sample_age(accepted_records, self.config, current_time))
             checks.append(self._check_reserve_policy(buffer_summary))
         else:
             checks.append(
@@ -290,6 +525,24 @@ class AdaptationReadinessService:
             )
             checks.append(
                 ReadinessCheck(
+                    name="accepted_sample_time_span",
+                    status=_YELLOW,
+                    passed=False,
+                    message="Accepted sample time span cannot be checked without a readable buffer manifest",
+                    details={"required_span_minutes": self.config.min_observation_span_minutes},
+                )
+            )
+            checks.append(
+                ReadinessCheck(
+                    name="accepted_sample_age",
+                    status=_YELLOW,
+                    passed=False,
+                    message="Accepted sample age cannot be checked without a readable buffer manifest",
+                    details={"max_sample_age_days": self.config.max_sample_age_days},
+                )
+            )
+            checks.append(
+                ReadinessCheck(
                     name="reserve_policy",
                     status=_YELLOW,
                     passed=True,
@@ -298,12 +551,17 @@ class AdaptationReadinessService:
                 )
             )
 
-        checks.append(self._check_reference_dataset())
+        dataset_check = self._check_reference_dataset()
+        checks.append(dataset_check)
+        summary["reference_dataset"] = dataset_check.details
 
-        checkpoint_availability = check_checkpoint_available(
-            active_checkpoint_path,
-            latest_best_checkpoint_path,
-            self.config.allow_fresh_start,
+        checkpoint_availability = discover_adaptation_checkpoint(
+            repo_root=Path.cwd(),
+            registry=registry,
+            explicit_active_checkpoint=active_checkpoint_path,
+            explicit_latest_best_checkpoint=latest_best_checkpoint_path,
+            globs=self.config.default_robust_checkpoint_globs if self.config.enable_smart_checkpoint_discovery else [],
+            allow_fresh_start=self.config.allow_fresh_start,
         )
         checks.append(checkpoint_availability.to_check())
         summary["checkpoint"] = {
@@ -322,6 +580,14 @@ class AdaptationReadinessService:
         )
         checks.append(cooldown_check)
         next_retry_at = computed_next_retry_at
+
+        training_cooldown_check, training_next_retry_at = self._check_training_cooldown(
+            last_adaptation_training_at=last_adaptation_training_at,
+            now=current_time,
+        )
+        checks.append(training_cooldown_check)
+        if training_next_retry_at and (next_retry_at is None or training_next_retry_at > next_retry_at):
+            next_retry_at = training_next_retry_at
         if gpu_check.status == _YELLOW and not next_retry_at and self.config.retry_cooldown_seconds > 0:
             next_retry_at = _utc_iso(current_time + timedelta(seconds=self.config.retry_cooldown_seconds))
 
@@ -365,13 +631,13 @@ class AdaptationReadinessService:
                 None,
             )
         try:
-            buffer = AdaptationBuffer.__new__(AdaptationBuffer)
-            buffer.config = AdaptationBufferConfig(buffer_root=root)
-            buffer.root = root
-            buffer.manifest_path = manifest
-            buffer.events_path = root / "buffer_events.jsonl"
-            buffer.observations_path = root / "raw_observations" / "observations.jsonl"
+            buffer = AdaptationBuffer.from_existing(root)
             buffer_summary = buffer.get_summary()
+            try:
+                payload = json.loads(manifest.read_text(encoding="utf-8"))
+                buffer_summary["samples"] = list(payload.get("samples", []))
+            except Exception:
+                buffer_summary["samples"] = []
         except Exception as exc:
             return (
                 ReadinessCheck(
@@ -412,11 +678,20 @@ class AdaptationReadinessService:
         return ReadinessCheck("reserve_policy", _GREEN, True, "Reserve policy does not block readiness", details)
 
     def _check_reference_dataset(self) -> ReadinessCheck:
-        path = self.config.resolve_reference_dataset_path()
-        details = {"resolved_path": str(path)}
-        if path.exists():
-            return ReadinessCheck("reference_dataset_exists", _GREEN, True, "Reference dataset path exists", details)
-        return ReadinessCheck("reference_dataset_exists", _RED, False, "Reference dataset path is missing", details)
+        explicit = self.config.resolve_reference_dataset_path()
+        selected = discover_adaptation_reference_dataset(
+            repo_root=Path.cwd(),
+            explicit_path=explicit,
+            candidates=self.config.default_reference_dataset_candidates if self.config.enable_smart_dataset_discovery else [],
+        )
+        details = {
+            "resolved_path": str(explicit),
+            "selected_dataset_path": str(selected) if selected else None,
+            "smart_discovery_enabled": self.config.enable_smart_dataset_discovery,
+        }
+        if selected is not None:
+            return ReadinessCheck("reference_dataset_exists", _GREEN, True, "Reference dataset with usable NPZ samples is available", details)
+        return ReadinessCheck("reference_dataset_exists", _RED, False, "Reference dataset with usable NPZ samples is missing", details)
 
     def _check_training_jobs(
         self,
@@ -490,6 +765,27 @@ class AdaptationReadinessService:
                 retry_at_iso,
             )
         return ReadinessCheck("retry_cooldown", _GREEN, True, "GPU memory retry cooldown has elapsed", details), None
+
+    def _check_training_cooldown(
+        self,
+        *,
+        last_adaptation_training_at: datetime | str | None,
+        now: datetime,
+    ) -> tuple[ReadinessCheck, str | None]:
+        last_run = _parse_datetime(last_adaptation_training_at)
+        details = {"min_seconds_between_training_runs": self.config.min_seconds_between_training_runs}
+        if last_run is None:
+            return ReadinessCheck("training_cooldown", _GREEN, True, "No adaptation training-run cadence cooldown is active", details), None
+        retry_at = last_run + timedelta(seconds=self.config.min_seconds_between_training_runs)
+        retry_at_iso = _utc_iso(retry_at)
+        details["last_adaptation_training_at"] = _utc_iso(last_run)
+        details["next_retry_at"] = retry_at_iso
+        if now < retry_at:
+            return (
+                ReadinessCheck("training_cooldown", _YELLOW, False, "Waiting for adaptation training-run cadence cooldown", details),
+                retry_at_iso,
+            )
+        return ReadinessCheck("training_cooldown", _GREEN, True, "Adaptation training-run cadence cooldown has elapsed", details), None
 
     def _check_checkpoint_storage(
         self,
