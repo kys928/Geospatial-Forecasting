@@ -96,6 +96,7 @@ python -m plume.workers.run --kind all
 
 See `docs/service_modes.md` for service mode guidance.
 See `docs/optional_features_audit.md` for a compact optional/provisional feature audit.
+See `docs/adaptation_operational_runbook.md` for adaptation loop smoke-test and operator verification guidance.
 
 Manual robust ConvLSTM three-stage adaptation smoke runner:
 
