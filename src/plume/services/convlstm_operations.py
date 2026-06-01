@@ -1196,6 +1196,41 @@ def apply_adaptation_promotion_policy(
     return {"decision": decision_payload, "candidate_model_id": candidate_model_id, "active_model_id": payload.get("active_model_id")}
 
 
+def approve_and_activate_adaptation_candidate(
+    *,
+    registry: ModelRegistry,
+    model_id: str,
+    actor: str,
+    comment: str | None = None,
+) -> dict[str, object]:
+    """Approve, validate, and activate an adaptation candidate through service-layer flow."""
+    payload = registry.load()
+    models = payload["models"]
+    record = next((m for m in models if m.get("model_id") == model_id), None)
+    if record is None:
+        raise ValueError(f"Unknown model id: {model_id}")
+    if not _is_adaptation_candidate_record(record):
+        raise ValueError("Model is not an adaptation candidate")
+    if record.get("status") == "rejected":
+        raise ValueError("Rejected adaptation candidates cannot be activated")
+
+    compatibility = validate_adaptation_checkpoint_for_activation(record)
+    if not compatibility.compatible:
+        raise ValueError("Approved adaptation model failed final compatibility check: " + ",".join(compatibility.reasons))
+
+    status = record.get("status")
+    if status == "candidate":
+        if record.get("approval_status") != "pending_manual_approval":
+            record["approval_status"] = "pending_manual_approval"
+            registry.save(payload)
+        approve_candidate(registry=registry, candidate_model_id=model_id, actor=actor, comment=comment)
+    elif status != "approved":
+        raise ValueError("Only candidate or approved adaptation models may be activated")
+
+    activation = activate_approved_model(registry=registry, model_id=model_id)
+    return {"result": activation, "candidate_model_id": model_id, "active_model_id": activation.get("model_id")}
+
+
 def activate_approved_model(*, registry: ModelRegistry, model_id: str) -> dict[str, object]:
     payload = registry.load()
     models = payload["models"]
