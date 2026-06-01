@@ -8,8 +8,33 @@ import type { CandidateDecisionRequest } from "../types/ops.types";
 type RowActionMenu = { id: string; top: number; left: number } | null;
 type DisplayModel = RegistryModelRecord & { isDemo?: boolean };
 type DetailRow = { label: string; value: string };
+type MetricRow = { label: string; value: string };
 
 const ADAPTATION_CONTRACT_VERSION = "robust_convlstm_adaptation_v1";
+const CORE_DETAIL_LABELS = new Set([
+  "Model ID",
+  "Status",
+  "Approval",
+  "Active / current",
+  "Path",
+  "Updated time",
+]);
+const MODEL_METRIC_KEYS = [
+  "selection_score",
+  "candidate_score",
+  "promotion_score",
+  "policy_score",
+  "val_rollout_weighted_mse",
+  "val_rollout_weighted_mse_t3",
+  "val_rollout_weighted_mse_t4",
+  "val_rollout_mae",
+  "val_rollout_mass_abs_error",
+  "val_rollout_peak_location_error",
+  "plume_iou",
+  "checkpoint_metric",
+  "best_validation_loss",
+  "best_val_loss",
+];
 
 const demoRow: DisplayModel = {
   model_id: "demo_convlstm_v0_1",
@@ -270,8 +295,42 @@ function rawMetadata(model: DisplayModel): unknown {
   return Object.keys(payload).length ? payload : null;
 }
 
+function collectModelMetricRows(model: DisplayModel): MetricRow[] {
+  const sources = [
+    model,
+    model.metrics,
+    model.metadata,
+    pickValue(model, [["metadata", "metrics"]]),
+    pickValue(model, [["metadata", "best_metrics"]]),
+    model.adaptation_run,
+    pickValue(model, [["adaptation_run", "best_metrics"]]),
+    pickValue(model, [["adaptation_run", "training_summary"]]),
+    pickValue(model, [["adaptation_run", "training_summary", "metrics"]]),
+    model.last_adaptation_promotion_decision,
+    model.last_promotion_result,
+    pickValue(model, [["metadata", "promotion_metrics"]]),
+    pickValue(model, [["metadata", "training_summary"]]),
+    pickValue(model, [["metadata", "training_summary", "metrics"]]),
+  ];
+  const rows: MetricRow[] = [];
+  const seen = new Set<string>();
+  for (const key of MODEL_METRIC_KEYS) {
+    for (const source of sources) {
+      const record = asRecord(source);
+      if (!record || !(key in record)) continue;
+      const value = record[key];
+      if (value === null || value === undefined || value === "") continue;
+      if (seen.has(key)) break;
+      rows.push({ label: key, value: formatStructuredValue(value) });
+      seen.add(key);
+      break;
+    }
+  }
+  return rows;
+}
+
 export function OpsRegistryTab() {
-  const registryState = useRegistry(10000);
+  const registryState = useRegistry(300000);
   const [inspectModelId, setInspectModelId] = useState<string | null>(null);
   const [menuOpen, setMenuOpen] = useState<RowActionMenu>(null);
   const [runningAction, setRunningAction] = useState<string | null>(null);
@@ -364,7 +423,7 @@ export function OpsRegistryTab() {
       <section className="panel">
         <h3 style={{ marginBottom: 4 }}>Model Versions</h3>
         <p className="muted" style={{ margin: 0 }}>
-          Auto-refresh every 10 seconds.
+          Auto-refresh every 5 minutes.
         </p>
         {models.length === 0 ? (
           <p className="muted" style={{ marginBottom: 0 }}>
@@ -561,6 +620,7 @@ export function OpsRegistryTab() {
             <ModelDetailSection
               title="Core"
               rows={coreRows(inspectModel, activeModelId)}
+              preserveLabels={CORE_DETAIL_LABELS}
             />
             {isAdaptationRecord(inspectModel) ? (
               <ModelDetailSection
@@ -574,16 +634,31 @@ export function OpsRegistryTab() {
             />
             {rawMetadata(inspectModel) ? (
               <details className="advanced-section">
-                <summary>Raw metadata</summary>
-                <pre
-                  style={{
-                    whiteSpace: "pre-wrap",
-                    maxHeight: 260,
-                    overflow: "auto",
-                  }}
-                >
-                  {JSON.stringify(rawMetadata(inspectModel), null, 2)}
-                </pre>
+                <summary>Model metrics / metadata</summary>
+                {collectModelMetricRows(inspectModel).length ? (
+                  <dl className="ops-model-details-list">
+                    {collectModelMetricRows(inspectModel).map((row) => (
+                      <div key={row.label}>
+                        <dt>{row.label}</dt>
+                        <dd>{row.value}</dd>
+                      </div>
+                    ))}
+                  </dl>
+                ) : (
+                  <p className="muted">No compact model metrics reported.</p>
+                )}
+                <details className="advanced-section">
+                  <summary>Full metadata JSON</summary>
+                  <pre
+                    style={{
+                      whiteSpace: "pre-wrap",
+                      maxHeight: 260,
+                      overflow: "auto",
+                    }}
+                  >
+                    {JSON.stringify(rawMetadata(inspectModel), null, 2)}
+                  </pre>
+                </details>
               </details>
             ) : null}
             <div className="button-row" style={{ justifyContent: "flex-end" }}>
@@ -604,11 +679,15 @@ export function OpsRegistryTab() {
 function ModelDetailSection({
   title,
   rows,
+  preserveLabels,
 }: {
   title: string;
   rows: DetailRow[];
+  preserveLabels?: Set<string>;
 }) {
-  const visibleRows = rows.filter((row) => row.value !== "Not reported");
+  const visibleRows = rows.filter(
+    (row) => row.value !== "Not reported" || preserveLabels?.has(row.label),
+  );
   if (!visibleRows.length) return null;
   return (
     <div className="ops-modal-section">

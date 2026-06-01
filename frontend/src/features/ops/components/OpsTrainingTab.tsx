@@ -14,6 +14,7 @@ type PresetKey = "fast_refresh" | "balanced" | "high_accuracy" | "recovery";
 type LearningRateMode = "conservative" | "default" | "aggressive";
 type RuntimeOption = "15m" | "30m" | "1h" | "2h";
 type ChecklistState = "met" | "not_met" | "unknown" | "checking";
+type ChecklistRow = { label: string; state: ChecklistState; detail: string };
 
 type ManualControlState = {
   maxEpochs: number;
@@ -65,8 +66,34 @@ const presetDefaults: Record<PresetKey, ManualControlState> = {
   },
 };
 
+const TRAINING_METRIC_KEYS = [
+  "training_loss",
+  "train_loss",
+  "validation_loss",
+  "val_loss",
+  "best_validation_loss",
+  "best_val_loss",
+  "current_epoch",
+  "epoch",
+  "total_epochs",
+  "max_epochs",
+  "progress",
+  "progress_pct",
+  "weighted_mse",
+  "mae",
+  "plume_iou",
+  "mass_abs_error",
+  "peak_location_error",
+  "selection_score",
+  "val_rollout_weighted_mse",
+  "val_rollout_weighted_mse_t3",
+  "val_rollout_weighted_mse_t4",
+];
+
 const asObj = (v: unknown) =>
-  v && typeof v === "object" ? (v as Record<string, unknown>) : {};
+  v && typeof v === "object" && !Array.isArray(v)
+    ? (v as Record<string, unknown>)
+    : {};
 const asStr = (v: unknown) => (typeof v === "string" && v.trim() ? v : null);
 const pick = (obj: Record<string, unknown>, keys: string[]) =>
   keys.map((k) => obj[k]).find((v) => v !== undefined && v !== null);
@@ -94,6 +121,16 @@ export function OpsTrainingTab() {
   const checklist = useMemo(
     () =>
       buildChecklist({
+        recommendation,
+        runningJobs,
+        status: statusState.status,
+        adaptationTraining,
+      }),
+    [recommendation, runningJobs, statusState.status, adaptationTraining],
+  );
+  const fullChecklist = useMemo(
+    () =>
+      buildFullBackendChecklist({
         recommendation,
         runningJobs,
         status: statusState.status,
@@ -288,6 +325,19 @@ export function OpsTrainingTab() {
               detail={item.detail}
             />
           ))}
+          {fullChecklist.length ? (
+            <details className="advanced-section">
+              <summary>Full backend readiness checks</summary>
+              {fullChecklist.map((item) => (
+                <ReadinessItem
+                  key={item.label}
+                  label={item.label}
+                  state={item.state}
+                  detail={item.detail}
+                />
+              ))}
+            </details>
+          ) : null}
         </details>
       </section>
       <section className="panel">
@@ -352,9 +402,8 @@ function deriveTrainingView(
       }
     })(),
   );
-  const metrics = asObj(
-    pick(jobObj, ["metrics", "training_metrics", "progress_metrics"]),
-  );
+  const metricSources = collectTrainingMetricSources(jobObj);
+  const metrics = metricSources[0] ?? {};
   const stateRaw =
     asStr(pick(jobObj, ["status"])) ??
     (Array.isArray(status?.retraining_job_statuses)
@@ -372,7 +421,14 @@ function deriveTrainingView(
   const started = asStr(pick(jobObj, ["started_at", "start_time"]));
   const completed = asStr(pick(jobObj, ["completed_at", "end_time"]));
   const elapsed = started
-    ? `${Math.max(0, Math.floor(((completed ? Date.parse(completed) : Date.now()) - Date.parse(started)) / 1000))}s`
+    ? `${Math.max(
+        0,
+        Math.floor(
+          ((completed ? Date.parse(completed) : Date.now()) -
+            Date.parse(started)) /
+            1000,
+        ),
+      )}s`
     : "Not reported";
   const progress = pick(metrics, [
     "progress",
@@ -384,6 +440,8 @@ function deriveTrainingView(
       ? Math.max(0, Math.min(100, progress > 1 ? progress : progress * 100))
       : null;
   const latestStatus = asStr(pick(jobObj, ["status"])) ?? "Not reported";
+  const jobCounts = adaptationTraining?.job_counts ?? {};
+  const jobCountSummary = formatJobCountSummary(jobCounts);
   const rows = [
     { label: "Current state", value: state },
     {
@@ -426,44 +484,9 @@ function deriveTrainingView(
     },
     { label: "Started", value: started ?? "Not reported" },
     { label: "Elapsed", value: elapsed },
+    { label: "Job counts", value: jobCountSummary },
   ];
-  const jobCounts = adaptationTraining?.job_counts ?? {};
-  const readinessSnapshot =
-    adaptationTraining?.latest_readiness_snapshot ?? null;
-  const readinessBlocking = Array.isArray(readinessSnapshot?.blocking_reasons)
-    ? readinessSnapshot.blocking_reasons.join("; ")
-    : null;
-  const metricRows = [
-    ["Queued jobs", jobCounts.queued],
-    ["Running jobs", jobCounts.running],
-    ["Completed jobs", jobCounts.completed ?? jobCounts.succeeded],
-    ["Failed jobs", jobCounts.failed],
-    [
-      "Readiness",
-      typeof readinessSnapshot?.status === "string"
-        ? readinessSnapshot.status
-        : null,
-    ],
-    ["Readiness blockers", readinessBlocking],
-    ["Progress", progressPct !== null ? `${progressPct.toFixed(1)}%` : null],
-    ["Current epoch", pick(metrics, ["current_epoch", "epoch"])],
-    ["Total epochs", pick(metrics, ["total_epochs", "max_epochs"])],
-    ["Training loss", pick(metrics, ["training_loss", "train_loss"])],
-    ["Validation loss", pick(metrics, ["validation_loss", "val_loss"])],
-    [
-      "Best validation loss",
-      pick(metrics, ["best_validation_loss", "best_val_loss"]),
-    ],
-    ["Steps completed", pick(metrics, ["steps_completed", "global_step"])],
-    ["ETA", pick(metrics, ["eta", "eta_seconds"])],
-    ["Elapsed time", pick(metrics, ["elapsed", "elapsed_time"])],
-    [
-      "Candidate model produced",
-      pick(jobObj, ["candidate_model_id", "candidate_model_produced"]),
-    ],
-  ]
-    .filter(([, v]) => v !== null && v !== undefined && String(v).trim() !== "")
-    .map(([label, value]) => ({ label: String(label), value: String(value) }));
+  const metricRows = collectTrainingMetricRows(metricSources, progressPct);
   return {
     state,
     rows,
@@ -471,6 +494,78 @@ function deriveTrainingView(
     progressPct,
     hasActiveJob: state === "Running" || state === "Queued",
   };
+}
+
+function collectTrainingMetricSources(
+  jobObj: Record<string, unknown>,
+): Record<string, unknown>[] {
+  return [
+    pick(jobObj, ["metrics", "training_metrics", "progress_metrics"]),
+    pick(jobObj, ["training_summary"]),
+    pick(asObj(pick(jobObj, ["training_summary"])), ["metrics"]),
+    pick(jobObj, ["best_metrics"]),
+    jobObj,
+  ]
+    .map(asObj)
+    .filter((source) => Object.keys(source).length > 0);
+}
+
+function collectTrainingMetricRows(
+  sources: Record<string, unknown>[],
+  progressPct: number | null,
+): Array<{ label: string; value: string }> {
+  const seen = new Set<string>();
+  const rows: Array<{ label: string; value: string }> = [];
+  for (const key of TRAINING_METRIC_KEYS) {
+    for (const source of sources) {
+      const value = source[key];
+      if (value === null || value === undefined || String(value).trim() === "")
+        continue;
+      if (seen.has(key)) break;
+      rows.push({
+        label: formatMetricLabel(key),
+        value:
+          key === "progress" || key === "progress_pct"
+            ? formatProgressValue(value)
+            : String(value),
+      });
+      seen.add(key);
+      break;
+    }
+  }
+  if (
+    progressPct !== null &&
+    !seen.has("progress") &&
+    !seen.has("progress_pct")
+  ) {
+    rows.push({ label: "Progress", value: `${progressPct.toFixed(1)}%` });
+  }
+  return rows;
+}
+
+function formatMetricLabel(key: string): string {
+  return key
+    .split("_")
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(" ");
+}
+
+function formatProgressValue(value: unknown): string {
+  if (typeof value !== "number") return String(value);
+  const pct = value > 1 ? value : value * 100;
+  return `${Math.max(0, Math.min(100, pct)).toFixed(1)}%`;
+}
+
+function formatJobCountSummary(jobCounts: Record<string, number>): string {
+  const entries = [
+    ["queued", jobCounts.queued],
+    ["running", jobCounts.running],
+    ["completed", jobCounts.completed ?? jobCounts.succeeded],
+    ["failed", jobCounts.failed],
+  ].filter(([, value]) => typeof value === "number");
+  return entries.length
+    ? entries.map(([label, value]) => `${label}: ${value}`).join("; ")
+    : "Not reported";
 }
 
 function collectLogs(status: any, latestJob: OpsJobRecord | null): string[] {
@@ -763,58 +858,124 @@ function buildChecklist({
   runningJobs: OpsJobRecord[];
   status: any;
   adaptationTraining: AdaptationTrainingStatus | null;
-}): Array<{ label: string; state: ChecklistState; detail: string }> {
+}): ChecklistRow[] {
   const evidence = recommendation?.evidence ?? {};
   const legacyReadiness = status?.retraining_readiness ?? {};
   const readinessSnapshot =
     adaptationTraining?.latest_readiness_snapshot ?? null;
-  const readiness = asObj(readinessSnapshot) ?? {};
+  const readiness = asObj(readinessSnapshot);
+  const checks = Array.isArray(readiness.checks) ? readiness.checks : [];
+  const blockingReasons = Array.isArray(readiness.blocking_reasons)
+    ? readiness.blocking_reasons.map(String).filter(Boolean)
+    : [];
+  const bufferCheck = findReadinessCheck(checks, ["buffer", "data"]);
+  const referenceCheck = findReadinessCheck(checks, ["reference", "dataset"]);
+  const checkpointCheck = findReadinessCheck(checks, ["checkpoint", "base"]);
+  const workerCheck = findReadinessCheck(checks, ["worker", "resource"]);
   const workerAvailable =
     typeof legacyReadiness.worker_available === "boolean"
       ? legacyReadiness.worker_available
       : null;
+  const readyState = readinessState(readiness);
+  const jobState = runningJobs.some((job) => job.status === "running")
+    ? { state: "checking" as ChecklistState, detail: "Running" }
+    : runningJobs.some((job) => job.status === "queued")
+      ? { state: "checking" as ChecklistState, detail: "Queued" }
+      : { state: "met" as ChecklistState, detail: "No queued/running jobs" };
+
+  return [
+    {
+      label: "Overall adaptation readiness",
+      state: readyState,
+      detail: formatReadinessDetail(readiness, Boolean(readinessSnapshot)),
+    },
+    {
+      label: "Blocking reasons",
+      state: blockingReasons.length ? "not_met" : "met",
+      detail: formatBlockingReasons(blockingReasons),
+    },
+    {
+      label: "Buffer / data status",
+      state: bufferCheck ? readinessState(bufferCheck) : "unknown",
+      detail: formatBufferStatus(readiness, evidence, bufferCheck),
+    },
+    {
+      label: "Reference dataset",
+      state: referenceCheck ? readinessState(referenceCheck) : "unknown",
+      detail: formatAvailability(referenceCheck),
+    },
+    {
+      label: "Base checkpoint",
+      state: checkpointCheck
+        ? readinessState(checkpointCheck)
+        : typeof legacyReadiness.base_checkpoint_available === "boolean"
+          ? legacyReadiness.base_checkpoint_available
+            ? "met"
+            : "not_met"
+          : "unknown",
+      detail: checkpointCheck
+        ? formatAvailability(checkpointCheck)
+        : typeof legacyReadiness.base_checkpoint_available === "boolean"
+          ? legacyReadiness.base_checkpoint_available
+            ? "Available"
+            : "Missing"
+          : "Not reported",
+    },
+    {
+      label: "Worker / resources",
+      state: workerCheck
+        ? readinessState(workerCheck)
+        : workerAvailable === null
+          ? "unknown"
+          : workerAvailable
+            ? "met"
+            : "not_met",
+      detail: workerCheck
+        ? formatAvailability(workerCheck, "Available", "Not available")
+        : workerAvailable === null
+          ? "Not reported"
+          : workerAvailable
+            ? "Available"
+            : "Not available",
+    },
+    {
+      label: "Training job state",
+      state: jobState.state,
+      detail: jobState.detail,
+    },
+  ];
+}
+
+function buildFullBackendChecklist({
+  recommendation,
+  runningJobs,
+  status,
+  adaptationTraining,
+}: {
+  recommendation: any;
+  runningJobs: OpsJobRecord[];
+  status: any;
+  adaptationTraining: AdaptationTrainingStatus | null;
+}): ChecklistRow[] {
+  const evidence = recommendation?.evidence ?? {};
+  const legacyReadiness = status?.retraining_readiness ?? {};
+  const readiness = asObj(
+    adaptationTraining?.latest_readiness_snapshot ?? null,
+  );
   const snapshotChecks = Array.isArray(readiness.checks)
     ? readiness.checks
     : [];
-  const blockingReasons = Array.isArray(readiness.blocking_reasons)
-    ? readiness.blocking_reasons.map(String).filter(Boolean)
-    : [];
-  const rows: Array<{ label: string; state: ChecklistState; detail: string }> =
-    [];
-
-  rows.push({
-    label: "Adaptation readiness snapshot",
-    state: readinessState(readiness),
-    detail:
-      asStr(readiness.status) ??
-      (readinessSnapshot
-        ? "Snapshot reported by backend"
-        : "No readiness snapshot reported yet"),
-  });
-
-  if (blockingReasons.length) {
-    rows.push({
-      label: "Blocking reasons",
-      state: "not_met",
-      detail: blockingReasons.slice(0, 4).join("; "),
-    });
-  }
-
-  for (const [index, rawCheck] of snapshotChecks.slice(0, 8).entries()) {
+  const rows: ChecklistRow[] = snapshotChecks.map((rawCheck, index) => {
     const check = asObj(rawCheck);
-    rows.push({
+    return {
       label:
         asStr(check.label) ??
         asStr(check.name) ??
         `Readiness check ${index + 1}`,
       state: readinessState(check),
-      detail:
-        asStr(check.message) ??
-        asStr(check.reason) ??
-        asStr(check.status) ??
-        "Reported by backend readiness snapshot",
-    });
-  }
+      detail: readinessDetail(check),
+    };
+  });
 
   rows.push(
     {
@@ -833,68 +994,6 @@ function buildChecklist({
         : "No queued/running jobs",
     },
     {
-      label: "Worker available",
-      state:
-        workerAvailable === null
-          ? "unknown"
-          : workerAvailable
-            ? "met"
-            : "not_met",
-      detail:
-        workerAvailable === null
-          ? "Not reported"
-          : workerAvailable
-            ? "Available"
-            : "Not available",
-    },
-    {
-      label: "Compute resources available",
-      state:
-        typeof legacyReadiness.resource_pressure === "boolean"
-          ? !legacyReadiness.resource_pressure
-            ? "met"
-            : "not_met"
-          : "unknown",
-      detail:
-        typeof legacyReadiness.resource_pressure === "boolean"
-          ? legacyReadiness.resource_pressure
-            ? "Resource pressure reported"
-            : "No resource pressure reported"
-          : "Not reported",
-    },
-    {
-      label: "Dataset source available",
-      state: recommendation?.reason ? "met" : "unknown",
-      detail: recommendation?.reason
-        ? "Derived from recommendation payload"
-        : "Not reported",
-    },
-    {
-      label: "Base checkpoint available",
-      state:
-        typeof legacyReadiness.base_checkpoint_available === "boolean"
-          ? legacyReadiness.base_checkpoint_available
-            ? "met"
-            : "not_met"
-          : "unknown",
-      detail:
-        typeof legacyReadiness.base_checkpoint_available === "boolean"
-          ? legacyReadiness.base_checkpoint_available
-            ? "Available"
-            : "Not available"
-          : "Not reported",
-    },
-    {
-      label: "Retraining is recommended",
-      state:
-        recommendation?.should_retrain === true
-          ? "met"
-          : recommendation?.should_retrain === false
-            ? "not_met"
-            : "unknown",
-      detail: recommendation?.reason ?? "Not reported",
-    },
-    {
       label: "Automatic training enabled",
       state:
         typeof legacyReadiness.retraining_enabled === "boolean"
@@ -910,8 +1009,90 @@ function buildChecklist({
           : "Not reported",
     },
   );
-
   return rows;
+}
+
+function findReadinessCheck(
+  checks: unknown[],
+  terms: string[],
+): Record<string, unknown> | null {
+  for (const rawCheck of checks) {
+    const check = asObj(rawCheck);
+    const haystack = `${asStr(check.name) ?? ""} ${
+      asStr(check.label) ?? ""
+    }`.toLowerCase();
+    if (terms.some((term) => haystack.includes(term))) return check;
+  }
+  return null;
+}
+
+function formatReadinessDetail(
+  readiness: Record<string, unknown>,
+  hasSnapshot: boolean,
+): string {
+  const status = asStr(readiness.status);
+  if (!hasSnapshot) return "No readiness snapshot reported yet";
+  if (status === "green" || status === "ready") return "Ready";
+  if (status === "red" || status === "blocked") return "Blocked";
+  if (status === "yellow" || status === "waiting") return "Waiting";
+  return status ?? "Snapshot reported by backend";
+}
+
+function formatBlockingReasons(reasons: string[]): string {
+  if (!reasons.length) return "No blocking reasons reported";
+  const visible = reasons.slice(0, 3);
+  const suffix =
+    reasons.length > visible.length
+      ? `; +${reasons.length - visible.length} more`
+      : "";
+  return `${visible.join("; ")}${suffix}`;
+}
+
+function formatBufferStatus(
+  readiness: Record<string, unknown>,
+  evidence: Record<string, unknown>,
+  bufferCheck: Record<string, unknown> | null,
+): string {
+  const summary = asObj(readiness.summary);
+  const buffer = asObj(
+    pick(summary, ["buffer", "buffer_status", "adaptation_buffer"]),
+  );
+  const parts = [
+    ["accepted", pick(buffer, ["accepted", "accepted_train", "used_total"])],
+    ["pending", pick(buffer, ["pending"])],
+    [
+      "fresh",
+      pick(buffer, ["fresh", "fresh_accepted_total", "new_samples"]) ??
+        evidence.new_samples,
+    ],
+  ]
+    .filter(([, value]) => value !== undefined && value !== null)
+    .map(([label, value]) => `${label}: ${value}`);
+  if (parts.length) return parts.join("; ");
+  if (bufferCheck) return readinessDetail(bufferCheck);
+  return "Not reported";
+}
+
+function formatAvailability(
+  check: Record<string, unknown> | null,
+  availableLabel = "Available",
+  missingLabel = "Missing",
+): string {
+  if (!check) return "Not reported";
+  const state = readinessState(check);
+  if (state === "met") return availableLabel;
+  if (state === "not_met") return missingLabel;
+  return readinessDetail(check);
+}
+
+function readinessDetail(check: Record<string, unknown>): string {
+  return (
+    asStr(check.message) ??
+    asStr(check.reason) ??
+    asStr(check.summary) ??
+    asStr(check.status) ??
+    "Reported by backend readiness snapshot"
+  );
 }
 
 function readinessState(check: Record<string, unknown>): ChecklistState {
