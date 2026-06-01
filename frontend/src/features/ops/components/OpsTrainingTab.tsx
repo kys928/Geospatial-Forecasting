@@ -18,8 +18,6 @@ type ChecklistRow = {
   label: string;
   state: ChecklistState;
   detail: string;
-  blockers?: string[];
-  moreBlockers?: number;
   warning?: string;
 };
 
@@ -80,12 +78,8 @@ const TRAINING_METRIC_KEYS = [
   "val_loss",
   "best_validation_loss",
   "best_val_loss",
-  "current_epoch",
   "epoch",
-  "total_epochs",
-  "max_epochs",
   "progress",
-  "progress_pct",
   "weighted_mse",
   "mae",
   "plume_iou",
@@ -317,26 +311,26 @@ export function OpsTrainingTab() {
               label={item.label}
               state={item.state}
               detail={item.detail}
-              blockers={item.blockers}
-              moreBlockers={item.moreBlockers}
               warning={item.warning}
             />
           ))}
         </details>
       </section>
       <section className="panel">
-        <h3>Manual Training</h3>
-        <p className="muted">
-          Manual training is an advanced override. Automatic training is the
-          normal workflow.
-        </p>
-        <button
-          className="secondary-button"
-          onClick={() => setManualOpen(true)}
-        >
-          Start manual training
-        </button>
-        {manualNotice ? <p className="muted">{manualNotice}</p> : null}
+        <details className="advanced-section">
+          <summary>Manual Training</summary>
+          <p className="muted">
+            Manual training is an advanced override. Automatic training is the
+            normal workflow.
+          </p>
+          <button
+            className="secondary-button"
+            onClick={() => setManualOpen(true)}
+          >
+            Start manual training
+          </button>
+          {manualNotice ? <p className="muted">{manualNotice}</p> : null}
+        </details>
       </section>
       {manualOpen ? (
         <ManualTrainingModal
@@ -349,14 +343,7 @@ export function OpsTrainingTab() {
   );
 }
 
-function ReadinessItem({
-  label,
-  state,
-  detail,
-  blockers = [],
-  moreBlockers = 0,
-  warning,
-}: ChecklistRow) {
+function ReadinessItem({ label, state, detail, warning }: ChecklistRow) {
   return (
     <div className={`ops-readiness-item ops-readiness-${state}`}>
       <span className="ops-readiness-dot" />
@@ -365,19 +352,6 @@ function ReadinessItem({
         <p className="muted" style={{ margin: 0 }}>
           {detail}
         </p>
-        {blockers.length ? (
-          <div className="muted" style={{ marginTop: 6 }}>
-            <strong>Blocking reasons:</strong>
-            <ul style={{ margin: "4px 0 0", paddingLeft: 18 }}>
-              {blockers.map((reason) => (
-                <li key={reason}>{reason}</li>
-              ))}
-            </ul>
-            {moreBlockers > 0 ? (
-              <p style={{ margin: 0 }}>+{moreBlockers} more</p>
-            ) : null}
-          </div>
-        ) : null}
         {warning ? (
           <p className="muted" style={{ margin: "6px 0 0" }}>
             {warning}
@@ -431,11 +405,7 @@ function deriveTrainingView(
         ),
       )}s`
     : "Not reported";
-  const progress = pick(metrics, [
-    "progress",
-    "progress_pct",
-    "percent_complete",
-  ]);
+  const progress = pick(metrics, ["progress"]);
   const progressPct =
     typeof progress === "number"
       ? Math.max(0, Math.min(100, progress > 1 ? progress : progress * 100))
@@ -525,20 +495,13 @@ function collectTrainingMetricRows(
       if (seen.has(key)) break;
       rows.push({
         label: formatMetricLabel(key),
-        value:
-          key === "progress" || key === "progress_pct"
-            ? formatProgressValue(value)
-            : String(value),
+        value: key === "progress" ? formatProgressValue(value) : String(value),
       });
       seen.add(key);
       break;
     }
   }
-  if (
-    progressPct !== null &&
-    !seen.has("progress") &&
-    !seen.has("progress_pct")
-  ) {
+  if (progressPct !== null && !seen.has("progress")) {
     rows.push({ label: "Progress", value: `${progressPct.toFixed(1)}%` });
   }
   return rows;
@@ -600,7 +563,7 @@ function buildSummaryText(
   if (state === "Not reported")
     return "No adaptation training job has been recorded yet.";
   if (notReady)
-    return "Automatic adaptation training is not ready yet. Open the readiness checklist for blocking conditions.";
+    return "Automatic adaptation training is not ready yet. Review the readiness rows before starting another run.";
   return "Automatic adaptation training is waiting for readiness conditions or new work.";
 }
 
@@ -861,9 +824,6 @@ function buildChecklist({
     adaptationTraining?.latest_readiness_snapshot ?? null;
   const readiness = asObj(readinessSnapshot);
   const checks = Array.isArray(readiness.checks) ? readiness.checks : [];
-  const blockingReasons = Array.isArray(readiness.blocking_reasons)
-    ? readiness.blocking_reasons.map(String).filter(Boolean)
-    : [];
   const adaptationEnabledCheck = findReadinessCheck(checks, [
     "adaptation_enabled",
     "adaptation enabled",
@@ -911,51 +871,23 @@ function buildChecklist({
   const overallState = adaptationDisabled
     ? "not_met"
     : readinessState(readiness);
-  const visibleBlockers = blockingReasons.slice(0, 3);
   const storageWarning = storageWarningCheck
     ? storageWarningText(storageWarningCheck)
     : null;
 
   return [
     {
-      label: "Overall readiness",
+      label: "Training readiness",
       state: overallState,
-      detail: adaptationDisabled
-        ? "Disabled"
-        : formatReadinessDetail(readiness, Boolean(readinessSnapshot)),
-      blockers: visibleBlockers,
-      moreBlockers: Math.max(
-        0,
-        blockingReasons.length - visibleBlockers.length,
-      ),
+      detail: trainingReadinessDetail(overallState),
     },
-    buildDataAvailabilityRow(
+    buildTrainingDataRow(
       bufferCheck,
       freshSamplesCheck,
       reservePolicyCheck,
+      referenceCheck,
     ),
-    {
-      label: "Reference dataset",
-      state: referenceCheck ? readinessState(referenceCheck) : "unknown",
-      detail: formatAvailability(referenceCheck),
-    },
-    {
-      label: "Base checkpoint",
-      state: checkpointCheck
-        ? readinessState(checkpointCheck)
-        : typeof legacyReadiness.base_checkpoint_available === "boolean"
-          ? legacyReadiness.base_checkpoint_available
-            ? "met"
-            : "not_met"
-          : "unknown",
-      detail: checkpointCheck
-        ? formatAvailability(checkpointCheck)
-        : typeof legacyReadiness.base_checkpoint_available === "boolean"
-          ? legacyReadiness.base_checkpoint_available
-            ? "Available"
-            : "Missing"
-          : "Not reported",
-    },
+    buildBaseModelRow(checkpointCheck, legacyReadiness),
     buildTrainingJobStateRow(
       runningJobs,
       noTrainingJobCheck,
@@ -969,26 +901,48 @@ function buildChecklist({
   ];
 }
 
-function buildDataAvailabilityRow(
+function trainingReadinessDetail(state: ChecklistState): string {
+  if (state === "met")
+    return "Automatic training can run when the worker is available.";
+  if (state === "checking")
+    return "Training is waiting for enough valid data or resources.";
+  if (state === "not_met")
+    return "Training cannot start yet. Review the readiness rows below.";
+  return "Training readiness is not reported.";
+}
+
+function buildTrainingDataRow(
   bufferCheck: Record<string, unknown> | null,
   freshSamplesCheck: Record<string, unknown> | null,
   reservePolicyCheck: Record<string, unknown> | null,
+  referenceCheck: Record<string, unknown> | null,
 ): ChecklistRow {
-  const checks = [bufferCheck, freshSamplesCheck, reservePolicyCheck].filter(
-    Boolean,
-  ) as Record<string, unknown>[];
+  const checks = [
+    bufferCheck,
+    freshSamplesCheck,
+    reservePolicyCheck,
+    referenceCheck,
+  ].filter(Boolean) as Record<string, unknown>[];
+  const states = checks.map(readinessState);
   if (bufferCheck && readinessState(bufferCheck) === "not_met") {
     return {
-      label: "Data availability",
+      label: "Training data",
       state: "not_met",
-      detail: "Adaptation buffer is missing",
+      detail: "Training data is not available yet.",
     };
   }
   if (freshSamplesCheck && readinessState(freshSamplesCheck) === "not_met") {
     return {
-      label: "Data availability",
+      label: "Training data",
+      state: "checking",
+      detail: "Waiting for enough collected training data.",
+    };
+  }
+  if (referenceCheck && readinessState(referenceCheck) === "not_met") {
+    return {
+      label: "Training data",
       state: "not_met",
-      detail: "Not enough fresh validated samples",
+      detail: "Training data is not available yet.",
     };
   }
   if (
@@ -997,25 +951,46 @@ function buildDataAvailabilityRow(
       readinessState(reservePolicyCheck) === "checking")
   ) {
     return {
-      label: "Data availability",
+      label: "Training data",
       state: readinessState(reservePolicyCheck),
-      detail: "Reserve policy not satisfied",
+      detail: "Waiting for enough collected training data.",
     };
   }
-  if (
-    checks.length &&
-    checks.every((check) => readinessState(check) === "met")
-  ) {
+  if (checks.length && states.every((state) => state === "met")) {
     return {
-      label: "Data availability",
+      label: "Training data",
       state: "met",
-      detail: "Buffer and fresh samples available",
+      detail: "Training data is available.",
     };
   }
   return {
-    label: "Data availability",
+    label: "Training data",
     state: "unknown",
-    detail: "Not reported",
+    detail: "Training data status is not reported.",
+  };
+}
+
+function buildBaseModelRow(
+  checkpointCheck: Record<string, unknown> | null,
+  legacyReadiness: Record<string, unknown>,
+): ChecklistRow {
+  const legacyAvailable = legacyReadiness.base_checkpoint_available;
+  const state = checkpointCheck
+    ? readinessState(checkpointCheck)
+    : typeof legacyAvailable === "boolean"
+      ? legacyAvailable
+        ? "met"
+        : "not_met"
+      : "unknown";
+  return {
+    label: "Base model",
+    state,
+    detail:
+      state === "met"
+        ? "Base model is available."
+        : state === "not_met"
+          ? "Base model is not available."
+          : "Base model status is not reported.",
   };
 }
 
@@ -1036,39 +1011,39 @@ function buildTrainingJobStateRow(
 
   if (hasRunning || latestStatus === "running")
     return {
-      label: "Training job state",
+      label: "Training job",
       state: "checking",
       detail: "Running",
     };
   if (hasQueued || latestStatus === "queued")
-    return { label: "Training job state", state: "checking", detail: "Queued" };
+    return { label: "Training job", state: "checking", detail: "Queued" };
   if (latestStatus === "failed")
     return {
-      label: "Training job state",
+      label: "Training job",
       state: "not_met",
       detail: "Latest job failed",
     };
   if (noTrainingJobCheck) {
     const state = readinessState(noTrainingJobCheck);
     return {
-      label: "Training job state",
+      label: "Training job",
       state,
       detail:
         state === "met"
           ? "No queued/running jobs"
-          : readinessDetail(noTrainingJobCheck),
+          : "Training job state is not reported.",
     };
   }
   if (runningJobs.length === 0)
     return {
-      label: "Training job state",
+      label: "Training job",
       state: "met",
       detail: "No queued/running jobs",
     };
   return {
-    label: "Training job state",
+    label: "Training job",
     state: "unknown",
-    detail: "Not reported",
+    detail: "Training job state is not reported.",
   };
 }
 
@@ -1081,17 +1056,17 @@ function buildGpuResourcesState(
     ? readinessState(retryCooldownCheck)
     : "unknown";
   if (gpuState === "not_met")
-    return { state: "not_met", detail: "Insufficient GPU memory" };
+    return { state: "not_met", detail: "GPU memory is not ready." };
   if (retryState === "not_met" || retryState === "checking")
     return {
       state: retryState === "checking" ? "checking" : "not_met",
-      detail: "Waiting for GPU retry cooldown",
+      detail: "Waiting before retrying GPU training.",
     };
   if (gpuState === "met" && retryState === "met")
     return { state: "met", detail: "Ready" };
   if (gpuState === "met" && !retryCooldownCheck)
     return { state: "met", detail: "Ready" };
-  return { state: "unknown", detail: "Not reported" };
+  return { state: "unknown", detail: "GPU/resource status is not reported." };
 }
 
 function storageWarningText(check: Record<string, unknown>): string | null {
@@ -1099,8 +1074,8 @@ function storageWarningText(check: Record<string, unknown>): string | null {
   if (state === "met") return null;
   const detail = readinessDetail(check);
   return detail === "Reported by backend readiness snapshot"
-    ? "Checkpoint storage warning reported"
-    : detail;
+    ? "Storage warning reported."
+    : "Storage warning reported.";
 }
 
 function findReadinessCheck(
@@ -1115,30 +1090,6 @@ function findReadinessCheck(
     if (terms.some((term) => haystack.includes(term))) return check;
   }
   return null;
-}
-
-function formatReadinessDetail(
-  readiness: Record<string, unknown>,
-  hasSnapshot: boolean,
-): string {
-  const status = asStr(readiness.status);
-  if (!hasSnapshot) return "No readiness snapshot reported yet";
-  if (status === "green" || status === "ready") return "Ready";
-  if (status === "red" || status === "blocked") return "Blocked";
-  if (status === "yellow" || status === "waiting") return "Waiting";
-  return status ?? "Snapshot reported by backend";
-}
-
-function formatAvailability(
-  check: Record<string, unknown> | null,
-  availableLabel = "Available",
-  missingLabel = "Missing",
-): string {
-  if (!check) return "Not reported";
-  const state = readinessState(check);
-  if (state === "met") return availableLabel;
-  if (state === "not_met") return missingLabel;
-  return readinessDetail(check);
 }
 
 function readinessDetail(check: Record<string, unknown>): string {
