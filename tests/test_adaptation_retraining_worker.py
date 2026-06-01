@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import numpy as np
@@ -64,12 +65,15 @@ def _npz(path: Path) -> Path:
 
 def _buffer(buffer: Path, *, train: int = 1, val: int = 1) -> None:
     samples = []
+    base_time = datetime.now(UTC) - timedelta(hours=1)
     for idx in range(train):
         path = _npz(buffer / "accepted" / "train" / f"train-{idx}.npz")
-        samples.append({"sample_id": f"train-{idx}", "status": "accepted_train", "window_path": str(path), "used_count": 0})
+        ts = (base_time + timedelta(minutes=idx)).isoformat().replace("+00:00", "Z")
+        samples.append({"sample_id": f"train-{idx}", "status": "accepted_train", "window_path": str(path), "used_count": 0, "accepted_at": ts, "created_at": ts})
     for idx in range(val):
         path = _npz(buffer / "accepted" / "val" / f"val-{idx}.npz")
-        samples.append({"sample_id": f"val-{idx}", "status": "accepted_val", "window_path": str(path), "used_count": 0})
+        ts = (base_time + timedelta(minutes=60 + idx)).isoformat().replace("+00:00", "Z")
+        samples.append({"sample_id": f"val-{idx}", "status": "accepted_val", "window_path": str(path), "used_count": 0, "accepted_at": ts, "created_at": ts})
     buffer.mkdir(parents=True, exist_ok=True)
     (buffer / "manifest.json").write_text(json.dumps({"schema_version": 1, "samples": samples}), encoding="utf-8")
 
