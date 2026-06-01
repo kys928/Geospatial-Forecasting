@@ -21,9 +21,6 @@ const CORE_DETAIL_LABELS = new Set([
 ]);
 const MODEL_METRIC_KEYS = [
   "selection_score",
-  "candidate_score",
-  "promotion_score",
-  "policy_score",
   "val_rollout_weighted_mse",
   "val_rollout_weighted_mse_t3",
   "val_rollout_weighted_mse_t4",
@@ -31,9 +28,20 @@ const MODEL_METRIC_KEYS = [
   "val_rollout_mass_abs_error",
   "val_rollout_peak_location_error",
   "plume_iou",
+  "weighted_mse",
+  "mae",
+  "mass_abs_error",
+  "peak_location_error",
   "checkpoint_metric",
+  "checkpoint_metric_name",
   "best_validation_loss",
-  "best_val_loss",
+  "validation_loss",
+  "val_loss",
+  "train_loss",
+  "training_loss",
+  "best_overall_score",
+  "final_score",
+  "score",
 ];
 
 const demoRow: DisplayModel = {
@@ -281,36 +289,20 @@ function supplementalRows(model: DisplayModel): DetailRow[] {
   ];
 }
 
-function rawMetadata(model: DisplayModel): unknown {
-  const payload: Record<string, unknown> = {};
-  for (const key of [
-    "metadata",
-    "adaptation_run",
-    "last_adaptation_promotion_decision",
-    "last_promotion_result",
-  ]) {
-    if (model[key] !== undefined && model[key] !== null)
-      payload[key] = model[key];
-  }
-  return Object.keys(payload).length ? payload : null;
-}
-
 function collectModelMetricRows(model: DisplayModel): MetricRow[] {
   const sources = [
-    model,
     model.metrics,
-    model.metadata,
+    model,
     pickValue(model, [["metadata", "metrics"]]),
     pickValue(model, [["metadata", "best_metrics"]]),
+    pickValue(model, [["metadata", "promotion_metrics"]]),
+    pickValue(model, [["metadata", "training_summary"]]),
+    pickValue(model, [["metadata", "training_summary", "metrics"]]),
     model.adaptation_run,
-    pickValue(model, [["adaptation_run", "best_metrics"]]),
     pickValue(model, [["adaptation_run", "training_summary"]]),
     pickValue(model, [["adaptation_run", "training_summary", "metrics"]]),
     model.last_adaptation_promotion_decision,
     model.last_promotion_result,
-    pickValue(model, [["metadata", "promotion_metrics"]]),
-    pickValue(model, [["metadata", "training_summary"]]),
-    pickValue(model, [["metadata", "training_summary", "metrics"]]),
   ];
   const rows: MetricRow[] = [];
   const seen = new Set<string>();
@@ -629,38 +621,24 @@ export function OpsRegistryTab() {
               />
             ) : null}
             <ModelDetailSection
-              title="Additional model metadata"
+              title="Additional Model Details"
               rows={supplementalRows(inspectModel)}
             />
-            {rawMetadata(inspectModel) ? (
-              <details className="advanced-section">
-                <summary>Model metrics / metadata</summary>
-                {collectModelMetricRows(inspectModel).length ? (
-                  <dl className="ops-model-details-list">
-                    {collectModelMetricRows(inspectModel).map((row) => (
-                      <div key={row.label}>
-                        <dt>{row.label}</dt>
-                        <dd>{row.value}</dd>
-                      </div>
-                    ))}
-                  </dl>
-                ) : (
-                  <p className="muted">No compact model metrics reported.</p>
-                )}
-                <details className="advanced-section">
-                  <summary>Full metadata JSON</summary>
-                  <pre
-                    style={{
-                      whiteSpace: "pre-wrap",
-                      maxHeight: 260,
-                      overflow: "auto",
-                    }}
-                  >
-                    {JSON.stringify(rawMetadata(inspectModel), null, 2)}
-                  </pre>
-                </details>
-              </details>
-            ) : null}
+            <details className="advanced-section">
+              <summary>Model Metrics</summary>
+              {collectModelMetricRows(inspectModel).length ? (
+                <dl className="ops-model-details-list">
+                  {collectModelMetricRows(inspectModel).map((row) => (
+                    <div key={row.label}>
+                      <dt>{row.label}</dt>
+                      <dd>{row.value}</dd>
+                    </div>
+                  ))}
+                </dl>
+              ) : (
+                <p className="muted">No model metrics reported.</p>
+              )}
+            </details>
             <div className="button-row" style={{ justifyContent: "flex-end" }}>
               <button
                 className="secondary-button"
