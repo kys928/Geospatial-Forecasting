@@ -13,7 +13,14 @@ import type {
   RetrainingTriggerRequest,
   RetrainingTriggerResponse,
   RollbackResponse,
-  OpsSystemStatusResponse
+  OpsSystemStatusResponse,
+  AdaptationBufferStatus,
+  AdaptationReadiness,
+  AdaptationTrainingStatus,
+  AdaptationCandidateList,
+  AdaptationPromotionDecision,
+  AdaptationStorageWarning,
+  CheckpointFileDeleteResult
 } from "../types/ops.types";
 
 const opsToken = import.meta.env.VITE_OPS_API_TOKEN?.trim();
@@ -79,5 +86,49 @@ export const opsClient = {
 
   rollbackModel(): Promise<RollbackResponse> {
     return httpPost<RollbackResponse>("/ops/models/rollback", {}, opsHeaders());
+  },
+
+  getAdaptationBufferStatus(): Promise<AdaptationBufferStatus> {
+    return httpGet<AdaptationBufferStatus>("/ops/adaptation/buffer/status", opsHeaders());
+  },
+
+  getAdaptationReadiness(): Promise<AdaptationReadiness> {
+    return httpGet<AdaptationReadiness>("/ops/adaptation/readiness", opsHeaders());
+  },
+
+  checkAdaptationNow(): Promise<AdaptationReadiness> {
+    return httpPost<AdaptationReadiness>("/ops/adaptation/check-now", {}, opsHeaders());
+  },
+
+  getAdaptationTrainingStatus(): Promise<AdaptationTrainingStatus> {
+    return httpGet<AdaptationTrainingStatus>("/ops/adaptation/training/status", opsHeaders());
+  },
+
+  getAdaptationCandidates(): Promise<AdaptationCandidateList> {
+    return httpGet<AdaptationCandidateList>("/ops/adaptation/candidates", opsHeaders());
+  },
+
+  evaluateAdaptationCandidate(modelId: string): Promise<AdaptationPromotionDecision> {
+    return httpPost<AdaptationPromotionDecision>(`/ops/adaptation/candidates/${encodeURIComponent(modelId)}/evaluate`, {}, opsHeaders());
+  },
+
+  applyAdaptationPolicy(modelId: string): Promise<AdaptationPromotionDecision> {
+    return httpPost<AdaptationPromotionDecision>(`/ops/adaptation/candidates/${encodeURIComponent(modelId)}/apply-policy`, {}, opsHeaders());
+  },
+
+  approveAdaptationCandidate(modelId: string, payload?: CandidateDecisionRequest): Promise<AdaptationPromotionDecision> {
+    return httpPost<AdaptationPromotionDecision, CandidateDecisionRequest | undefined>(`/ops/adaptation/candidates/${encodeURIComponent(modelId)}/approve`, payload, opsHeaders());
+  },
+
+  rejectAdaptationCandidate(modelId: string, payload?: CandidateDecisionRequest): Promise<AdaptationPromotionDecision> {
+    return httpPost<AdaptationPromotionDecision, CandidateDecisionRequest | undefined>(`/ops/adaptation/candidates/${encodeURIComponent(modelId)}/reject`, payload, opsHeaders());
+  },
+
+  getAdaptationStorageWarnings(): Promise<AdaptationStorageWarning> {
+    return httpGet<AdaptationStorageWarning>("/ops/adaptation/storage/warnings", opsHeaders());
+  },
+
+  deleteAdaptationCheckpointFile(modelId: string, payload?: CandidateDecisionRequest): Promise<CheckpointFileDeleteResult> {
+    return httpPost<CheckpointFileDeleteResult, CandidateDecisionRequest | undefined>(`/ops/adaptation/checkpoints/${encodeURIComponent(modelId)}/delete-file`, payload, opsHeaders());
   }
 };

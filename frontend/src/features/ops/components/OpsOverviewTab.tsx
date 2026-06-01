@@ -1,4 +1,7 @@
+import { useEffect, useState } from "react";
+import { opsClient } from "../api/opsClient";
 import { useOpsSystemStatus } from "../hooks/useOpsSystemStatus";
+import type { AdaptationBufferStatus, AdaptationReadiness } from "../types/ops.types";
 
 function percent(value: unknown): number | null {
   return typeof value === "number" && Number.isFinite(value) ? Math.max(0, Math.min(100, value)) : null;
@@ -50,6 +53,42 @@ export function OpsOverviewTab() {
   const vramPercent = gpu.available ? percent(gpu.vram_percent) : null;
 
   const retraining = (jobs.retraining as Record<string, unknown>) ?? {};
+  const [bufferStatus, setBufferStatus] = useState<AdaptationBufferStatus | null>(null);
+  const [readiness, setReadiness] = useState<AdaptationReadiness | null>(null);
+  const [adaptationLoading, setAdaptationLoading] = useState(true);
+  const [checkNowLoading, setCheckNowLoading] = useState(false);
+  const [adaptationError, setAdaptationError] = useState<string | null>(null);
+
+  async function refreshAdaptationStatus() {
+    setAdaptationLoading(true);
+    setAdaptationError(null);
+    try {
+      const [buffer, readinessPayload] = await Promise.all([opsClient.getAdaptationBufferStatus(), opsClient.getAdaptationReadiness()]);
+      setBufferStatus(buffer);
+      setReadiness(readinessPayload);
+    } catch (err) {
+      setAdaptationError(err instanceof Error ? err.message : "Unable to load adaptation status.");
+    } finally {
+      setAdaptationLoading(false);
+    }
+  }
+
+  async function handleCheckNow() {
+    setCheckNowLoading(true);
+    setAdaptationError(null);
+    try {
+      const readinessPayload = await opsClient.checkAdaptationNow();
+      const buffer = await opsClient.getAdaptationBufferStatus();
+      setReadiness(readinessPayload);
+      setBufferStatus(buffer);
+    } catch (err) {
+      setAdaptationError(err instanceof Error ? err.message : "Unable to run adaptation readiness check.");
+    } finally {
+      setCheckNowLoading(false);
+    }
+  }
+
+  useEffect(() => { void refreshAdaptationStatus(); }, []);
 
   return (
     <div className="ops-dashboard">
@@ -78,7 +117,7 @@ export function OpsOverviewTab() {
         <h3>Workspace status</h3>
         <p>Forecast workspace is available.</p>
         <p>Training worker is {String(worker.retraining_worker_status ?? "not reported").toLowerCase()}.</p>
-        <p>No retraining jobs are currently running.</p>
+        <p>{jobSummary(retraining)}</p>
         <details>
           <summary>Technical worker/job details</summary>
           <div className="ops-service-grid" style={{ marginTop: 10 }}>
@@ -94,6 +133,46 @@ export function OpsOverviewTab() {
             </div>
           </div>
         </details>
+      </section>
+
+      <section className="panel">
+        <div className="button-row" style={{ justifyContent: "space-between", alignItems: "center" }}>
+          <h3 style={{ margin: 0 }}>Adaptation readiness</h3>
+          <button className="secondary-button" onClick={() => void handleCheckNow()} disabled={checkNowLoading}>
+            {checkNowLoading ? "Checking..." : "Check now"}
+          </button>
+        </div>
+        <p className="muted" style={{ marginTop: 6 }}>Runs readiness checks only. It does not start training.</p>
+        {adaptationLoading && !readiness ? <p className="muted">Loading adaptation status...</p> : null}
+        {adaptationError ? <p className="failure-text">{adaptationError}</p> : null}
+        <div className="ops-service-grid" style={{ marginTop: 10 }}>
+          <div>
+            <div className={`ops-readiness-item ${readinessClass(readiness)}`} style={{ marginBottom: 10 }}>
+              <span className="ops-readiness-dot" />
+              <div>
+                <strong>{readinessLabel(readiness)}</strong>
+                <p className="muted" style={{ margin: 0 }}>{readiness?.status ?? "Readiness not reported"}</p>
+              </div>
+            </div>
+            {(readiness?.blocking_reasons ?? []).slice(0, 3).map((reason) => <p key={reason} className="muted" style={{ margin: "4px 0" }}>Blocked: {reason}</p>)}
+            {(readiness?.warnings ?? []).slice(0, 2).map((warning) => <p key={warning} className="muted" style={{ margin: "4px 0" }}>Warning: {warning}</p>)}
+            {readiness?.next_retry_at ? <p className="muted">Next retry: {readiness.next_retry_at}</p> : null}
+            {readiness?.checks?.length ? <details><summary>View readiness checklist</summary><div style={{ marginTop: 8 }}>{readiness.checks.slice(0, 8).map((check, index) => <div key={`${check.name ?? check.label ?? index}`} className={`ops-readiness-item ${checkClass(check)}`}><span className="ops-readiness-dot" /><div><strong>{String(check.label ?? check.name ?? `Check ${index + 1}`)}</strong><p className="muted" style={{ margin: 0 }}>{String(check.message ?? check.reason ?? check.status ?? "Not reported")}</p></div></div>)}</div></details> : null}
+          </div>
+          <div>
+            <div className="ops-metric-grid">
+              <MiniMetric label="Pending" value={bufferStatus?.pending} />
+              <MiniMetric label="Accepted train" value={bufferStatus?.accepted_train} />
+              <MiniMetric label="Accepted val" value={bufferStatus?.accepted_val} />
+              <MiniMetric label="Fresh accepted" value={bufferStatus?.fresh_accepted_total} />
+              <MiniMetric label="Rejected" value={bufferStatus?.rejected} />
+              <MiniMetric label="Reserve used" value={bufferStatus?.reserve_used} />
+            </div>
+            <p className="muted" style={{ marginBottom: 0 }}>Manifest: {bufferStatus ? (bufferStatus.manifest_readable ? "Readable" : "Not readable") : "Not reported"}</p>
+            {bufferStatus?.latest_event_timestamp ? <p className="muted" style={{ marginTop: 4 }}>Latest event: {bufferStatus.latest_event_timestamp}</p> : null}
+            {(bufferStatus?.warnings ?? []).slice(0, 2).map((warning) => <p key={warning} className="muted" style={{ margin: "4px 0" }}>Buffer warning: {warning}</p>)}
+          </div>
+        </div>
       </section>
     </div>
   );
@@ -114,4 +193,39 @@ function GaugeCard({ label, percent, value, detail }: { label: string; percent: 
 
 function BarCard({ label, percent, value, detail }: { label: string; percent: number | null; value: string; detail: string }) {
   return <article className="ops-stat-card"><strong>{label}</strong><p>{value}</p><div className="ops-progress"><div style={{ width: `${percent ?? 0}%` }} /></div><p className="muted">{detail}</p></article>;
+}
+
+
+function jobSummary(retraining: Record<string, unknown>): string {
+  const queued = Number(retraining.queued ?? 0);
+  const running = Number(retraining.running ?? 0);
+  if (Number.isFinite(queued) && Number.isFinite(running) && (queued > 0 || running > 0)) {
+    return `Retraining jobs: ${queued} queued, ${running} running.`;
+  }
+  if (retraining.queued !== undefined || retraining.running !== undefined) {
+    return "No queued or running retraining jobs are reported.";
+  }
+  return "Retraining job state is not reported.";
+}
+
+function readinessClass(readiness: AdaptationReadiness | null): string {
+  if (!readiness) return "ops-readiness-unknown";
+  if (readiness.ready) return "ops-readiness-met";
+  return String(readiness.status).toLowerCase().includes("block") ? "ops-readiness-not_met" : "ops-readiness-unknown";
+}
+
+function readinessLabel(readiness: AdaptationReadiness | null): string {
+  if (!readiness) return "Adaptation readiness not reported";
+  if (readiness.ready) return "Ready";
+  return String(readiness.status).toLowerCase().includes("block") ? "Blocked" : "Waiting";
+}
+
+function checkClass(check: Record<string, unknown>): string {
+  if (check.ready === true || check.passed === true || check.status === "ready" || check.status === "passed") return "ops-readiness-met";
+  if (check.blocking === true || check.ready === false || check.passed === false || check.status === "blocked" || check.status === "failed") return "ops-readiness-not_met";
+  return "ops-readiness-unknown";
+}
+
+function MiniMetric({ label, value }: { label: string; value: number | undefined }) {
+  return <article className="ops-stat-card"><p className="muted" style={{ margin: 0 }}>{label}</p><strong>{value ?? "Not reported"}</strong></article>;
 }
