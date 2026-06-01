@@ -141,3 +141,104 @@ export interface OpsSystemStatusResponse {
   recent_events: Array<Record<string, unknown>>;
   status_summary: Record<string, unknown>;
 }
+
+export interface AdaptationBufferStatus {
+  root: string;
+  pending: number;
+  accepted_train: number;
+  accepted_val: number;
+  rejected: number;
+  reserve_used: number;
+  fresh_accepted_total: number;
+  used_total: number;
+  manifest_readable: boolean;
+  latest_event_timestamp?: string | null;
+  warnings: string[];
+}
+
+export interface AdaptationReadinessCheck {
+  name?: string;
+  label?: string;
+  status?: string;
+  ready?: boolean;
+  passed?: boolean;
+  blocking?: boolean;
+  reason?: string | null;
+  message?: string | null;
+  summary?: string | null;
+  [key: string]: unknown;
+}
+
+export interface AdaptationReadiness {
+  ready: boolean;
+  status: string;
+  checks: AdaptationReadinessCheck[];
+  blocking_reasons: string[];
+  warnings: string[];
+  next_retry_at?: string | null;
+  summary: Record<string, unknown>;
+}
+
+export type AdaptationTrainingJob = Record<string, unknown>;
+
+export interface AdaptationTrainingStatus {
+  job_counts: Record<string, number>;
+  latest_job?: AdaptationTrainingJob | null;
+  latest_readiness_snapshot?: Record<string, unknown> | null;
+  candidate_model_id?: string | null;
+  output_dir?: string | null;
+  result_run_dir?: string | null;
+  best_overall_checkpoint?: string | null;
+  final_checkpoint?: string | null;
+  error_message?: string | null;
+}
+
+export interface AdaptationCandidate {
+  model_id: string;
+  status?: string | null;
+  approval_status?: string | null;
+  path?: string | null;
+  timestamp?: string | null;
+  created_at?: string | null;
+  run_id?: string | null;
+  adaptation_run?: Record<string, unknown> | null;
+  last_adaptation_promotion_decision?: Record<string, unknown> | null;
+  last_promotion_result?: Record<string, unknown> | null;
+  best_overall_checkpoint?: string | null;
+  final_checkpoint?: string | null;
+  checkpoint_file_exists: boolean;
+}
+
+export interface AdaptationCandidateList {
+  candidates: AdaptationCandidate[];
+}
+
+export interface AdaptationPromotionDecision {
+  decision?: Record<string, unknown> | null;
+  candidate_model_id?: string | null;
+  active_model_id?: string | null;
+  result?: Record<string, unknown> | null;
+}
+
+export interface AdaptationStorageWarning {
+  checkpoint_count: number;
+  checkpoint_count_warning: boolean;
+  checkpoint_count_threshold?: number;
+  registered_adaptation_model_count?: number | null;
+  disk_usage_percent: number;
+  disk_usage_warning: boolean;
+  disk_usage_threshold_percent?: number;
+  automatic_deletion: boolean;
+  message: string;
+}
+
+export interface CheckpointFileDeleteResult {
+  model_id: string;
+  deleted: boolean;
+  file_existed_before: boolean;
+  checkpoint_path?: string | null;
+  metadata_updated: boolean;
+  active_model_id?: string | null;
+  event_type?: string | null;
+  message: string;
+}
