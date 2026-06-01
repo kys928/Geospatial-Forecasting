@@ -200,6 +200,7 @@ class AdaptationStorageWarningResponse(BaseModel):
     checkpoint_count: int
     checkpoint_count_warning: bool
     checkpoint_count_threshold: int
+    registered_adaptation_model_count: int | None = None
     disk_usage_percent: float
     disk_usage_warning: bool
     disk_usage_threshold_percent: float

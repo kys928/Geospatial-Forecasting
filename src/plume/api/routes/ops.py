@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
+import json
 import os
 from pathlib import Path
 import shutil
@@ -45,6 +46,7 @@ from plume.services.convlstm_operations import (
     RetrainingJobStore,
     RetrainingPolicy,
     activate_approved_model,
+    approve_and_activate_adaptation_candidate,
     apply_adaptation_promotion_policy,
     delete_adaptation_checkpoint_file,
     approve_candidate,
@@ -55,11 +57,10 @@ from plume.services.convlstm_operations import (
     rollback_to_previous_model,
     submit_retraining_job,
     summarize_operational_status,
-    validate_adaptation_checkpoint_for_activation,
 )
 
 from plume.services.model_candidate_context import build_model_candidate_context
-from plume.services.adaptation_buffer import AdaptationBuffer, AdaptationBufferConfig
+from plume.services.adaptation_buffer import AdaptationBuffer
 from plume.services.adaptation_readiness import AdaptationReadinessConfig, AdaptationReadinessService
 from plume.workers.status import WorkerStatusStore
 from plume.services.retraining_explanation_context import build_retraining_explanation_context
@@ -333,12 +334,7 @@ def _buffer_status_from_config(config: AdaptationReadinessConfig) -> dict[str, o
         warnings.append("Adaptation buffer manifest is missing")
         return base
     try:
-        buffer = AdaptationBuffer.__new__(AdaptationBuffer)
-        buffer.config = AdaptationBufferConfig(buffer_root=root)
-        buffer.root = root
-        buffer.manifest_path = manifest
-        buffer.events_path = root / "buffer_events.jsonl"
-        buffer.observations_path = root / "raw_observations" / "observations.jsonl"
+        buffer = AdaptationBuffer.from_existing(root)
         summary = buffer.get_summary()
         base.update(summary)
         base["manifest_readable"] = True
@@ -358,7 +354,7 @@ def _latest_jsonl_timestamp(path: Path) -> str | None:
             if not line.strip():
                 continue
             try:
-                payload = yaml.safe_load(line) or {}
+                payload = json.loads(line)
             except Exception:
                 continue
             if isinstance(payload, dict) and isinstance(payload.get("timestamp"), str):
@@ -400,7 +396,17 @@ def _latest_checkpoint_from_jobs(jobs: list[dict[str, object]]) -> str | None:
         metadata = job.get("metadata")
         candidates: list[object] = []
         if isinstance(metadata, dict):
-            candidates.extend([metadata, metadata.get("run_artifacts"), metadata.get("training_summary"), metadata.get("adaptation_run")])
+            adaptation = metadata.get("adaptation")
+            adaptation_run = metadata.get("adaptation_run")
+            candidates.extend([
+                metadata,
+                adaptation,
+                adaptation.get("training_summary") if isinstance(adaptation, dict) else None,
+                metadata.get("run_artifacts"),
+                metadata.get("training_summary"),
+                adaptation_run,
+                adaptation_run.get("training_summary") if isinstance(adaptation_run, dict) else None,
+            ])
         candidates.append(job)
         for source in candidates:
             if not isinstance(source, dict):
@@ -485,7 +491,12 @@ def _job_has_adaptation_metadata(job: dict[str, object]) -> bool:
 def _storage_warnings(config: AdaptationReadinessConfig) -> dict[str, object]:
     payload = ModelRegistry(_ops_paths()["registry"]).load()
     candidates = [item for item in payload.get("models", []) if isinstance(item, dict) and _is_adaptation_record(item)]
-    checkpoint_count = sum(1 for item in candidates if isinstance(item.get("path"), str))
+    registered_adaptation_model_count = len(candidates)
+    checkpoint_count = sum(
+        1
+        for item in candidates
+        if isinstance(item.get("path"), str) and Path(str(item.get("path"))).exists()
+    )
     try:
         disk = shutil.disk_usage(Path(_ops_paths()["registry"]).parent)
         disk_usage_percent = disk.used / disk.total * 100.0 if disk.total else 0.0
@@ -493,11 +504,16 @@ def _storage_warnings(config: AdaptationReadinessConfig) -> dict[str, object]:
         disk_usage_percent = 0.0
     count_warning = checkpoint_count > config.warning_checkpoint_count
     disk_warning = disk_usage_percent >= config.warning_disk_usage_percent
-    message = "Storage warnings present" if count_warning or disk_warning else "Checkpoint storage is within configured warning thresholds"
+    message = (
+        "Storage warnings present for registered adaptation checkpoint files"
+        if count_warning or disk_warning
+        else "Registered adaptation checkpoint files are within configured warning thresholds"
+    )
     return {
         "checkpoint_count": checkpoint_count,
         "checkpoint_count_warning": count_warning,
         "checkpoint_count_threshold": config.warning_checkpoint_count,
+        "registered_adaptation_model_count": registered_adaptation_model_count,
         "disk_usage_percent": float(disk_usage_percent),
         "disk_usage_warning": disk_warning,
         "disk_usage_threshold_percent": float(config.warning_disk_usage_percent),
@@ -602,35 +618,35 @@ def register_ops_routes(app: FastAPI, *, forecast_service, dispatch_worker=dispa
             raise HTTPException(status_code=400, detail=f"Unable to load retraining jobs: {exc}") from exc
 
     @app.get("/ops/adaptation/buffer/status", response_model=AdaptationBufferStatusResponse)
-    def get_adaptation_buffer_status():
+    def get_adaptation_buffer_status(_role: str = Depends(_require_ops_read_access)):
         try:
             return _buffer_status_from_config(_load_adaptation_config(forecast_service.config.config_dir))
         except Exception as exc:
             raise HTTPException(status_code=400, detail=f"Unable to load adaptation buffer status: {exc}") from exc
 
     @app.get("/ops/adaptation/readiness", response_model=AdaptationReadinessResponse)
-    def get_adaptation_readiness():
+    def get_adaptation_readiness(_role: str = Depends(_require_ops_read_access)):
         try:
             return _adaptation_readiness(_load_adaptation_config(forecast_service.config.config_dir))
         except Exception as exc:
             raise HTTPException(status_code=400, detail=f"Unable to evaluate adaptation readiness: {exc}") from exc
 
     @app.post("/ops/adaptation/check-now", response_model=AdaptationReadinessResponse)
-    def check_adaptation_now():
+    def check_adaptation_now(_role: str = Depends(_require_ops_read_access)):
         try:
             return _adaptation_readiness(_load_adaptation_config(forecast_service.config.config_dir))
         except Exception as exc:
             raise HTTPException(status_code=400, detail=f"Unable to evaluate adaptation readiness: {exc}") from exc
 
     @app.get("/ops/adaptation/training/status", response_model=AdaptationTrainingStatusResponse)
-    def get_adaptation_training_status():
+    def get_adaptation_training_status(_role: str = Depends(_require_ops_read_access)):
         try:
             return _adaptation_training_status()
         except Exception as exc:
             raise HTTPException(status_code=400, detail=f"Unable to load adaptation training status: {exc}") from exc
 
     @app.get("/ops/adaptation/candidates", response_model=AdaptationCandidateListResponse)
-    def list_adaptation_candidates():
+    def list_adaptation_candidates(_role: str = Depends(_require_ops_read_access)):
         try:
             payload = ModelRegistry(_ops_paths()["registry"]).load()
             candidates = [
@@ -643,7 +659,7 @@ def register_ops_routes(app: FastAPI, *, forecast_service, dispatch_worker=dispa
             raise HTTPException(status_code=400, detail=f"Unable to list adaptation candidates: {exc}") from exc
 
     @app.post("/ops/adaptation/candidates/{model_id}/evaluate", response_model=AdaptationPromotionDecisionResponse)
-    def evaluate_adaptation_candidate_endpoint(model_id: str):
+    def evaluate_adaptation_candidate_endpoint(model_id: str, _role: str = Depends(_require_ops_read_access)):
         try:
             return evaluate_adaptation_candidate_for_registry(registry=ModelRegistry(_ops_paths()["registry"]), candidate_model_id=model_id)
         except ValueError as exc:
@@ -652,7 +668,7 @@ def register_ops_routes(app: FastAPI, *, forecast_service, dispatch_worker=dispa
             raise HTTPException(status_code=400, detail=f"Unable to evaluate adaptation candidate: {exc}") from exc
 
     @app.post("/ops/adaptation/candidates/{model_id}/apply-policy", response_model=AdaptationPromotionDecisionResponse)
-    def apply_adaptation_policy_endpoint(model_id: str):
+    def apply_adaptation_policy_endpoint(model_id: str, _role: str = Depends(_require_ops_operator_access)):
         try:
             return apply_adaptation_promotion_policy(registry=ModelRegistry(_ops_paths()["registry"]), candidate_model_id=model_id)
         except ValueError as exc:
@@ -661,41 +677,22 @@ def register_ops_routes(app: FastAPI, *, forecast_service, dispatch_worker=dispa
             raise HTTPException(status_code=400, detail=f"Unable to apply adaptation promotion policy: {exc}") from exc
 
     @app.post("/ops/adaptation/candidates/{model_id}/approve", response_model=AdaptationPromotionDecisionResponse)
-    def approve_adaptation_candidate_endpoint(model_id: str, payload: CandidateDecisionRequest | None = None):
+    def approve_adaptation_candidate_endpoint(model_id: str, payload: CandidateDecisionRequest | None = None, _role: str = Depends(_require_ops_operator_access)):
         payload = payload or CandidateDecisionRequest()
-        registry = ModelRegistry(_ops_paths()["registry"])
         try:
-            registry_payload = registry.load()
-            record = _record_by_id(registry_payload.get("models", []), model_id)
-            if record is None:
-                raise HTTPException(status_code=404, detail=f"Unknown model id: {model_id}")
-            if record.get("status") == "rejected":
-                raise HTTPException(status_code=409, detail="Rejected adaptation candidates cannot be activated")
-            if not _is_adaptation_record(record):
-                raise HTTPException(status_code=409, detail="Model is not an adaptation candidate")
-            compatibility = validate_adaptation_checkpoint_for_activation(record)
-            if not compatibility.compatible:
-                detail = "Approved adaptation model failed final compatibility check: " + ",".join(compatibility.reasons)
-                raise HTTPException(status_code=409, detail=detail)
-            if record.get("status") == "candidate":
-                if record.get("approval_status") != "pending_manual_approval":
-                    # Preserve the existing safe two-step flow by first creating an explicit manual-review state.
-                    for item in registry_payload.get("models", []):
-                        if isinstance(item, dict) and item.get("model_id") == model_id:
-                            item["approval_status"] = "pending_manual_approval"
-                    registry.save(registry_payload)
-                approve_candidate(registry=registry, candidate_model_id=model_id, actor=payload.actor, comment=payload.comment)
-            activation = activate_approved_model(registry=registry, model_id=model_id)
-            return {"result": activation, "candidate_model_id": model_id, "active_model_id": activation.get("model_id")}
-        except HTTPException:
-            raise
+            return approve_and_activate_adaptation_candidate(
+                registry=ModelRegistry(_ops_paths()["registry"]),
+                model_id=model_id,
+                actor=payload.actor,
+                comment=payload.comment,
+            )
         except ValueError as exc:
-            raise HTTPException(status_code=409, detail=str(exc)) from exc
+            raise HTTPException(status_code=404 if "Unknown" in str(exc) else 409, detail=str(exc)) from exc
         except Exception as exc:
             raise HTTPException(status_code=400, detail=f"Unable to approve adaptation candidate: {exc}") from exc
 
     @app.post("/ops/adaptation/candidates/{model_id}/reject", response_model=AdaptationPromotionDecisionResponse)
-    def reject_adaptation_candidate_endpoint(model_id: str, payload: CandidateDecisionRequest | None = None):
+    def reject_adaptation_candidate_endpoint(model_id: str, payload: CandidateDecisionRequest | None = None, _role: str = Depends(_require_ops_operator_access)):
         payload = payload or CandidateDecisionRequest()
         registry = ModelRegistry(_ops_paths()["registry"])
         try:
@@ -729,14 +726,14 @@ def register_ops_routes(app: FastAPI, *, forecast_service, dispatch_worker=dispa
             raise HTTPException(status_code=400, detail=f"Unable to reject adaptation candidate: {exc}") from exc
 
     @app.get("/ops/adaptation/storage/warnings", response_model=AdaptationStorageWarningResponse)
-    def get_adaptation_storage_warnings():
+    def get_adaptation_storage_warnings(_role: str = Depends(_require_ops_read_access)):
         try:
             return _storage_warnings(_load_adaptation_config(forecast_service.config.config_dir))
         except Exception as exc:
             raise HTTPException(status_code=400, detail=f"Unable to load adaptation storage warnings: {exc}") from exc
 
     @app.post("/ops/adaptation/checkpoints/{model_id}/delete-file", response_model=CheckpointFileDeleteResponse)
-    def delete_adaptation_checkpoint_file_endpoint(model_id: str, payload: CandidateDecisionRequest | None = None):
+    def delete_adaptation_checkpoint_file_endpoint(model_id: str, payload: CandidateDecisionRequest | None = None, _role: str = Depends(_require_ops_operator_access)):
         payload = payload or CandidateDecisionRequest()
         try:
             return delete_adaptation_checkpoint_file(registry=ModelRegistry(_ops_paths()["registry"]), model_id=model_id, actor=payload.actor, comment=payload.comment)

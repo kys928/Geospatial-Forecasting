@@ -8,10 +8,11 @@ import numpy as np
 import pytest
 
 from plume.api.main import create_app
+from plume.api.routes import ops as ops_routes
 from plume.services import adaptation_promotion as promotion
 from plume.services.adaptation_buffer import AdaptationBuffer, AdaptationBufferConfig
 from plume.services.adaptation_promotion import CompatibilityResult
-from plume.services.convlstm_operations import ModelRegistry, RetrainingJobStore
+from plume.services.convlstm_operations import ModelRegistry
 
 
 def _client(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> tuple[TestClient, dict[str, Path]]:
@@ -341,7 +342,7 @@ def test_delete_checkpoint_file_refuses_active_model(monkeypatch, tmp_path: Path
     assert ckpt.exists()
 
 
-def test_no_ops_token_required_for_demo(monkeypatch, tmp_path: Path):
+def test_demo_mode_still_requires_no_token(monkeypatch, tmp_path: Path):
     client, paths = _client(monkeypatch, tmp_path)
     evaluate_ckpt = _write_json_checkpoint(tmp_path / "evaluate.pt")
     reject_ckpt = _write_json_checkpoint(tmp_path / "reject.pt")
@@ -363,3 +364,151 @@ def test_no_ops_token_required_for_demo(monkeypatch, tmp_path: Path):
     assert evaluate.status_code == 200
     assert reject.status_code == 200
     assert approve.status_code == 200
+
+
+
+def test_adaptation_read_endpoints_use_existing_auth_when_enabled(monkeypatch, tmp_path: Path):
+    client, _paths = _client(monkeypatch, tmp_path)
+    monkeypatch.setenv("PLUME_OPS_AUTH_ENABLED", "true")
+    monkeypatch.setenv("PLUME_OPS_API_TOKEN", "operator-token")
+
+    responses = [
+        client.get("/ops/adaptation/buffer/status"),
+        client.get("/ops/adaptation/readiness"),
+        client.get("/ops/adaptation/candidates"),
+    ]
+
+    assert {response.status_code for response in responses} <= {401, 403}
+    assert all(response.status_code in {401, 403} for response in responses)
+
+
+def test_adaptation_mutation_endpoints_use_existing_auth_when_enabled(monkeypatch, tmp_path: Path):
+    client, paths = _client(monkeypatch, tmp_path)
+    ckpt = _write_json_checkpoint(tmp_path / "candidate.pt")
+    _seed_registry(paths["registry"], [_candidate(ckpt, approval="pending_manual_approval")], active_model_id=None)
+    before = ModelRegistry(paths["registry"]).load()
+    monkeypatch.setenv("PLUME_OPS_AUTH_ENABLED", "true")
+    monkeypatch.setenv("PLUME_OPS_API_TOKEN", "operator-token")
+
+    responses = [
+        client.post("/ops/adaptation/candidates/candidate/apply-policy"),
+        client.post("/ops/adaptation/candidates/candidate/approve"),
+        client.post("/ops/adaptation/candidates/candidate/reject"),
+        client.post("/ops/adaptation/checkpoints/candidate/delete-file"),
+    ]
+    after = ModelRegistry(paths["registry"]).load()
+
+    assert all(response.status_code in {401, 403} for response in responses)
+    assert after == before
+    assert ckpt.exists()
+
+
+def test_approve_route_uses_service_helper(monkeypatch, tmp_path: Path):
+    client, paths = _client(monkeypatch, tmp_path)
+    called: dict[str, object] = {}
+
+    def fake_helper(*, registry: ModelRegistry, model_id: str, actor: str, comment: str | None = None) -> dict[str, object]:
+        called["registry_path"] = registry.path
+        called["model_id"] = model_id
+        called["actor"] = actor
+        called["comment"] = comment
+        return {"result": {"activated": True, "model_id": model_id}, "candidate_model_id": model_id, "active_model_id": model_id}
+
+    monkeypatch.setattr(ops_routes, "approve_and_activate_adaptation_candidate", fake_helper)
+
+    response = client.post(
+        "/ops/adaptation/candidates/candidate/approve",
+        json={"actor": "ops-test", "comment": "approved after review"},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"decision": None, "result": {"activated": True, "model_id": "candidate"}, "candidate_model_id": "candidate", "active_model_id": "candidate"}
+    assert called == {
+        "registry_path": paths["registry"],
+        "model_id": "candidate",
+        "actor": "ops-test",
+        "comment": "approved after review",
+    }
+
+
+def test_latest_checkpoint_from_jobs_reads_adaptation_metadata():
+    jobs = [
+        {
+            "job_id": "adaptation-job",
+            "metadata": {
+                "adaptation": {
+                    "training_summary": {
+                        "best_overall_checkpoint": "/tmp/best.pt",
+                        "final_checkpoint": "/tmp/final.pt",
+                    }
+                }
+            },
+        }
+    ]
+
+    assert ops_routes._latest_checkpoint_from_jobs(jobs) == "/tmp/best.pt"
+
+
+def test_latest_jsonl_timestamp_uses_json_lines(monkeypatch, tmp_path: Path):
+    client, paths = _client(monkeypatch, tmp_path)
+    buffer = AdaptationBuffer(AdaptationBufferConfig(buffer_root=paths["buffer"]))
+    buffer.events_path.write_text(
+        '\n'.join(
+            [
+                '{"timestamp": "2026-01-01T00:00:00Z"}',
+                'not-json: [',
+                '{"timestamp": "2026-01-02T00:00:00Z"}',
+            ]
+        )
+        + '\n',
+        encoding="utf-8",
+    )
+
+    response = client.get("/ops/adaptation/buffer/status")
+
+    assert response.status_code == 200
+    assert response.json()["latest_event_timestamp"] == "2026-01-02T00:00:00Z"
+
+
+def test_storage_warnings_counts_existing_adaptation_checkpoint_files_only(monkeypatch, tmp_path: Path):
+    client, paths = _client(monkeypatch, tmp_path)
+    existing_adaptation = _write_json_checkpoint(tmp_path / "existing-adaptation.pt")
+    missing_adaptation = tmp_path / "missing-adaptation.pt"
+    suffix_only = _write_json_checkpoint(tmp_path / "suffix-only.pt")
+    legacy_npz = tmp_path / "legacy.npz"
+    legacy_npz.write_text("legacy", encoding="utf-8")
+    _seed_registry(
+        paths["registry"],
+        [
+            _candidate(existing_adaptation, model_id="existing-adaptation"),
+            _candidate(missing_adaptation, model_id="missing-adaptation"),
+            {"model_id": "suffix-only", "status": "candidate", "approval_status": "not_required", "path": str(suffix_only)},
+            {"model_id": "legacy", "status": "candidate", "approval_status": "not_required", "path": str(legacy_npz)},
+        ],
+        active_model_id=None,
+    )
+
+    response = client.get("/ops/adaptation/storage/warnings")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["checkpoint_count"] == 1
+    assert body["registered_adaptation_model_count"] == 2
+    assert body["checkpoint_count_warning"] is False
+    assert body["message"] == "Registered adaptation checkpoint files are within configured warning thresholds"
+
+
+def test_storage_warnings_threshold_still_triggers(monkeypatch, tmp_path: Path):
+    client, paths = _client(monkeypatch, tmp_path)
+    models = []
+    for idx in range(21):
+        ckpt = _write_json_checkpoint(tmp_path / f"candidate-threshold-{idx}.pt")
+        models.append(_candidate(ckpt, model_id=f"candidate-threshold-{idx}"))
+    _seed_registry(paths["registry"], models, active_model_id=None)
+
+    response = client.get("/ops/adaptation/storage/warnings")
+
+    assert response.status_code == 200
+    assert response.json()["checkpoint_count"] == 21
+    assert response.json()["checkpoint_count_warning"] is True
+    assert response.json()["message"] == "Storage warnings present for registered adaptation checkpoint files"

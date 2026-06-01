@@ -116,6 +116,19 @@ class AdaptationBuffer:
         self.observations_path = self.root / "raw_observations" / "observations.jsonl"
         self.initialize()
 
+    @classmethod
+    def from_existing(cls, root: Path | str) -> "AdaptationBuffer":
+        """Build a non-mutating buffer reader for an existing manifest."""
+        buffer = cls.__new__(cls)
+        buffer.config = AdaptationBufferConfig(buffer_root=root)
+        buffer.root = Path(root)
+        buffer.manifest_path = buffer.root / "manifest.json"
+        buffer.events_path = buffer.root / "buffer_events.jsonl"
+        buffer.observations_path = buffer.root / "raw_observations" / "observations.jsonl"
+        if not buffer.manifest_path.exists():
+            raise FileNotFoundError(f"Adaptation buffer manifest is missing: {buffer.manifest_path}")
+        return buffer
+
     @property
     def required_directories(self) -> list[Path]:
         return [
