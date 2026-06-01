@@ -160,6 +160,7 @@ class AdaptationReadinessResponse(BaseModel):
 class AdaptationTrainingStatusResponse(BaseModel):
     job_counts: dict[str, int]
     latest_job: dict[str, Any] | None = None
+    latest_manual_job: dict[str, Any] | None = None
     latest_readiness_snapshot: dict[str, Any] | None = None
     candidate_model_id: str | None = None
     output_dir: str | None = None

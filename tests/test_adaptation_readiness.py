@@ -146,7 +146,7 @@ def test_readiness_yellow_when_not_enough_samples(tmp_path):
     assert enough_samples.details["required_count"] == 50
 
 
-def test_readiness_red_when_reference_dataset_missing(tmp_path):
+def test_readiness_green_when_buffer_ready_and_fallback_missing(tmp_path):
     _make_buffer(tmp_path / "buffer", accepted_count=50)
     checkpoint = _checkpoint(tmp_path)
     service = AdaptationReadinessService(
@@ -159,9 +159,11 @@ def test_readiness_red_when_reference_dataset_missing(tmp_path):
 
     result = service.evaluate(active_checkpoint_path=checkpoint, gpu_snapshot=ENOUGH_FREE_GPU)
 
-    assert result.ready is False
-    assert result.status == "red"
-    assert any("Reference dataset" in reason for reason in result.blocking_reasons)
+    assert result.ready is True
+    assert result.status == "green"
+    fallback = _check(result, "fallback_training_dataset_available")
+    assert fallback.status == "yellow"
+    assert fallback.passed is True
 
 
 def test_checkpoint_falls_back_to_latest_best(tmp_path):

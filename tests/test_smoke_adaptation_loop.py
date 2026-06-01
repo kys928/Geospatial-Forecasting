@@ -78,3 +78,26 @@ def test_token_not_written_to_json_report(tmp_path):
     contents = args.json_report.read_text(encoding="utf-8")
     assert token not in contents
     assert report["args"]["ops_token"] == "<provided>"
+
+
+def test_smoke_detects_full_dataset_layout(tmp_path):
+    full = tmp_path / "full"
+    full.mkdir()
+    (full / "dataset_manifest").write_text("{}", encoding="utf-8")
+    (full / "windows_manifest_enriched").write_text("{}", encoding="utf-8")
+    (full / "windows").mkdir()
+    (full / "windows" / "window-0.npz").write_bytes(b"window")
+    args = smoke.parse_args(["--repo-root", str(REPO_ROOT), "--reference-dataset-dir", str(full)])
+    smoke._prepare_paths(args)
+
+    reference_check = smoke.check_reference_dataset(args)
+    manifest_check = smoke.check_dataset_manifest(args)
+    trainer_check = smoke.check_trainer_cli_dry_run(args)
+
+    assert reference_check.status == "pass"
+    assert "Full dataset layout detected" in reference_check.message
+    assert manifest_check.status == "warn"
+    assert manifest_check.name == "adaptation_npz_manifest_not_applicable"
+    assert "not adaptation-buffer NPZ layout" in manifest_check.message
+    assert trainer_check.status == "warn"
+    assert "not adaptation-buffer NPZ layout" in trainer_check.message

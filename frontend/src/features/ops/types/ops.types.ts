@@ -184,6 +184,7 @@ export type AdaptationTrainingJob = Record<string, unknown>;
 export interface AdaptationTrainingStatus {
   job_counts: Record<string, number>;
   latest_job?: AdaptationTrainingJob | null;
+  latest_manual_job?: AdaptationTrainingJob | null;
   latest_readiness_snapshot?: Record<string, unknown> | null;
   candidate_model_id?: string | null;
   output_dir?: string | null;

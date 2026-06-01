@@ -486,7 +486,9 @@ def _adaptation_training_status() -> dict[str, object]:
         status = str(job.get("status"))
         counts[status] = counts.get(status, 0) + 1
     adaptation_jobs = [job for job in jobs if _job_has_adaptation_metadata(job)] or jobs
-    latest = adaptation_jobs[-1] if adaptation_jobs else None
+    latest = max(adaptation_jobs, key=lambda item: int(item.get("created_sequence", -1))) if adaptation_jobs else None
+    manual_jobs = [job for job in adaptation_jobs if isinstance(job.get("metadata"), dict) and job.get("metadata", {}).get("manual_trigger") is True]
+    latest_manual = max(manual_jobs, key=lambda item: int(item.get("created_sequence", -1))) if manual_jobs else None
     metadata = latest.get("metadata") if isinstance(latest, dict) and isinstance(latest.get("metadata"), dict) else {}
     readiness = None
     if isinstance(metadata, dict):
@@ -494,6 +496,7 @@ def _adaptation_training_status() -> dict[str, object]:
     return {
         "job_counts": counts,
         "latest_job": latest,
+        "latest_manual_job": latest_manual,
         "latest_readiness_snapshot": readiness if isinstance(readiness, dict) else None,
         "candidate_model_id": None if latest is None else latest.get("result_candidate_id") or (metadata or {}).get("candidate_model_id"),
         "output_dir": None if latest is None else latest.get("output_dir"),
@@ -830,12 +833,18 @@ def register_ops_routes(app: FastAPI, *, forecast_service, dispatch_worker=dispa
             policy_check = evaluate_retraining_readiness(state=state, policy=retraining_policy, manual_trigger=payload.manual_override)
             if not policy_check["should_trigger"]:
                 raise HTTPException(status_code=409, detail={"message": "Retraining policy check failed", "policy_check": policy_check})
+            job_store = RetrainingJobStore(paths["jobs"])
             job = submit_retraining_job(
-                job_store=RetrainingJobStore(paths["jobs"]),
+                job_store=job_store,
                 dataset_snapshot_ref=payload.dataset_snapshot_ref,
                 run_config_ref=payload.run_config_ref,
                 output_dir=payload.output_dir,
             )
+            if payload.manual_override and job.get("job_id"):
+                job = job_store.update_job(
+                    job_id=str(job["job_id"]),
+                    metadata={"manual_trigger": True, "worker_claimed": False},
+                )
             if _should_auto_dispatch_worker():
                 dispatch_worker(
                     jobs_path=paths["jobs"],
