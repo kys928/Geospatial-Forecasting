@@ -45,6 +45,7 @@ adaptation:
       - runs/**/final_full_checkpoint.pt
       - runs/**/best_full_checkpoint.pt
     default_reference_dataset_candidates:
+      - /workspace/Dataset/hysplit-plume-convlstm-multiyear-2024-2026
       - /workspace/online_sets/online_learning_subset
       - artifacts/reference_subset
 

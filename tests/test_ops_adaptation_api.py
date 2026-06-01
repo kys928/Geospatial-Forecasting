@@ -188,6 +188,81 @@ def test_training_status_includes_waiting_job_metadata(monkeypatch, tmp_path: Pa
     assert body["latest_readiness_snapshot"]["blocking_reasons"]
 
 
+
+def test_ops_training_status_includes_manual_job(monkeypatch, tmp_path: Path):
+    client, paths = _client(monkeypatch, tmp_path)
+    paths["jobs"].write_text(
+        json.dumps(
+            {
+                "jobs": [
+                    {
+                        "job_id": "manual-1",
+                        "status": "waiting",
+                        "created_sequence": 0,
+                        "created_at": "2026-01-01T00:00:00Z",
+                        "dataset_snapshot_ref": "buffered_internal_dataset",
+                        "run_config_ref": "{}",
+                        "metadata": {"manual_trigger": True, "worker_claimed": False},
+                    }
+                ],
+                "next_sequence": 1,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    response = client.get("/ops/adaptation/training/status")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["latest_job"]["job_id"] == "manual-1"
+    assert body["latest_manual_job"]["job_id"] == "manual-1"
+    assert body["latest_manual_job"]["metadata"]["worker_claimed"] is False
+
+
+def test_ops_jobs_exposes_manual_training_job(monkeypatch, tmp_path: Path):
+    client, paths = _client(monkeypatch, tmp_path)
+    paths["state"].write_text(json.dumps({"phase": "collecting", "buffered_new_sample_count": 1}), encoding="utf-8")
+    monkeypatch.setenv("PLUME_OPS_AUTO_DISPATCH_WORKER", "false")
+
+    response = client.post(
+        "/ops/retraining/trigger",
+        json={"manual_override": True, "dataset_snapshot_ref": "buffered_internal_dataset", "run_config_ref": "{}"},
+    )
+
+    assert response.status_code == 200
+    jobs = client.get("/ops/jobs").json()["jobs"]
+    assert jobs[0]["metadata"]["manual_trigger"] is True
+
+
+def test_worker_waiting_manual_job_message_source(monkeypatch, tmp_path: Path):
+    client, paths = _client(monkeypatch, tmp_path)
+    paths["jobs"].write_text(
+        json.dumps(
+            {
+                "jobs": [
+                    {
+                        "job_id": "manual-wait",
+                        "status": "queued",
+                        "created_sequence": 0,
+                        "created_at": "2026-01-01T00:00:00Z",
+                        "metadata": {"manual_trigger": True, "worker_claimed": False},
+                    }
+                ],
+                "next_sequence": 1,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    body = client.get("/ops/adaptation/training/status").json()
+
+    job = body["latest_manual_job"]
+    assert job["status"] == "queued"
+    assert job["metadata"]["manual_trigger"] is True
+    assert job["metadata"]["worker_claimed"] is False
+    assert job.get("started_at") is None
+
 def test_list_adaptation_candidates(monkeypatch, tmp_path: Path):
     client, paths = _client(monkeypatch, tmp_path)
     robust_ckpt = _write_json_checkpoint(tmp_path / "robust.pt")

@@ -68,7 +68,11 @@ class AdaptationReadinessConfig:
         ]
     )
     default_reference_dataset_candidates: list[str] = field(
-        default_factory=lambda: ["/workspace/online_sets/online_learning_subset", "artifacts/reference_subset"]
+        default_factory=lambda: [
+            "/workspace/Dataset/hysplit-plume-convlstm-multiyear-2024-2026",
+            "/workspace/online_sets/online_learning_subset",
+            "artifacts/reference_subset",
+        ]
     )
 
     def __post_init__(self) -> None:
@@ -225,6 +229,70 @@ class CheckpointAvailability:
         )
 
 
+@dataclass(frozen=True)
+class TrainingDatasetDiscovery:
+    """Training-source discovery result for fallback/manual stabilization data."""
+
+    available: bool
+    path: str | None
+    layout: str | None
+    message: str
+    details: dict[str, Any] = field(default_factory=dict)
+
+
+def inspect_training_dataset_layout(path: str | Path) -> TrainingDatasetDiscovery:
+    """Inspect a candidate training-source root without treating it as buffer data."""
+    root = Path(path)
+    details: dict[str, Any] = {"path": str(root), "path_exists": root.exists()}
+    if not root.exists():
+        return TrainingDatasetDiscovery(False, str(root), None, "Dataset path does not exist", details)
+
+    dataset_manifest = root / "dataset_manifest"
+    windows_manifest = root / "windows_manifest_enriched"
+    windows_dir = root / "windows"
+    details.update(
+        {
+            "dataset_manifest_exists": dataset_manifest.exists(),
+            "windows_manifest_enriched_exists": windows_manifest.exists(),
+            "windows_dir_exists": windows_dir.exists() and windows_dir.is_dir(),
+        }
+    )
+    if dataset_manifest.exists() and windows_manifest.exists() and windows_dir.exists() and windows_dir.is_dir():
+        window_count = _count_windows_dir(windows_dir)
+        details["window_count"] = window_count
+        if window_count is None or window_count > 0:
+            return TrainingDatasetDiscovery(
+                True,
+                str(root),
+                "full_dataset_layout",
+                "Full dataset layout detected",
+                details,
+            )
+        return TrainingDatasetDiscovery(False, str(root), "full_dataset_layout", "Full dataset layout has no windows", details)
+
+    manifest = build_adaptation_dataset_manifest(reference_dataset_dir=root, config=AdaptationDatasetConfig())
+    train = int(manifest.counts.get("reference_train", 0))
+    val = int(manifest.counts.get("reference_val", 0))
+    total = train + val
+    details.update({"reference_train": train, "reference_val": val, "npz_total": total, "warnings": list(manifest.warnings)})
+    if total > 0:
+        return TrainingDatasetDiscovery(
+            True,
+            str(root),
+            "adaptation_npz_layout",
+            "Adaptation NPZ dataset layout detected",
+            details,
+        )
+    return TrainingDatasetDiscovery(False, str(root), None, "No usable training dataset layout detected", details)
+
+
+def _count_windows_dir(windows_dir: Path) -> int | None:
+    try:
+        return sum(1 for item in windows_dir.iterdir() if item.is_file())
+    except OSError:
+        return None
+
+
 def _utc_iso(value: datetime) -> str:
     return value.astimezone(UTC).isoformat(timespec="seconds").replace("+00:00", "Z")
 
@@ -377,28 +445,50 @@ def discover_adaptation_reference_dataset(
     candidates: list[str] | None = None,
     config: AdaptationDatasetConfig | None = None,
 ) -> Path | None:
-    """Find a dataset root with usable canonical or assembled legacy NPZ samples."""
-    cfg = config or AdaptationDatasetConfig()
+    """Find the first usable fallback/full training-source root."""
+    discovery = discover_training_dataset(
+        repo_root=repo_root,
+        explicit_path=explicit_path,
+        candidates=candidates,
+        config=config,
+    )
+    return Path(discovery.path) if discovery.available and discovery.path else None
+
+
+def discover_training_dataset(
+    *,
+    repo_root: Path,
+    explicit_path: str | Path | None = None,
+    candidates: list[str] | None = None,
+    config: AdaptationDatasetConfig | None = None,
+) -> TrainingDatasetDiscovery:
+    """Find a usable fallback/full training source, preferring configured order."""
+    del config  # layout inspection owns lightweight validation for each supported source type.
     roots: list[Path] = []
     if explicit_path is not None:
         roots.append(Path(explicit_path))
     roots.extend(Path(candidate) for candidate in (candidates or []))
 
-    valid: list[tuple[Path, bool, int]] = []
+    inspected: list[dict[str, Any]] = []
     for root in roots:
         path = root if root.is_absolute() else repo_root / root
-        if not path.exists():
-            continue
-        manifest = build_adaptation_dataset_manifest(reference_dataset_dir=path, config=cfg)
-        train = int(manifest.counts.get("reference_train", 0))
-        val = int(manifest.counts.get("reference_val", 0))
-        total = train + val
-        if total > 0:
-            valid.append((path, train > 0 and val > 0, total))
-    if not valid:
-        return None
-    valid.sort(key=lambda item: (item[1], item[2]), reverse=True)
-    return valid[0][0]
+        result = inspect_training_dataset_layout(path)
+        inspected.append({"path": str(path), "available": result.available, "layout": result.layout, **result.details})
+        if result.available:
+            return TrainingDatasetDiscovery(
+                True,
+                result.path,
+                result.layout,
+                result.message,
+                {**result.details, "inspected_candidates": inspected},
+            )
+    return TrainingDatasetDiscovery(
+        False,
+        None,
+        None,
+        "No usable fallback/full training dataset was discovered",
+        {"inspected_candidates": inspected},
+    )
 
 
 _ACCEPTED_FRESH_STATUSES = {"accepted_train", "accepted_val"}
@@ -503,13 +593,18 @@ class AdaptationReadinessService:
 
         checks.append(self._check_adaptation_enabled())
 
-        buffer_check, buffer_summary = self._check_buffer_summary()
+        dataset_check = self._check_reference_dataset()
+        fallback_dataset_available = bool(dataset_check.details.get("selected_dataset_path") and dataset_check.details.get("selected_layout"))
+        checks.append(dataset_check)
+        summary["fallback_training_dataset"] = dataset_check.details
+
+        buffer_check, buffer_summary = self._check_buffer_summary(fallback_dataset_available=fallback_dataset_available)
         checks.append(buffer_check)
         accepted_records: list[dict[str, Any]] = []
         if buffer_summary:
             summary["buffer"] = buffer_summary
             accepted_records = _accepted_fresh_records(buffer_summary)
-            checks.append(self._check_enough_fresh_samples(buffer_summary))
+            checks.append(self._check_enough_fresh_samples(buffer_summary, fallback_dataset_available=fallback_dataset_available))
             checks.append(_check_accepted_sample_time_span(accepted_records, self.config, current_time))
             checks.append(_check_accepted_sample_age(accepted_records, self.config, current_time))
             checks.append(self._check_reserve_policy(buffer_summary))
@@ -517,9 +612,13 @@ class AdaptationReadinessService:
             checks.append(
                 ReadinessCheck(
                     name="enough_fresh_samples",
-                    status=_YELLOW if buffer_check.status == _YELLOW else _RED,
+                    status=_YELLOW if fallback_dataset_available else _RED,
                     passed=False,
-                    message="Fresh sample count cannot be checked without a readable buffer manifest",
+                    message=(
+                        "Waiting for enough collected training data"
+                        if fallback_dataset_available
+                        else "No usable training data source is available"
+                    ),
                     details={"required_count": self.config.min_good_fresh_samples, "actual_count": 0},
                 )
             )
@@ -550,10 +649,6 @@ class AdaptationReadinessService:
                     details={"allow_used_reserve_when_fresh_insufficient": self.config.allow_used_reserve_when_fresh_insufficient},
                 )
             )
-
-        dataset_check = self._check_reference_dataset()
-        checks.append(dataset_check)
-        summary["reference_dataset"] = dataset_check.details
 
         checkpoint_availability = discover_adaptation_checkpoint(
             repo_root=Path.cwd(),
@@ -616,18 +711,22 @@ class AdaptationReadinessService:
             return ReadinessCheck("adaptation_enabled", _GREEN, True, "Adaptation is enabled")
         return ReadinessCheck("adaptation_enabled", _RED, False, "Adaptation is disabled")
 
-    def _check_buffer_summary(self) -> tuple[ReadinessCheck, dict[str, Any] | None]:
+    def _check_buffer_summary(self, *, fallback_dataset_available: bool) -> tuple[ReadinessCheck, dict[str, Any] | None]:
         root = self.config.resolve_buffer_root()
         manifest = root / "manifest.json"
         details = {"buffer_root": str(root), "manifest_path": str(manifest)}
         if not root.exists():
+            status = _YELLOW if fallback_dataset_available else _RED
+            message = "Waiting for collected samples" if fallback_dataset_available else "No usable training data source is available"
             return (
-                ReadinessCheck("buffer_exists", _YELLOW, False, "Adaptation buffer root does not exist yet", details),
+                ReadinessCheck("buffer_exists", status, False, message, details),
                 None,
             )
         if not manifest.exists():
+            status = _YELLOW if fallback_dataset_available else _RED
+            message = "Waiting for collected samples" if fallback_dataset_available else "No usable training data source is available"
             return (
-                ReadinessCheck("buffer_exists", _RED, False, "Adaptation buffer manifest is missing", details),
+                ReadinessCheck("buffer_exists", status, False, message, details),
                 None,
             )
         try:
@@ -654,13 +753,15 @@ class AdaptationReadinessService:
             buffer_summary,
         )
 
-    def _check_enough_fresh_samples(self, buffer_summary: dict[str, Any]) -> ReadinessCheck:
+    def _check_enough_fresh_samples(self, buffer_summary: dict[str, Any], *, fallback_dataset_available: bool) -> ReadinessCheck:
         actual = int(buffer_summary.get("fresh_accepted_total", 0))
         required = self.config.min_good_fresh_samples
-        details = {"actual_count": actual, "required_count": required}
+        details = {"actual_count": actual, "required_count": required, "fallback_dataset_available": fallback_dataset_available}
         if actual >= required:
-            return ReadinessCheck("enough_fresh_samples", _GREEN, True, "Enough fresh accepted samples are buffered", details)
-        return ReadinessCheck("enough_fresh_samples", _YELLOW, False, "Not enough fresh accepted samples are buffered yet", details)
+            return ReadinessCheck("enough_fresh_samples", _GREEN, True, "Enough new training data is available", details)
+        if actual == 0 and not fallback_dataset_available:
+            return ReadinessCheck("enough_fresh_samples", _RED, False, "No usable training data source is available", details)
+        return ReadinessCheck("enough_fresh_samples", _YELLOW, False, "Waiting for enough collected training data", details)
 
     def _check_reserve_policy(self, buffer_summary: dict[str, Any]) -> ReadinessCheck:
         reserve_count = int(buffer_summary.get("reserve_used", 0))
@@ -678,20 +779,30 @@ class AdaptationReadinessService:
         return ReadinessCheck("reserve_policy", _GREEN, True, "Reserve policy does not block readiness", details)
 
     def _check_reference_dataset(self) -> ReadinessCheck:
-        explicit = self.config.resolve_reference_dataset_path()
-        selected = discover_adaptation_reference_dataset(
+        explicit_hint: Path | None = None
+        env_value = os.environ.get(self.config.reference_dataset_path_env)
+        if env_value:
+            explicit_hint = Path(env_value)
+        elif self.config.reference_dataset_path is not None:
+            explicit_hint = Path(self.config.reference_dataset_path)
+        candidates = list(self.config.default_reference_dataset_candidates) if self.config.enable_smart_dataset_discovery else []
+        if explicit_hint is None:
+            candidates.append(str(self.config.default_reference_dataset_path))
+        selected = discover_training_dataset(
             repo_root=Path.cwd(),
-            explicit_path=explicit,
-            candidates=self.config.default_reference_dataset_candidates if self.config.enable_smart_dataset_discovery else [],
+            explicit_path=explicit_hint,
+            candidates=candidates,
         )
         details = {
-            "resolved_path": str(explicit),
-            "selected_dataset_path": str(selected) if selected else None,
+            "resolved_path": str(explicit_hint or self.config.default_reference_dataset_path),
+            "selected_dataset_path": selected.path,
+            "selected_layout": selected.layout,
             "smart_discovery_enabled": self.config.enable_smart_dataset_discovery,
+            **selected.details,
         }
-        if selected is not None:
-            return ReadinessCheck("reference_dataset_exists", _GREEN, True, "Reference dataset with usable NPZ samples is available", details)
-        return ReadinessCheck("reference_dataset_exists", _RED, False, "Reference dataset with usable NPZ samples is missing", details)
+        if selected.available:
+            return ReadinessCheck("fallback_training_dataset_available", _GREEN, True, selected.message, details)
+        return ReadinessCheck("fallback_training_dataset_available", _YELLOW, True, selected.message, details)
 
     def _check_training_jobs(
         self,
