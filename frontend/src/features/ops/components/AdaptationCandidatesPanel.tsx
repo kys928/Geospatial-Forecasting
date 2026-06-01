@@ -32,6 +32,20 @@ function reasonText(candidate: AdaptationCandidate): string {
   return structured(decision);
 }
 
+function compactPath(value: unknown): string {
+  const text = fmt(value);
+  if (text === "Not reported" || text.length <= 34) return text;
+  const parts = text.split("/").filter(Boolean);
+  if (parts.length >= 2) return `.../${parts.slice(-2).join("/")}`;
+  return `${text.slice(0, 14)}...${text.slice(-14)}`;
+}
+
+function isRejected(candidate: AdaptationCandidate): boolean {
+  const status = String(candidate.status ?? "").toLowerCase();
+  const approval = String(candidate.approval_status ?? "").toLowerCase();
+  return status === "rejected" || approval === "rejected" || approval === "rejected_by_operator";
+}
+
 export function AdaptationCandidatesPanel({ activeModelId, onRegistryRefresh }: { activeModelId: string | null; onRegistryRefresh: () => Promise<void> }) {
   const [candidates, setCandidates] = useState<AdaptationCandidate[]>([]);
   const [storage, setStorage] = useState<AdaptationStorageWarning | null>(null);
@@ -90,14 +104,18 @@ export function AdaptationCandidatesPanel({ activeModelId, onRegistryRefresh }: 
     {!loading && !error && candidates.length === 0 ? <p className="muted">No adaptation candidates have been registered yet.</p> : null}
     {candidates.length > 0 ? <div style={{ overflowX: "auto", marginTop: 10 }}><table className="ops-model-table"><thead><tr><th>Model ID</th><th>Status</th><th>Approval</th><th>Checkpoint</th><th>Run</th><th>Best / Final</th><th>Decision</th><th>Reason / warning</th><th>Actions</th></tr></thead><tbody>{candidates.map((candidate) => {
       const isActive = candidate.model_id === activeModelId || candidate.status === "active";
-      const canApprove = !isActive && candidate.status !== "rejected" && candidate.approval_status !== "rejected_by_operator" && candidate.approval_status !== "rejected";
+      const rejected = isRejected(candidate);
+      const canApprove = !isActive && !rejected;
+      const canApplyPolicy = !isActive && !rejected;
       const busyPrefix = `${candidate.model_id}:`;
       const busy = actionId?.startsWith(busyPrefix) ?? false;
-      return <tr key={candidate.model_id}><td>{candidate.model_id}</td><td>{fmt(candidate.status)}</td><td>{fmt(candidate.approval_status)}</td><td>{candidate.checkpoint_file_exists ? "Yes" : "No"}</td><td>{fmt(candidate.run_id)}</td><td title={`${fmt(candidate.best_overall_checkpoint)} / ${fmt(candidate.final_checkpoint)}`}>{fmt(candidate.best_overall_checkpoint)} / {fmt(candidate.final_checkpoint)}</td><td>{decisionText(candidate.last_adaptation_promotion_decision)}</td><td title={reasonText(candidate)}>{reasonText(candidate)}</td><td><div className="button-row" style={{ gap: 6 }}>
+      const bestCheckpoint = compactPath(candidate.best_overall_checkpoint);
+      const finalCheckpoint = compactPath(candidate.final_checkpoint);
+      return <tr key={candidate.model_id}><td title={candidate.model_id}>{candidate.model_id}</td><td>{fmt(candidate.status)}</td><td>{fmt(candidate.approval_status)}</td><td>{candidate.checkpoint_file_exists ? "Yes" : "No"}</td><td title={fmt(candidate.run_id)}>{fmt(candidate.run_id)}</td><td title={`${fmt(candidate.best_overall_checkpoint)} / ${fmt(candidate.final_checkpoint)}`}>{bestCheckpoint} / {finalCheckpoint}</td><td>{decisionText(candidate.last_adaptation_promotion_decision)}</td><td title={reasonText(candidate)}>{reasonText(candidate)}</td><td><div className="button-row" style={{ gap: 6 }}>
         <button className="secondary-button" disabled={busy} onClick={() => void runAction(candidate.model_id, "Evaluate", () => opsClient.evaluateAdaptationCandidate(candidate.model_id))}>Evaluate</button>
-        <button className="secondary-button" disabled={busy || isActive} onClick={() => void runAction(candidate.model_id, "Apply policy", () => opsClient.applyAdaptationPolicy(candidate.model_id))}>Apply policy</button>
+        <button className="secondary-button" disabled={busy || !canApplyPolicy} onClick={() => void runAction(candidate.model_id, "Apply policy", () => opsClient.applyAdaptationPolicy(candidate.model_id))}>Apply policy</button>
         {canApprove ? <button className="secondary-button" disabled={busy} onClick={() => { if (window.confirm(`Approve and activate ${candidate.model_id}? Backend compatibility checks will run before activation.`)) void runAction(candidate.model_id, "Approve", () => opsClient.approveAdaptationCandidate(candidate.model_id, decisionPayload("Approved from Ops UI."))); }}>Approve</button> : null}
-        {!isActive && candidate.status !== "rejected" ? <button className="secondary-button" disabled={busy} onClick={() => { if (window.confirm(`Reject ${candidate.model_id}? This keeps the checkpoint file and metadata.`)) void runAction(candidate.model_id, "Reject", () => opsClient.rejectAdaptationCandidate(candidate.model_id, decisionPayload("Rejected from Ops UI."))); }}>Reject</button> : null}
+        {!isActive && !rejected ? <button className="secondary-button" disabled={busy} onClick={() => { if (window.confirm(`Reject ${candidate.model_id}? This keeps the checkpoint file and metadata.`)) void runAction(candidate.model_id, "Reject", () => opsClient.rejectAdaptationCandidate(candidate.model_id, decisionPayload("Rejected from Ops UI."))); }}>Reject</button> : null}
         {!isActive && candidate.checkpoint_file_exists ? <button className="secondary-button" disabled={busy} onClick={() => { if (window.confirm(`Delete checkpoint file for ${candidate.model_id}? Metadata/history remains and the row will stay visible.`)) void runAction(candidate.model_id, "Delete checkpoint file", () => opsClient.deleteAdaptationCheckpointFile(candidate.model_id, decisionPayload("Checkpoint file deleted from Ops UI.")), true); }}>Delete file</button> : null}
       </div></td></tr>;
     })}</tbody></table></div> : null}

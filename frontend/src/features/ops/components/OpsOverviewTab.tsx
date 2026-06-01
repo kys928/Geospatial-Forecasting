@@ -210,19 +210,25 @@ function jobSummary(retraining: Record<string, unknown>): string {
 
 function readinessClass(readiness: AdaptationReadiness | null): string {
   if (!readiness) return "ops-readiness-unknown";
-  if (readiness.ready) return "ops-readiness-met";
-  return String(readiness.status).toLowerCase().includes("block") ? "ops-readiness-not_met" : "ops-readiness-unknown";
+  const status = String(readiness.status ?? "").toLowerCase();
+  if (readiness.ready || status === "green") return "ops-readiness-met";
+  if (status === "red") return "ops-readiness-not_met";
+  return "ops-readiness-unknown";
 }
 
 function readinessLabel(readiness: AdaptationReadiness | null): string {
   if (!readiness) return "Adaptation readiness not reported";
-  if (readiness.ready) return "Ready";
-  return String(readiness.status).toLowerCase().includes("block") ? "Blocked" : "Waiting";
+  const status = String(readiness.status ?? "").toLowerCase();
+  if (readiness.ready || status === "green") return "Ready";
+  if (status === "yellow") return "Waiting";
+  if (status === "red") return "Blocked";
+  return "Adaptation readiness not reported";
 }
 
 function checkClass(check: Record<string, unknown>): string {
-  if (check.ready === true || check.passed === true || check.status === "ready" || check.status === "passed") return "ops-readiness-met";
-  if (check.blocking === true || check.ready === false || check.passed === false || check.status === "blocked" || check.status === "failed") return "ops-readiness-not_met";
+  const status = String(check.status ?? "").toLowerCase();
+  if (check.ready === true || check.passed === true || status === "green" || status === "ready" || status === "passed") return "ops-readiness-met";
+  if (check.blocking === true || check.ready === false || check.passed === false || status === "red" || status === "blocked" || status === "failed") return "ops-readiness-not_met";
   return "ops-readiness-unknown";
 }
 

@@ -83,7 +83,7 @@ function deriveTrainingView(status: any, latestJob: OpsJobRecord | null, adaptat
   const readinessSnapshot = adaptationTraining?.latest_readiness_snapshot ?? null;
   const readinessBlocking = Array.isArray(readinessSnapshot?.blocking_reasons) ? readinessSnapshot.blocking_reasons.join("; ") : null;
   const metricRows = [
-    ["Queued jobs", jobCounts.queued], ["Running jobs", jobCounts.running], ["Completed jobs", jobCounts.completed], ["Failed jobs", jobCounts.failed],
+    ["Queued jobs", jobCounts.queued], ["Running jobs", jobCounts.running], ["Completed jobs", jobCounts.completed ?? jobCounts.succeeded], ["Failed jobs", jobCounts.failed],
     ["Readiness", typeof readinessSnapshot?.status === "string" ? readinessSnapshot.status : null], ["Readiness blockers", readinessBlocking],
     ["Progress", progressPct !== null ? `${progressPct.toFixed(1)}%` : null], ["Current epoch", pick(metrics, ["current_epoch", "epoch"])], ["Total epochs", pick(metrics, ["total_epochs", "max_epochs"])], ["Training loss", pick(metrics, ["training_loss", "train_loss"])], ["Validation loss", pick(metrics, ["validation_loss", "val_loss"])], ["Best validation loss", pick(metrics, ["best_validation_loss", "best_val_loss"])], ["Steps completed", pick(metrics, ["steps_completed", "global_step"])], ["ETA", pick(metrics, ["eta", "eta_seconds"])], ["Elapsed time", pick(metrics, ["elapsed", "elapsed_time"])], ["Candidate model produced", pick(jobObj, ["candidate_model_id", "candidate_model_produced"])]
   ].filter(([, v]) => v !== null && v !== undefined && String(v).trim() !== "").map(([label, value]) => ({ label: String(label), value: String(value) }));
