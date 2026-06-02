@@ -8,6 +8,8 @@ from plume.services.adaptation_readiness import (
     AdaptationReadinessService,
     discover_adaptation_checkpoint,
     discover_adaptation_reference_dataset,
+    discover_training_dataset,
+    inspect_dataset_layout,
     inspect_training_dataset_layout,
 )
 
@@ -69,10 +71,13 @@ def _full_dataset_layout(root):
 
 def test_full_dataset_path_in_default_discovery_candidates():
     config = AdaptationReadinessConfig.from_yaml("configs/adaptation.yaml")
-    assert config.default_reference_dataset_candidates[:3] == [
+    assert config.default_reference_dataset_candidates == [
         "/workspace/Dataset/hysplit-plume-convlstm-multiyear-2024-2026",
+        "/workspace/Dataset",
         "/workspace/online_sets/online_learning_subset",
         "artifacts/reference_subset",
+        "artifacts/datasets",
+        "data",
     ]
 
 
@@ -83,11 +88,11 @@ def test_full_dataset_layout_detected(tmp_path):
     result = inspect_training_dataset_layout(root)
 
     assert result.available is True
-    assert result.layout == "full_dataset_layout"
+    assert result.layout == "full_manifest_windows"
     assert result.details["window_count"] == 1
 
 
-def test_missing_buffer_with_full_dataset_is_waiting_not_blocking(tmp_path):
+def test_missing_buffer_with_full_dataset_is_waiting_not_red(tmp_path):
     fallback = tmp_path / "full"
     _full_dataset_layout(fallback)
     config = AdaptationReadinessConfig(
@@ -108,7 +113,7 @@ def test_missing_buffer_with_full_dataset_is_waiting_not_blocking(tmp_path):
     assert not any(check.status == "red" and "sample" in check.name for check in result.checks)
 
 
-def test_missing_buffer_without_full_dataset_is_blocking(tmp_path):
+def test_missing_buffer_without_any_dataset_is_red(tmp_path):
     config = AdaptationReadinessConfig(
         buffer_root=tmp_path / "missing-buffer",
         reference_dataset_path=tmp_path / "missing-full",
@@ -158,3 +163,65 @@ def test_enough_buffer_data_is_green(tmp_path):
     checks = {check.name: check for check in result.checks}
     assert checks["buffer_exists"].status == "green"
     assert checks["enough_fresh_samples"].status == "green"
+
+
+def test_detect_full_windows_npz_layout_without_manifests(tmp_path):
+    root = tmp_path / "full-windows"
+    _npz(root / "windows" / "window-0.npz")
+
+    result = inspect_dataset_layout(root)
+
+    assert result.usable is True
+    assert result.layout_kind == "full_windows_npz"
+    assert result.npz_count > 0
+    assert result.manifest_exists is False
+
+
+def test_detect_full_windows_npz_layout_with_nested_files(tmp_path):
+    root = tmp_path / "nested-windows"
+    _npz(root / "windows" / "scenario" / "window-0.npz")
+
+    result = inspect_dataset_layout(root)
+
+    assert result.usable is True
+    assert result.layout_kind == "full_windows_npz"
+    assert result.details["windows_npz_immediate_count"] == 0
+    assert result.npz_count > 0
+
+
+def test_detect_empty_windows_dir_not_usable(tmp_path):
+    root = tmp_path / "empty-windows"
+    (root / "windows").mkdir(parents=True)
+
+    result = inspect_dataset_layout(root)
+
+    assert result.usable is False
+    assert result.layout_kind == "missing_or_unknown"
+    assert "contains no .npz" in result.message
+
+
+def test_discovery_prefers_full_dataset_with_windows_npz(tmp_path):
+    parent = tmp_path / "Dataset"
+    small = parent / "small"
+    large = parent / "large"
+    _npz(small / "windows" / "window-0.npz")
+    _npz(large / "windows" / "window-0.npz")
+    _npz(large / "windows" / "window-1.npz")
+
+    result = discover_training_dataset(repo_root=tmp_path, candidates=["Dataset"])
+
+    assert result.available is True
+    assert result.path == str(large)
+    assert result.layout == "full_windows_npz"
+
+
+def test_checkpoint_discovery_finds_artifacts_model_without_env(tmp_path, monkeypatch):
+    monkeypatch.delenv("PLUME_FULL_DATASET_PATH", raising=False)
+    checkpoint = tmp_path / "artifacts" / "models" / "robust" / "final_full_checkpoint.pt"
+    checkpoint.parent.mkdir(parents=True)
+    checkpoint.write_bytes(b"checkpoint")
+
+    result = discover_adaptation_checkpoint(repo_root=tmp_path, globs=[])
+
+    assert result.passed is True
+    assert result.selected_checkpoint_path == str(checkpoint)

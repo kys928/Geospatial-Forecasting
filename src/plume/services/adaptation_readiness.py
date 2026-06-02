@@ -70,8 +70,11 @@ class AdaptationReadinessConfig:
     default_reference_dataset_candidates: list[str] = field(
         default_factory=lambda: [
             "/workspace/Dataset/hysplit-plume-convlstm-multiyear-2024-2026",
+            "/workspace/Dataset",
             "/workspace/online_sets/online_learning_subset",
             "artifacts/reference_subset",
+            "artifacts/datasets",
+            "data",
         ]
     )
 
@@ -230,6 +233,21 @@ class CheckpointAvailability:
 
 
 @dataclass(frozen=True)
+class DatasetLayoutInspection:
+    """Lightweight inspection of supported training dataset directory layouts."""
+
+    root: Path
+    exists: bool
+    layout_kind: str
+    npz_count: int
+    windows_dir_exists: bool
+    manifest_exists: bool
+    usable: bool
+    message: str
+    details: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
 class TrainingDatasetDiscovery:
     """Training-source discovery result for fallback/manual stabilization data."""
 
@@ -240,50 +258,159 @@ class TrainingDatasetDiscovery:
     details: dict[str, Any] = field(default_factory=dict)
 
 
-def inspect_training_dataset_layout(path: str | Path) -> TrainingDatasetDiscovery:
-    """Inspect a candidate training-source root without treating it as buffer data."""
-    root = Path(path)
-    details: dict[str, Any] = {"path": str(root), "path_exists": root.exists()}
-    if not root.exists():
-        return TrainingDatasetDiscovery(False, str(root), None, "Dataset path does not exist", details)
+def inspect_dataset_layout(path: str | Path) -> DatasetLayoutInspection:
+    """Inspect a dataset root for supported NPZ layouts without requiring manifests.
 
+    The check is intentionally cheap for large mounted datasets: direct child
+    counts are used first, and recursive scanning is only used for ``windows/``
+    when there are no immediate NPZ files.
+    """
+    root = Path(path)
+    exists = root.exists()
     dataset_manifest = root / "dataset_manifest"
+    dataset_manifest_json = root / "dataset_manifest.json"
     windows_manifest = root / "windows_manifest_enriched"
+    windows_manifest_json = root / "windows_manifest_enriched.json"
     windows_dir = root / "windows"
+    manifest_exists = any(
+        candidate.exists()
+        for candidate in (dataset_manifest, dataset_manifest_json, windows_manifest, windows_manifest_json)
+    )
+    details: dict[str, Any] = {
+        "path": str(root),
+        "path_exists": exists,
+        "dataset_manifest_exists": dataset_manifest.exists() or dataset_manifest_json.exists(),
+        "windows_manifest_enriched_exists": windows_manifest.exists() or windows_manifest_json.exists(),
+        "windows_dir_exists": windows_dir.exists() and windows_dir.is_dir(),
+        "windows_npz_immediate_count": 0,
+        "windows_npz_recursive_count": 0,
+        "train_npz_count": 0,
+        "val_npz_count": 0,
+        "accepted_train_npz_count": 0,
+        "accepted_val_npz_count": 0,
+        "flat_npz_count": 0,
+    }
+    if not exists:
+        return DatasetLayoutInspection(root, False, "missing_or_unknown", 0, False, manifest_exists, False, "Dataset path does not exist", details)
+    if not root.is_dir():
+        return DatasetLayoutInspection(root, True, "missing_or_unknown", 0, False, manifest_exists, False, "Dataset path is not a directory", details)
+
+    train_count = _count_direct_npz(root / "train")
+    val_count = _count_direct_npz(root / "val")
+    accepted_train_count = _count_direct_npz(root / "accepted" / "train")
+    accepted_val_count = _count_direct_npz(root / "accepted" / "val")
+    adaptation_count = train_count + val_count + accepted_train_count + accepted_val_count
     details.update(
         {
-            "dataset_manifest_exists": dataset_manifest.exists(),
-            "windows_manifest_enriched_exists": windows_manifest.exists(),
-            "windows_dir_exists": windows_dir.exists() and windows_dir.is_dir(),
+            "train_npz_count": train_count,
+            "val_npz_count": val_count,
+            "accepted_train_npz_count": accepted_train_count,
+            "accepted_val_npz_count": accepted_val_count,
         }
     )
-    if dataset_manifest.exists() and windows_manifest.exists() and windows_dir.exists() and windows_dir.is_dir():
-        window_count = _count_windows_dir(windows_dir)
-        details["window_count"] = window_count
-        if window_count is None or window_count > 0:
-            return TrainingDatasetDiscovery(
-                True,
-                str(root),
-                "full_dataset_layout",
-                "Full dataset layout detected",
-                details,
-            )
-        return TrainingDatasetDiscovery(False, str(root), "full_dataset_layout", "Full dataset layout has no windows", details)
-
-    manifest = build_adaptation_dataset_manifest(reference_dataset_dir=root, config=AdaptationDatasetConfig())
-    train = int(manifest.counts.get("reference_train", 0))
-    val = int(manifest.counts.get("reference_val", 0))
-    total = train + val
-    details.update({"reference_train": train, "reference_val": val, "npz_total": total, "warnings": list(manifest.warnings)})
-    if total > 0:
-        return TrainingDatasetDiscovery(
+    if adaptation_count > 0:
+        return DatasetLayoutInspection(
+            root,
             True,
-            str(root),
-            "adaptation_npz_layout",
-            "Adaptation NPZ dataset layout detected",
+            "adaptation_npz_split",
+            adaptation_count,
+            bool(details["windows_dir_exists"]),
+            manifest_exists,
+            True,
+            f"Adaptation NPZ split detected; npz count: {adaptation_count}",
             details,
         )
-    return TrainingDatasetDiscovery(False, str(root), None, "No usable training dataset layout detected", details)
+
+    windows_dir_exists = bool(details["windows_dir_exists"])
+    if windows_dir_exists:
+        immediate_count = _count_direct_npz(windows_dir)
+        recursive_count = immediate_count if immediate_count > 0 else _count_recursive_npz(windows_dir)
+        details["windows_npz_immediate_count"] = immediate_count
+        details["windows_npz_recursive_count"] = recursive_count
+        details["window_count"] = recursive_count
+        if recursive_count > 0:
+            layout = "full_manifest_windows" if manifest_exists else "full_windows_npz"
+            message = (
+                "Full manifest windows dataset layout detected"
+                if layout == "full_manifest_windows"
+                else "Full windows dataset layout detected"
+            )
+            return DatasetLayoutInspection(
+                root,
+                True,
+                layout,
+                recursive_count,
+                True,
+                manifest_exists,
+                True,
+                f"{message}; windows npz count: {recursive_count}",
+                details,
+            )
+        return DatasetLayoutInspection(
+            root,
+            True,
+            "missing_or_unknown",
+            0,
+            True,
+            manifest_exists,
+            False,
+            "Windows directory exists but contains no .npz files",
+            details,
+        )
+
+    flat_count = _count_direct_npz(root)
+    details["flat_npz_count"] = flat_count
+    if flat_count > 0:
+        return DatasetLayoutInspection(
+            root,
+            True,
+            "flat_npz",
+            flat_count,
+            False,
+            manifest_exists,
+            True,
+            f"Flat NPZ dataset layout detected; npz count: {flat_count}",
+            details,
+        )
+
+    return DatasetLayoutInspection(root, True, "missing_or_unknown", 0, False, manifest_exists, False, "No usable training dataset layout detected", details)
+
+
+def inspect_training_dataset_layout(path: str | Path) -> TrainingDatasetDiscovery:
+    """Inspect a candidate training-source root without treating it as buffer data."""
+    inspection = inspect_dataset_layout(path)
+    details = {
+        **inspection.details,
+        "layout_kind": inspection.layout_kind,
+        "npz_count": inspection.npz_count,
+        "manifest_exists": inspection.manifest_exists,
+        "usable": inspection.usable,
+    }
+    return TrainingDatasetDiscovery(
+        inspection.usable,
+        str(inspection.root),
+        inspection.layout_kind if inspection.usable else None,
+        inspection.message,
+        details,
+    )
+
+
+def _count_direct_npz(directory: Path) -> int:
+    if not directory.exists() or not directory.is_dir():
+        return 0
+    try:
+        return sum(1 for item in directory.iterdir() if item.is_file() and item.suffix.lower() == ".npz")
+    except OSError:
+        return 0
+
+
+def _count_recursive_npz(directory: Path) -> int:
+    if not directory.exists() or not directory.is_dir():
+        return 0
+    try:
+        return sum(1 for item in directory.rglob("*.npz") if item.is_file())
+    except OSError:
+        return 0
 
 
 def _count_windows_dir(windows_dir: Path) -> int | None:
@@ -342,7 +469,7 @@ def discover_adaptation_checkpoint(
     details: dict[str, Any] = {
         "explicit_active_checkpoint": str(explicit_active_checkpoint) if explicit_active_checkpoint else None,
         "explicit_latest_best_checkpoint": str(explicit_latest_best_checkpoint) if explicit_latest_best_checkpoint else None,
-        "searched_globs": list(globs or []),
+        "searched_globs": [],
         "allow_fresh_start": allow_fresh_start,
     }
     ordered: list[tuple[Path, str]] = []
@@ -368,7 +495,17 @@ def discover_adaptation_checkpoint(
 
     add(explicit_latest_best_checkpoint, "latest_best_checkpoint")
 
-    for pattern in globs or []:
+    search_globs = list(globs or [])
+    for default_pattern in (
+        "artifacts/models/**/final_full_checkpoint.pt",
+        "artifacts/models/**/best_full_checkpoint.pt",
+        "runs/**/final_full_checkpoint.pt",
+        "runs/**/best_full_checkpoint.pt",
+    ):
+        if default_pattern not in search_globs:
+            search_globs.append(default_pattern)
+    details["searched_globs"] = search_globs
+    for pattern in search_globs:
         for candidate in _glob_candidates(repo_root, pattern):
             ordered.append((candidate, "glob"))
 
@@ -482,6 +619,25 @@ def discover_training_dataset(
                 result.message,
                 {**result.details, "inspected_candidates": inspected},
             )
+
+        child_result = _best_child_dataset(path)
+        if child_result is not None:
+            inspected.append(
+                {
+                    "path": child_result.path,
+                    "available": child_result.available,
+                    "layout": child_result.layout,
+                    "discovered_from_parent": str(path),
+                    **child_result.details,
+                }
+            )
+            return TrainingDatasetDiscovery(
+                True,
+                child_result.path,
+                child_result.layout,
+                child_result.message,
+                {**child_result.details, "discovered_from_parent": str(path), "inspected_candidates": inspected},
+            )
     return TrainingDatasetDiscovery(
         False,
         None,
@@ -489,6 +645,24 @@ def discover_training_dataset(
         "No usable fallback/full training dataset was discovered",
         {"inspected_candidates": inspected},
     )
+
+
+def _best_child_dataset(parent: Path) -> TrainingDatasetDiscovery | None:
+    """Inspect one level of child directories and prefer the largest usable layout."""
+    if not parent.exists() or not parent.is_dir():
+        return None
+    usable: list[TrainingDatasetDiscovery] = []
+    try:
+        children = [child for child in parent.iterdir() if child.is_dir()]
+    except OSError:
+        return None
+    for child in children:
+        result = inspect_training_dataset_layout(child)
+        if result.available:
+            usable.append(result)
+    if not usable:
+        return None
+    return max(usable, key=lambda item: (int(item.details.get("windows_npz_recursive_count") or item.details.get("npz_count") or 0), item.path or ""))
 
 
 _ACCEPTED_FRESH_STATUSES = {"accepted_train", "accepted_val"}
@@ -714,7 +888,7 @@ class AdaptationReadinessService:
     def _check_buffer_summary(self, *, fallback_dataset_available: bool) -> tuple[ReadinessCheck, dict[str, Any] | None]:
         root = self.config.resolve_buffer_root()
         manifest = root / "manifest.json"
-        details = {"buffer_root": str(root), "manifest_path": str(manifest)}
+        details = {"buffer_configured": True}
         if not root.exists():
             status = _YELLOW if fallback_dataset_available else _RED
             message = "Waiting for collected samples" if fallback_dataset_available else "No usable training data source is available"
@@ -743,13 +917,13 @@ class AdaptationReadinessService:
                     "buffer_exists",
                     _RED,
                     False,
-                    "Adaptation buffer manifest cannot be read",
+                    "Collected sample buffer cannot be read",
                     {**details, "error": str(exc)},
                 ),
                 None,
             )
         return (
-            ReadinessCheck("buffer_exists", _GREEN, True, "Adaptation buffer manifest is readable", details),
+            ReadinessCheck("buffer_exists", _GREEN, True, "Collected sample buffer is readable", details),
             buffer_summary,
         )
 
@@ -801,7 +975,7 @@ class AdaptationReadinessService:
             **selected.details,
         }
         if selected.available:
-            return ReadinessCheck("fallback_training_dataset_available", _GREEN, True, selected.message, details)
+            return ReadinessCheck("fallback_training_dataset_available", _GREEN, True, "Historical training dataset found", details)
         return ReadinessCheck("fallback_training_dataset_available", _YELLOW, True, selected.message, details)
 
     def _check_training_jobs(

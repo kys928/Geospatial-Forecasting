@@ -151,28 +151,24 @@ def _count_npz_layout(root: Path) -> dict[str, int]:
     return counts
 
 
+def _inspect_dataset_layout(root: Path):
+    from plume.services.adaptation_readiness import inspect_dataset_layout
+
+    return inspect_dataset_layout(root)
+
+
 def _inspect_full_dataset_layout(root: Path) -> dict[str, Any]:
-    dataset_manifest = root / "dataset_manifest"
-    windows_manifest = root / "windows_manifest_enriched"
-    windows_dir = root / "windows"
-    details: dict[str, Any] = {
-        "dataset_manifest_exists": dataset_manifest.exists(),
-        "windows_manifest_enriched_exists": windows_manifest.exists(),
-        "windows_dir_exists": windows_dir.exists() and windows_dir.is_dir(),
-        "window_count": None,
+    inspection = _inspect_dataset_layout(root)
+    return {
+        **inspection.details,
+        "layout_kind": inspection.layout_kind,
+        "npz_count": inspection.npz_count,
+        "windows_dir_exists": inspection.windows_dir_exists,
+        "manifest_exists": inspection.manifest_exists,
+        "usable": inspection.usable,
+        "is_full_dataset_layout": inspection.layout_kind in {"full_windows_npz", "full_manifest_windows"} and inspection.usable,
+        "window_count": inspection.npz_count if inspection.layout_kind in {"full_windows_npz", "full_manifest_windows"} else inspection.details.get("window_count"),
     }
-    if details["windows_dir_exists"]:
-        try:
-            details["window_count"] = sum(1 for item in windows_dir.iterdir() if item.is_file())
-        except OSError:
-            details["window_count"] = None
-    details["is_full_dataset_layout"] = bool(
-        details["dataset_manifest_exists"]
-        and details["windows_manifest_enriched_exists"]
-        and details["windows_dir_exists"]
-        and (details["window_count"] is None or int(details["window_count"]) > 0)
-    )
-    return details
 
 
 def check_repo_root(args: argparse.Namespace) -> CheckResult:
@@ -228,18 +224,20 @@ def check_reference_dataset(args: argparse.Namespace) -> CheckResult:
     root = args.reference_dataset_dir
     if not root.exists():
         return CheckResult("reference_dataset_status", "warn", f"Reference dataset directory does not exist: {root}", {"reference_dataset_dir": str(root)})
+    _ensure_repo_importable(args.repo_root)
+    inspection = _inspect_dataset_layout(root)
     full_layout = _inspect_full_dataset_layout(root)
     counts = _count_npz_layout(root)
-    if full_layout["is_full_dataset_layout"]:
+    if inspection.layout_kind in {"full_windows_npz", "full_manifest_windows"} and inspection.usable:
         return CheckResult(
             "reference_dataset_status",
             "pass",
-            f"Full dataset layout detected; windows count: {full_layout['window_count']}; this is not adaptation-buffer NPZ layout",
-            {"reference_dataset_dir": str(root), "npz_counts": counts, "full_dataset_layout": full_layout},
+            f"Full windows dataset layout detected; windows npz count: {inspection.npz_count}",
+            {"reference_dataset_dir": str(root), "npz_counts": counts, "dataset_layout": full_layout},
         )
     status = "pass" if counts["total"] > 0 else "warn"
     message = "Reference dataset directory is visible" if counts["total"] > 0 else "Reference dataset exists but no .npz files were found"
-    return CheckResult("reference_dataset_status", status, message, {"reference_dataset_dir": str(root), "npz_counts": counts, "full_dataset_layout": full_layout})
+    return CheckResult("reference_dataset_status", status, message, {"reference_dataset_dir": str(root), "npz_counts": counts, "dataset_layout": full_layout})
 
 
 def check_dataset_manifest(args: argparse.Namespace) -> CheckResult:
@@ -266,14 +264,13 @@ def check_dataset_manifest(args: argparse.Namespace) -> CheckResult:
 
     counts = dict(manifest.counts)
     full_layout = _inspect_full_dataset_layout(args.reference_dataset_dir) if args.reference_dataset_dir is not None and args.reference_dataset_dir.exists() else None
-    details = {"counts": counts, "warnings": list(manifest.warnings), "full_dataset_layout": full_layout}
+    details = {"counts": counts, "warnings": list(manifest.warnings), "dataset_layout": full_layout}
     if full_layout and full_layout.get("is_full_dataset_layout"):
         if int(counts.get("train_total", 0)) == 0 and int(counts.get("val_total", 0)) == 0:
             return CheckResult(
                 "adaptation_npz_manifest_not_applicable",
                 "warn",
-                "Full dataset layout detected; windows count: "
-                f"{full_layout.get('window_count')}; this is not adaptation-buffer NPZ layout",
+                "Full windows dataset layout detected; adaptation-buffer NPZ manifest is not applicable",
                 details,
             )
     train_total = int(counts.get("train_total", 0))
@@ -324,8 +321,8 @@ def check_trainer_cli_dry_run(args: argparse.Namespace) -> CheckResult:
             return CheckResult(
                 "trainer_cli_dry_run",
                 "warn",
-                "Trainer dry-run skipped because the full dataset layout is not adaptation-buffer NPZ layout",
-                {"reference_dataset_dir": str(args.reference_dataset_dir), "full_dataset_layout": full_layout},
+                "Trainer dry-run skipped because the full windows dataset layout is not adaptation-buffer NPZ layout",
+                {"reference_dataset_dir": str(args.reference_dataset_dir), "dataset_layout": full_layout},
             )
     if args.reference_dataset_dir is None and args.buffer_root is None:
         return CheckResult("trainer_cli_dry_run", "warn", "Trainer dry-run skipped because no reference dataset or buffer root was provided", {})
