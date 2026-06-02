@@ -100,13 +100,50 @@ const asObj = (v: unknown) =>
 const asStr = (v: unknown) => (typeof v === "string" && v.trim() ? v : null);
 const pick = (obj: Record<string, unknown>, keys: string[]) =>
   keys.map((k) => obj[k]).find((v) => v !== undefined && v !== null);
-const latestBySequence = (jobs: OpsJobRecord[]): OpsJobRecord | null =>
-  jobs.length
-    ? [...jobs].sort(
-        (a, b) =>
-          Number(b.created_sequence ?? -1) - Number(a.created_sequence ?? -1),
-      )[0]
-    : null;
+const TRAINING_JOB_TIMESTAMP_KEYS = [
+  "updated_at",
+  "completed_at",
+  "started_at",
+  "created_at",
+  "submitted_at",
+] as const;
+
+const ACTIVE_JOB_STATUSES = ["queued", "running", "waiting", "starting"];
+
+const hasJobIdentity = (job: unknown): job is OpsJobRecord => {
+  const obj = asObj(job);
+  return Boolean(asStr(obj.job_id) && asStr(obj.status));
+};
+
+const timestampRank = (job: OpsJobRecord): number => {
+  const dates = TRAINING_JOB_TIMESTAMP_KEYS.map((key) => {
+    const value = job[key];
+    if (typeof value !== "string") return Number.NaN;
+    const parsed = Date.parse(value);
+    return Number.isFinite(parsed) ? parsed : Number.NaN;
+  }).filter(Number.isFinite);
+  return dates.length ? Math.max(...dates) : Number.NEGATIVE_INFINITY;
+};
+
+const jobIdSuffixRank = (job: OpsJobRecord): number => {
+  const match = asStr(job.job_id)?.match(/(\d+)$/);
+  return match ? Number(match[1]) : Number.NEGATIVE_INFINITY;
+};
+
+const compareJobsNewestFirst = (a: OpsJobRecord, b: OpsJobRecord): number => {
+  const aTimestamp = timestampRank(a);
+  const bTimestamp = timestampRank(b);
+  if (aTimestamp !== bTimestamp) return bTimestamp - aTimestamp;
+
+  const aSuffix = jobIdSuffixRank(a);
+  const bSuffix = jobIdSuffixRank(b);
+  if (aSuffix !== bSuffix) return bSuffix - aSuffix;
+
+  return Number(b.created_sequence ?? -1) - Number(a.created_sequence ?? -1);
+};
+
+const latestByTimestampOrId = (jobs: OpsJobRecord[]): OpsJobRecord | null =>
+  jobs.length ? [...jobs].sort(compareJobsNewestFirst)[0] : null;
 
 export function OpsTrainingTab() {
   const jobsState = useOpsJobs();
@@ -129,25 +166,19 @@ export function OpsTrainingTab() {
   const logRef = useRef<HTMLPreElement | null>(null);
   const jobs = jobsState.jobs?.jobs ?? [];
   const runningJobs = jobs.filter((j) =>
-    ["queued", "running", "waiting", "starting"].includes(
-      String(j.status ?? "").toLowerCase(),
-    ),
+    ACTIVE_JOB_STATUSES.includes(String(j.status ?? "").toLowerCase()),
   );
   const latestJob = useMemo(() => {
+    const adaptationLatest = adaptationTraining?.latest_job;
+    if (hasJobIdentity(adaptationLatest)) return adaptationLatest;
+
     const retrainingJobs = jobs.filter((job) => asStr(job.job_id));
-    const active = latestBySequence(
-      retrainingJobs.filter((job) =>
-        ["running", "queued", "waiting", "starting"].includes(
-          String(job.status ?? "").toLowerCase(),
-        ),
-      ),
-    );
     return (
-      active ??
-      latestBySequence(retrainingJobs) ??
+      latestByTimestampOrId(retrainingJobs) ??
       statusState.status?.latest_retraining_job ??
-      (adaptationTraining?.latest_manual_job as OpsJobRecord | null) ??
-      (adaptationTraining?.latest_job as OpsJobRecord | null) ??
+      (hasJobIdentity(adaptationTraining?.latest_manual_job)
+        ? adaptationTraining.latest_manual_job
+        : null) ??
       null
     );
   }, [
@@ -184,8 +215,14 @@ export function OpsTrainingTab() {
     [trainingView.state, checklist],
   );
   const logs = useMemo(
-    () => collectLogs(statusState.status, latestJob, adaptationTraining),
-    [statusState.status, latestJob, adaptationTraining],
+    () =>
+      collectLogs(
+        statusState.status,
+        latestJob,
+        adaptationTraining,
+        candidateState.context,
+      ),
+    [statusState.status, latestJob, adaptationTraining, candidateState.context],
   );
   const hasErrorLogs = logs.some((line) => line.startsWith("ERROR:"));
 
@@ -566,8 +603,9 @@ function formatJobCountSummary(jobCounts: Record<string, number>): string {
   const entries = [
     ["queued", jobCounts.queued],
     ["running", jobCounts.running],
-    ["completed", jobCounts.completed ?? jobCounts.succeeded],
+    ["waiting", jobCounts.waiting],
     ["failed", jobCounts.failed],
+    ["succeeded", jobCounts.succeeded ?? jobCounts.completed],
   ].filter(([, value]) => typeof value === "number");
   return entries.length
     ? entries.map(([label, value]) => `${label}: ${value}`).join("; ")
@@ -578,6 +616,7 @@ function collectLogs(
   status: any,
   latestJob: OpsJobRecord | null,
   adaptationTraining: AdaptationTrainingStatus | null,
+  candidateContext: Record<string, unknown> | null,
 ): string[] {
   const jobObj = asObj(latestJob);
   const lines: string[] = [];
@@ -598,13 +637,54 @@ function collectLogs(
     if (isManual && !jobObj.started_at && !jobObj.worker_pid)
       lines.push("Worker has not claimed this manual job yet.");
   }
+  if (statusValue === "running") {
+    lines.unshift(
+      `Training job ${asStr(jobObj.job_id) ?? "latest"} is running.`,
+    );
+  }
+  if (["succeeded", "completed"].includes(statusValue)) {
+    lines.unshift(
+      `Training job ${asStr(jobObj.job_id) ?? "latest"} succeeded.`,
+    );
+    const candidateId =
+      adaptationTraining?.candidate_model_id ??
+      asStr(pick(jobObj, ["candidate_model_id"]));
+    const candidate = asObj(candidateContext?.candidate_model);
+    const active = asObj(candidateContext?.active_model);
+    const candidateStatus =
+      asStr(candidate.status) ??
+      (asStr(active.model_id) === candidateId ? asStr(active.status) : null);
+    const approvalStatus =
+      asStr(candidate.approval_status) ??
+      (asStr(active.model_id) === candidateId
+        ? asStr(active.approval_status)
+        : null);
+    if (candidateId) {
+      const details = [candidateStatus, approvalStatus]
+        .filter(Boolean)
+        .join("/");
+      lines.push(
+        `Candidate model ${candidateId}${details ? ` is ${details}.` : " is recorded."}`,
+      );
+    }
+    const runDir =
+      adaptationTraining?.result_run_dir ??
+      asStr(pick(jobObj, ["result_run_dir", "output_dir"]));
+    if (runDir) lines.push(`Run directory: ${runDir}`);
+  }
   const failure =
-    asStr(pick(jobObj, ["failure_reason", "error_message"])) ??
-    (latestJob ? null : asStr(status?.last_retraining_job_failure_reason));
+    ["failed", "error"].includes(statusValue)
+      ? asStr(pick(jobObj, ["failure_reason", "error_message"]))
+      : latestJob
+        ? null
+        : asStr(status?.last_retraining_job_failure_reason);
   if (failure)
-    lines.push(isManual ? `Manual training job failed: ${failure}` : `ERROR: ${failure}`);
+    lines.push(
+      isManual ? `Manual training job failed: ${failure}` : `ERROR: ${failure}`,
+    );
   return lines;
 }
+
 function buildSummaryText(
   state: string,
   checklist: Array<{ label: string; state: ChecklistState }>,
@@ -1149,24 +1229,18 @@ function buildTrainingJobStateRow(
 ): ChecklistRow {
   const latest = asObj(latestJob ?? adaptationTraining?.latest_job ?? null);
   const latestStatus = String(latest.status ?? "").toLowerCase();
-  const counts = adaptationTraining?.job_counts ?? {};
-  const queuedCount = typeof counts.queued === "number" ? counts.queued : 0;
-  const waitingCount = typeof counts.waiting === "number" ? counts.waiting : 0;
-  const runningCount = typeof counts.running === "number" ? counts.running : 0;
-  const hasRunning =
-    runningCount > 0 || runningJobs.some((job) => String(job.status).toLowerCase() === "running");
-  const hasQueued =
-    queuedCount > 0 ||
-    waitingCount > 0 ||
-    runningJobs.some((job) => ["queued", "waiting", "starting"].includes(String(job.status).toLowerCase()));
+  const hasRunningLatest = latestStatus === "running";
+  const hasQueuedLatest = ["queued", "waiting", "starting"].includes(
+    latestStatus,
+  );
 
-  if (latestStatus === "running" || hasRunning)
+  if (hasRunningLatest)
     return {
       label: "Training job",
       state: "checking",
       detail: "Training job is running.",
     };
-  if (["queued", "waiting", "starting"].includes(latestStatus) || hasQueued)
+  if (hasQueuedLatest)
     return {
       label: "Training job",
       state: "checking",
@@ -1177,6 +1251,12 @@ function buildTrainingJobStateRow(
       label: "Training job",
       state: "not_met",
       detail: "Latest job failed.",
+    };
+  if (["succeeded", "completed"].includes(latestStatus))
+    return {
+      label: "Training job",
+      state: "met",
+      detail: "Latest job completed; no active training job is selected.",
     };
   if (noTrainingJobCheck) {
     const state = readinessState(noTrainingJobCheck);
