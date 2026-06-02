@@ -5,6 +5,8 @@ import { useOpsStatus } from "../hooks/useOpsStatus";
 import { useRetrainingRecommendation } from "../hooks/useRetrainingRecommendation";
 import { useModelCandidateContext } from "../hooks/useModelCandidateContext";
 import type {
+  AdaptationBufferStatus,
+  AdaptationReadiness,
   AdaptationTrainingStatus,
   OpsJobRecord,
   RetrainingTriggerRequest,
@@ -117,22 +119,19 @@ export function OpsTrainingTab() {
   const [followLogs, setFollowLogs] = useState(true);
   const [adaptationTraining, setAdaptationTraining] =
     useState<AdaptationTrainingStatus | null>(null);
+  const [adaptationReadiness, setAdaptationReadiness] =
+    useState<AdaptationReadiness | null>(null);
+  const [adaptationBuffer, setAdaptationBuffer] =
+    useState<AdaptationBufferStatus | null>(null);
   const [adaptationTrainingError, setAdaptationTrainingError] = useState<
     string | null
   >(null);
   const logRef = useRef<HTMLPreElement | null>(null);
   const jobs = jobsState.jobs?.jobs ?? [];
-  const runningJobs = jobs.filter(
-    (j) => j.status === "queued" || j.status === "running",
-  );
-  const checklist = useMemo(
-    () =>
-      buildChecklist({
-        runningJobs,
-        status: statusState.status,
-        adaptationTraining,
-      }),
-    [runningJobs, statusState.status, adaptationTraining],
+  const runningJobs = jobs.filter((j) =>
+    ["queued", "running", "waiting", "starting"].includes(
+      String(j.status ?? "").toLowerCase(),
+    ),
   );
   const latestJob = useMemo(() => {
     const retrainingJobs = jobs.filter((job) => asStr(job.job_id));
@@ -157,6 +156,25 @@ export function OpsTrainingTab() {
     jobs,
     statusState.status?.latest_retraining_job,
   ]);
+  const checklist = useMemo(
+    () =>
+      buildChecklist({
+        runningJobs,
+        status: statusState.status,
+        latestJob,
+        adaptationTraining,
+        adaptationReadiness,
+        adaptationBuffer,
+      }),
+    [
+      runningJobs,
+      statusState.status,
+      latestJob,
+      adaptationTraining,
+      adaptationReadiness,
+      adaptationBuffer,
+    ],
+  );
   const trainingView = useMemo(
     () => deriveTrainingView(statusState.status, latestJob, adaptationTraining),
     [statusState.status, latestJob, adaptationTraining],
@@ -185,13 +203,20 @@ export function OpsTrainingTab() {
 
   async function refreshAdaptationTraining() {
     try {
-      setAdaptationTraining(await opsClient.getAdaptationTrainingStatus());
+      const [training, readiness, buffer] = await Promise.all([
+        opsClient.getAdaptationTrainingStatus(),
+        opsClient.getAdaptationReadiness(),
+        opsClient.getAdaptationBufferStatus(),
+      ]);
+      setAdaptationTraining(training);
+      setAdaptationReadiness(readiness);
+      setAdaptationBuffer(buffer);
       setAdaptationTrainingError(null);
     } catch (err) {
       setAdaptationTrainingError(
         err instanceof Error
           ? err.message
-          : "Unable to load adaptation training status.",
+          : "Unable to load adaptation training readiness.",
       );
     }
   }
@@ -568,10 +593,10 @@ function collectLogs(
     metadata.manual_trigger === true ||
     (adaptationTraining?.latest_manual_job as OpsJobRecord | null)?.job_id ===
       latestJob?.job_id;
-  if (!lines.length && isManual && ["queued", "waiting"].includes(statusValue)) {
-    lines.push("Manual training job submitted; waiting for worker pickup.");
-    if (!jobObj.started_at && !jobObj.worker_pid)
-      lines.push("Worker has not claimed this job yet.");
+  if (["queued", "waiting", "starting"].includes(statusValue)) {
+    lines.unshift("Training job is queued and waiting for a worker.");
+    if (isManual && !jobObj.started_at && !jobObj.worker_pid)
+      lines.push("Worker has not claimed this manual job yet.");
   }
   const failure =
     asStr(pick(jobObj, ["failure_reason", "error_message"])) ??
@@ -846,15 +871,21 @@ function ManualTrainingModal({
 function buildChecklist({
   runningJobs,
   status,
+  latestJob,
   adaptationTraining,
+  adaptationReadiness,
+  adaptationBuffer,
 }: {
   runningJobs: OpsJobRecord[];
   status: any;
+  latestJob: OpsJobRecord | null;
   adaptationTraining: AdaptationTrainingStatus | null;
+  adaptationReadiness: AdaptationReadiness | null;
+  adaptationBuffer: AdaptationBufferStatus | null;
 }): ChecklistRow[] {
   const legacyReadiness = status?.retraining_readiness ?? {};
   const readinessSnapshot =
-    adaptationTraining?.latest_readiness_snapshot ?? null;
+    adaptationReadiness ?? adaptationTraining?.latest_readiness_snapshot ?? null;
   const readiness = asObj(readinessSnapshot);
   const checks = Array.isArray(readiness.checks) ? readiness.checks : [];
   const adaptationEnabledCheck = findReadinessCheck(checks, [
@@ -869,9 +900,13 @@ function buildChecklist({
     "enough_fresh_samples",
     "fresh samples",
   ]);
-  const reservePolicyCheck = findReadinessCheck(checks, [
-    "reserve_policy",
-    "reserve policy",
+  const sampleSpanCheck = findReadinessCheck(checks, [
+    "accepted_sample_time_span",
+    "sample time span",
+  ]);
+  const sampleAgeCheck = findReadinessCheck(checks, [
+    "accepted_sample_age",
+    "sample age",
   ]);
   const fallbackCheck = findReadinessCheck(checks, [
     "fallback_training_dataset_available",
@@ -911,13 +946,20 @@ function buildChecklist({
     {
       label: "Training readiness",
       state: overallState,
-      detail: trainingReadinessDetail(overallState),
+      detail: trainingReadinessDetail(readiness, overallState),
     },
-    buildNewTrainingDataRow(freshSamplesCheck, fallbackCheck),
-    buildBufferDataRow(bufferCheck, fallbackCheck),
-    buildBaseModelRow(checkpointCheck, legacyReadiness),
+    buildNewTrainingDataRow(freshSamplesCheck, fallbackCheck, adaptationBuffer),
+    buildBufferDataRow(
+      bufferCheck,
+      sampleSpanCheck,
+      sampleAgeCheck,
+      fallbackCheck,
+      adaptationBuffer,
+    ),
+    buildBaseModelRow(checkpointCheck, readiness, legacyReadiness),
     buildTrainingJobStateRow(
       runningJobs,
+      latestJob,
       noTrainingJobCheck,
       adaptationTraining,
     ),
@@ -929,32 +971,60 @@ function buildChecklist({
   ];
 }
 
-function trainingReadinessDetail(state: ChecklistState): string {
-  if (state === "met") return "Training can start when scheduled.";
-  if (state === "checking") return "Waiting for collected samples or cooldown.";
-  if (state === "not_met") return "Training cannot start yet.";
-  return "Training readiness is not reported.";
+function trainingReadinessDetail(
+  readiness: Record<string, unknown>,
+  state: ChecklistState,
+): string {
+  if (readiness.ready === true) return "Training can start.";
+  const status = String(readiness.status ?? "").toLowerCase();
+  const blockingReasons = Array.isArray(readiness.blocking_reasons)
+    ? readiness.blocking_reasons.filter((reason) => typeof reason === "string")
+    : [];
+  const warnings = Array.isArray(readiness.warnings)
+    ? readiness.warnings.filter((warning) => typeof warning === "string")
+    : [];
+  const reason = (blockingReasons[0] as string | undefined) ?? (warnings[0] as string | undefined);
+  if (state === "met") return "Training can start.";
+  if (state === "checking" || status === "waiting" || status === "yellow") {
+    return reason ? `Waiting: ${reason}` : "Waiting for readiness conditions.";
+  }
+  if (state === "not_met") {
+    return reason ? `Training cannot start yet: ${reason}` : "Training cannot start yet.";
+  }
+  return Object.keys(readiness).length
+    ? "Training readiness is being evaluated."
+    : "Training readiness is not reported.";
 }
 
 function buildNewTrainingDataRow(
   freshSamplesCheck: Record<string, unknown> | null,
   fallbackCheck: Record<string, unknown> | null,
+  adaptationBuffer: AdaptationBufferStatus | null,
 ): ChecklistRow {
   const freshState = freshSamplesCheck ? readinessState(freshSamplesCheck) : "unknown";
-  const fallbackDetails = asObj(fallbackCheck?.details);
-  const fallbackAvailable = Boolean(fallbackDetails.selected_dataset_path);
+  const counts = adaptationBufferCounts(adaptationBuffer);
+  const fallbackAvailable = hasFallbackDataset(fallbackCheck);
   if (freshState === "met") {
     return {
       label: "New training data",
       state: "met",
-      detail: "Enough new training data is available.",
+      detail: counts.acceptedTotal > 0
+        ? `Enough accepted training samples are available (${formatAcceptedCounts(counts)}).`
+        : "Enough new training data is available.",
     };
   }
-  if (fallbackAvailable && (freshState === "checking" || freshState === "not_met" || freshState === "unknown")) {
+  if (counts.acceptedTotal > 0) {
     return {
       label: "New training data",
       state: "checking",
-      detail: "Waiting for enough collected training data.",
+      detail: `Accepted samples are available but readiness is still waiting (${formatAcceptedCounts(counts)}).`,
+    };
+  }
+  if (fallbackAvailable) {
+    return {
+      label: "New training data",
+      state: "checking",
+      detail: "Waiting for enough collected training data; a historical fallback dataset is available.",
     };
   }
   if (freshState === "not_met") {
@@ -974,48 +1044,83 @@ function buildNewTrainingDataRow(
   return {
     label: "New training data",
     state: "unknown",
-    detail: "New training data status is not reported.",
+    detail: adaptationBuffer
+      ? "No accepted training samples are available yet."
+      : "New training data status is not reported.",
   };
 }
 
 function buildBufferDataRow(
   bufferCheck: Record<string, unknown> | null,
+  sampleSpanCheck: Record<string, unknown> | null,
+  sampleAgeCheck: Record<string, unknown> | null,
   fallbackCheck: Record<string, unknown> | null,
+  adaptationBuffer: AdaptationBufferStatus | null,
 ): ChecklistRow {
   const bufferState = bufferCheck ? readinessState(bufferCheck) : "unknown";
-  const fallbackDetails = asObj(fallbackCheck?.details);
-  const fallbackAvailable = Boolean(fallbackDetails.selected_dataset_path);
-  if (bufferState === "met") {
-    return { label: "Buffer Data", state: "met", detail: "Buffer data is ready." };
+  const spanState = sampleSpanCheck ? readinessState(sampleSpanCheck) : "unknown";
+  const ageState = sampleAgeCheck ? readinessState(sampleAgeCheck) : "unknown";
+  const counts = adaptationBufferCounts(adaptationBuffer);
+  const fallbackAvailable = hasFallbackDataset(fallbackCheck);
+  const countDetail = counts.acceptedTotal > 0 ? formatAcceptedCounts(counts) : null;
+
+  if (counts.acceptedTotal > 0) {
+    const dataChecksPass =
+      bufferState === "met" &&
+      [spanState, ageState].every((state) => state === "met" || state === "unknown");
+    return {
+      label: "Buffer Data",
+      state: dataChecksPass ? "met" : "checking",
+      detail: dataChecksPass
+        ? `Buffer data is ready (${countDetail}).`
+        : `Buffer has accepted samples but is still waiting on readiness checks (${countDetail}).`,
+    };
   }
-  if (fallbackAvailable && (bufferState === "checking" || bufferState === "not_met" || bufferState === "unknown")) {
+  if (fallbackAvailable) {
     return {
       label: "Buffer Data",
       state: "checking",
-      detail: "Waiting for collected samples.",
+      detail: "No buffer samples yet; a historical fallback dataset is available.",
     };
   }
   if (bufferState === "not_met") {
     return {
       label: "Buffer Data",
       state: "not_met",
-      detail: "No usable training data source is available.",
+      detail: "No usable buffer samples are available.",
     };
   }
-  if (bufferState === "checking") {
-    return { label: "Buffer Data", state: "checking", detail: "Waiting for collected samples." };
+  if (bufferState === "met" || bufferState === "checking") {
+    return {
+      label: "Buffer Data",
+      state: "checking",
+      detail: "Waiting for collected samples.",
+    };
   }
   return {
     label: "Buffer Data",
     state: "unknown",
-    detail: "Buffer data status is not reported.",
+    detail: adaptationBuffer
+      ? "No buffer samples have been accepted yet."
+      : "Buffer data status is not reported.",
   };
 }
 
 function buildBaseModelRow(
   checkpointCheck: Record<string, unknown> | null,
+  readiness: Record<string, unknown>,
   legacyReadiness: Record<string, unknown>,
 ): ChecklistRow {
+  const selectedCheckpointPath = selectedCheckpointFromReadiness(readiness, checkpointCheck);
+  if (selectedCheckpointPath) {
+    return {
+      label: "Base model",
+      state: "met",
+      detail: `Base model is available (${basename(selectedCheckpointPath)}).`,
+      warning: selectedCheckpointPath,
+    };
+  }
+
   const legacyAvailable = legacyReadiness.base_checkpoint_available;
   const state = checkpointCheck
     ? readinessState(checkpointCheck)
@@ -1038,36 +1143,40 @@ function buildBaseModelRow(
 
 function buildTrainingJobStateRow(
   runningJobs: OpsJobRecord[],
+  latestJob: OpsJobRecord | null,
   noTrainingJobCheck: Record<string, unknown> | null,
   adaptationTraining: AdaptationTrainingStatus | null,
 ): ChecklistRow {
-  const latestJob = asObj(adaptationTraining?.latest_job ?? null);
-  const latestStatus = String(latestJob.status ?? "").toLowerCase();
+  const latest = asObj(latestJob ?? adaptationTraining?.latest_job ?? null);
+  const latestStatus = String(latest.status ?? "").toLowerCase();
   const counts = adaptationTraining?.job_counts ?? {};
   const queuedCount = typeof counts.queued === "number" ? counts.queued : 0;
+  const waitingCount = typeof counts.waiting === "number" ? counts.waiting : 0;
   const runningCount = typeof counts.running === "number" ? counts.running : 0;
   const hasRunning =
-    runningCount > 0 || runningJobs.some((job) => job.status === "running");
+    runningCount > 0 || runningJobs.some((job) => String(job.status).toLowerCase() === "running");
   const hasQueued =
-    queuedCount > 0 || runningJobs.some((job) => job.status === "queued");
+    queuedCount > 0 ||
+    waitingCount > 0 ||
+    runningJobs.some((job) => ["queued", "waiting", "starting"].includes(String(job.status).toLowerCase()));
 
-  if (hasRunning || latestStatus === "running")
+  if (latestStatus === "running" || hasRunning)
     return {
       label: "Training job",
       state: "checking",
-      detail: "Running",
+      detail: "Training job is running.",
     };
-  if (hasQueued || latestStatus === "queued" || latestStatus === "waiting")
+  if (["queued", "waiting", "starting"].includes(latestStatus) || hasQueued)
     return {
       label: "Training job",
       state: "checking",
-      detail: "Manual training job is waiting for worker pickup.",
+      detail: "Training job is queued and waiting for a worker.",
     };
   if (latestStatus === "failed")
     return {
       label: "Training job",
       state: "not_met",
-      detail: "Latest job failed",
+      detail: "Latest job failed.",
     };
   if (noTrainingJobCheck) {
     const state = readinessState(noTrainingJobCheck);
@@ -1076,7 +1185,7 @@ function buildTrainingJobStateRow(
       state,
       detail:
         state === "met"
-          ? "No queued/running jobs"
+          ? "No queued/running jobs."
           : "Training job state is not reported.",
     };
   }
@@ -1084,7 +1193,7 @@ function buildTrainingJobStateRow(
     return {
       label: "Training job",
       state: "met",
-      detail: "No queued/running jobs",
+      detail: "No queued/running jobs.",
     };
   return {
     label: "Training job",
@@ -1121,7 +1230,52 @@ function storageWarningText(check: Record<string, unknown>): string | null {
   const detail = readinessDetail(check);
   return detail === "Reported by backend readiness snapshot"
     ? "Storage warning reported."
-    : "Storage warning reported.";
+    : detail;
+}
+
+function adaptationBufferCounts(buffer: AdaptationBufferStatus | null) {
+  const acceptedTrain = Number(buffer?.accepted_train ?? 0);
+  const acceptedVal = Number(buffer?.accepted_val ?? 0);
+  return {
+    acceptedTrain,
+    acceptedVal,
+    acceptedTotal: acceptedTrain + acceptedVal,
+  };
+}
+
+function formatAcceptedCounts({
+  acceptedTrain,
+  acceptedVal,
+}: {
+  acceptedTrain: number;
+  acceptedVal: number;
+}): string {
+  return `${acceptedTrain} train, ${acceptedVal} validation`;
+}
+
+function hasFallbackDataset(fallbackCheck: Record<string, unknown> | null): boolean {
+  const fallbackDetails = asObj(fallbackCheck?.details);
+  return Boolean(fallbackDetails.selected_dataset_path);
+}
+
+function selectedCheckpointFromReadiness(
+  readiness: Record<string, unknown>,
+  checkpointCheck: Record<string, unknown> | null,
+): string | null {
+  const summaryCheckpoint = asObj(asObj(readiness.summary).checkpoint);
+  const checkDetails = asObj(checkpointCheck?.details);
+  return (
+    asStr(readiness.selected_checkpoint_path) ??
+    asStr(summaryCheckpoint.selected_checkpoint_path) ??
+    asStr(checkDetails.selected_checkpoint_path) ??
+    asStr(checkpointCheck?.selected_checkpoint_path) ??
+    null
+  );
+}
+
+function basename(path: string): string {
+  const parts = path.split(/[\\/]/).filter(Boolean);
+  return parts[parts.length - 1] ?? path;
 }
 
 function findReadinessCheck(
