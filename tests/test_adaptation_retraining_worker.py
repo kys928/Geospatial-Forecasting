@@ -392,3 +392,68 @@ def test_manual_training_buffered_internal_dataset_resolves_or_fails_clearly(mon
     assert result["status"] == "failed"
     job = RetrainingJobStore(tmp_path / "jobs.json").latest_job()
     assert "No usable dataset source found for manual training" in job["error_message"]
+
+
+def _legacy_npz(path: Path, *, window: int) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    target = np.zeros((1, 10, 64, 64), dtype=np.float32)
+    target[0, 0] = float(window)
+    np.savez_compressed(
+        path,
+        input=np.zeros((3, 10, 64, 64), dtype=np.float32),
+        target=target,
+        scenario_id=np.array("009999"),
+        window_id=np.array(window),
+    )
+    return path
+
+
+def _incomplete_legacy_buffer(buffer: Path) -> None:
+    samples = []
+    base_time = datetime.now(UTC) - timedelta(hours=1)
+    for idx, window in enumerate([0, 1, 3]):
+        path = _legacy_npz(buffer / "accepted" / "train" / f"legacy-{window}.npz", window=window)
+        ts = (base_time + timedelta(minutes=idx)).isoformat().replace("+00:00", "Z")
+        samples.append(
+            {
+                "sample_id": f"legacy-{window}",
+                "status": "accepted_train",
+                "window_path": str(path),
+                "used_count": 0,
+                "accepted_at": ts,
+                "created_at": ts,
+                "source_kind": "seeded_full_windows_dataset",
+                "sample_contract": "legacy_t1_single_ok_but_needs_sequence",
+                "scenario_id": "009999",
+                "window_id": str(window),
+            }
+        )
+    buffer.mkdir(parents=True, exist_ok=True)
+    (buffer / "manifest.json").write_text(json.dumps({"schema_version": 1, "samples": samples}), encoding="utf-8")
+
+
+def test_worker_failure_message_is_clear_for_unusable_seeded_buffer(monkeypatch, tmp_path: Path):
+    buffer = tmp_path / "buffer"
+    reference = tmp_path / "missing-reference"
+    config_dir = tmp_path / "configs"
+    checkpoint = _checkpoint(tmp_path / "manual.pt")
+    _incomplete_legacy_buffer(buffer)
+    _write_config(config_dir, buffer=buffer, reference=reference, allow_fresh_start=True)
+    monkeypatch.setattr("plume.services.convlstm_operations._validate_adaptation_resume_checkpoint", lambda _path: None)
+    store = RetrainingJobStore(tmp_path / "jobs.json")
+    store.create_job(
+        dataset_snapshot_ref="buffered_internal_dataset",
+        run_config_ref=json.dumps({"manual_override": True, "checkpoint_ref": str(checkpoint)}),
+        output_dir=str(tmp_path / "runs"),
+    )
+    OperationalStateStore(tmp_path / "state.json").save(OperationalState(phase="collecting", buffered_new_sample_count=3))
+    ModelRegistry(tmp_path / "registry.json").save({"models": [], "events": [], "active_model_id": None, "previous_active_model_id": None})
+
+    result = _run(tmp_path, config_dir)
+
+    assert result["status"] == "failed"
+    job = RetrainingJobStore(tmp_path / "jobs.json").latest_job()
+    message = str(job["error_message"])
+    assert "need at least four consecutive windows" in message
+    assert "default_collate" not in message
+    assert "NoneType" not in message

@@ -1665,9 +1665,10 @@ def run_adaptation_retraining_job(
         config=_adaptation_dataset_config_from_payload(adaptation_config_path),
     )
     if int(manifest.counts.get("train_total", 0)) == 0 or int(manifest.counts.get("val_total", 0)) == 0:
+        detail = _adaptation_dataset_unusable_message(manifest.counts, manifest.warnings)
         if manual_override:
-            raise ValueError(f"No usable dataset source found for manual training. Adaptation trainer requires canonical train and validation NPZ samples; counts: {manifest.counts}; warnings: {manifest.warnings}")
-        raise ValueError(f"Adaptation dataset manifest requires non-empty train and validation samples: {manifest.counts}")
+            raise ValueError(f"No usable dataset source found for manual training. {detail}")
+        raise ValueError(detail)
 
     run_id = str(job.get("job_id") or f"adaptation-{uuid.uuid4().hex[:12]}")
     output_root = Path(str(job.get("output_dir") or training_cfg_payload.get("output_dir") or Path("artifacts") / "runs"))
@@ -2037,6 +2038,19 @@ def _is_manual_retraining_job(job: dict[str, object]) -> bool:
     except Exception:
         return False
     return run_payload.get("manual_override") is True
+
+
+def _adaptation_dataset_unusable_message(counts: dict[str, int], warnings: list[str]) -> str:
+    accepted_samples = int(counts.get("fresh_buffer_train", 0)) + int(counts.get("fresh_buffer_val", 0))
+    warning_text = "; ".join(str(warning) for warning in warnings) or "none"
+    return (
+        "Adaptation dataset has "
+        f"{accepted_samples} accepted buffer sample(s), but train_total={int(counts.get('train_total', 0))} "
+        f"and val_total={int(counts.get('val_total', 0))} usable four-step example(s). "
+        "Canonical samples must have target shape (4, 1, 64, 64); seeded legacy t+1 samples "
+        "need at least four consecutive windows per scenario to assemble a real multistep target. "
+        f"counts={counts}; warnings={warning_text}"
+    )
 
 
 def _with_job_log(metadata: object, line: str, *, worker_claimed: bool | None = None) -> dict[str, object]:

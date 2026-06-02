@@ -287,23 +287,36 @@ class AdaptationNPZDataset:
     """PyTorch-compatible Dataset-style loader for selected NPZ samples.
 
     Torch is imported lazily. If it is unavailable, numpy arrays are returned.
+    The usable sample index is validated during construction so malformed or
+    incomplete samples are rejected before PyTorch's default collate sees them.
     """
 
-    def __init__(self, samples: list[AdaptationSample] | tuple[AdaptationSample, ...]):
+    def __init__(
+        self,
+        samples: list[AdaptationSample] | tuple[AdaptationSample, ...],
+        config: AdaptationDatasetConfig | None = None,
+    ):
+        self.config = config or AdaptationDatasetConfig()
+        self.input_shape = self.config.expected_input_shape
+        self.target_shape = self.config.expected_target_shape
         self.samples = list(samples)
+        self.invalid_samples: list[dict[str, Any]] = []
+        self.valid_examples = self._build_valid_examples(self.samples)
+        if self.samples and not self.valid_examples:
+            raise ValueError(self._no_usable_examples_message())
 
     def __len__(self) -> int:
-        return len(self.samples)
+        return len(self.valid_examples)
 
     def __getitem__(self, index: int) -> dict[str, Any]:
-        sample = self.samples[index]
-        with np.load(sample.path) as data:
-            input_array = data["input"].astype(np.float32, copy=False)
+        if index < 0 or index >= len(self.valid_examples):
+            raise IndexError(index)
+        sample = self.valid_examples[index]
+        input_array = _load_input_array(sample, self.config)
         if sample.metadata.get("sample_contract") == LEGACY_T1_SEQUENCE_CONTRACT:
-            target_array = _load_legacy_t1_sequence_target(sample)
+            target_array = _load_legacy_t1_sequence_target(sample, self.config)
         else:
-            with np.load(sample.path) as data:
-                target_array = data["target"].astype(np.float32, copy=False)
+            target_array = _load_canonical_target_array(sample, self.config)
 
         torch_module = _optional_torch()
         if torch_module is not None:
@@ -319,8 +332,33 @@ class AdaptationNPZDataset:
             "weight": float(sample.weight),
             "sample_id": sample.sample_id,
             "source": sample.source,
-            "metadata": dict(sample.metadata),
+            "metadata": {"json": json.dumps(_metadata_for_default_collate(sample.metadata), sort_keys=True)},
         }
+
+    def _build_valid_examples(self, samples: list[AdaptationSample]) -> list[AdaptationSample]:
+        valid: list[AdaptationSample] = []
+        for sample in samples:
+            ok, reason = _sample_is_loadable(sample, self.config)
+            if ok:
+                valid.append(sample)
+            else:
+                self.invalid_samples.append({"sample_id": sample.sample_id, "path": sample.path, "reason": reason})
+        return valid
+
+    def _no_usable_examples_message(self) -> str:
+        accepted_samples = len(self.samples)
+        invalid_samples = len(self.invalid_samples)
+        legacy_t1_samples = sum(
+            1
+            for sample in self.samples
+            if sample.metadata.get("sample_contract") in {LEGACY_T1_SINGLE_CONTRACT, LEGACY_T1_SEQUENCE_CONTRACT}
+        )
+        reasons = _summarize_reasons(item["reason"] for item in self.invalid_samples)
+        return (
+            "No usable adaptation training examples found. "
+            f"accepted_samples={accepted_samples}, invalid_samples={invalid_samples}, "
+            f"legacy_t1_samples={legacy_t1_samples}, reason={reasons}"
+        )
 
 
 def _discover_reference_dataset(
@@ -468,15 +506,101 @@ def _valid_samples(
     return canonical + _assemble_legacy_t1_sequences(legacy, config, warnings)
 
 
-def _load_legacy_t1_sequence_target(sample: AdaptationSample) -> np.ndarray:
+def _load_input_array(sample: AdaptationSample, config: AdaptationDatasetConfig) -> np.ndarray:
+    with np.load(sample.path) as data:
+        if "input" not in data.files:
+            raise ValueError(f"sample {sample.sample_id} is missing input array")
+        input_array = data["input"].astype(np.float32, copy=False)
+    if tuple(input_array.shape) != config.expected_input_shape:
+        raise ValueError(
+            f"sample {sample.sample_id} input shape {tuple(input_array.shape)} != {config.expected_input_shape}"
+        )
+    return input_array
+
+
+def _load_canonical_target_array(sample: AdaptationSample, config: AdaptationDatasetConfig) -> np.ndarray:
+    with np.load(sample.path) as data:
+        if "target" not in data.files:
+            raise ValueError(f"sample {sample.sample_id} is missing target array")
+        target_array = data["target"].astype(np.float32, copy=False)
+    if tuple(target_array.shape) != config.expected_target_shape:
+        raise ValueError(
+            f"sample {sample.sample_id} target shape {tuple(target_array.shape)} != {config.expected_target_shape}"
+        )
+    return target_array
+
+
+def _load_legacy_t1_sequence_target(
+    sample: AdaptationSample,
+    config: AdaptationDatasetConfig | None = None,
+) -> np.ndarray:
+    cfg = config or AdaptationDatasetConfig()
     paths = [Path(path) for path in sample.metadata.get("target_sequence_paths", [])]
-    plume_channel = int(sample.metadata.get("plume_channel", 0))
+    if len(paths) != cfg.future_steps:
+        raise ValueError(
+            f"legacy t+1 sequence {sample.sample_id} has {len(paths)} target path(s), expected {cfg.future_steps}"
+        )
+    plume_channel = int(sample.metadata.get("plume_channel", cfg.plume_channel))
+    if plume_channel < 0 or plume_channel >= cfg.input_channels:
+        raise ValueError(f"legacy t+1 sequence {sample.sample_id} plume_channel {plume_channel} is out of range")
     frames: list[np.ndarray] = []
     for path in paths:
         with np.load(path) as data:
+            if "target" not in data.files:
+                raise ValueError(f"legacy t+1 component {path} is missing target array")
             target = data["target"].astype(np.float32, copy=False)
-            frames.append(target[0, plume_channel])
-    return np.stack(frames, axis=0)[:, np.newaxis, :, :]
+        if tuple(target.shape) != cfg.legacy_t1_target_shape:
+            raise ValueError(
+                f"legacy t+1 component {path} target shape {tuple(target.shape)} != {cfg.legacy_t1_target_shape}"
+            )
+        frames.append(target[0, plume_channel])
+    assembled = np.stack(frames, axis=0)[:, np.newaxis, :, :].astype(np.float32, copy=False)
+    if tuple(assembled.shape) != cfg.expected_target_shape:
+        raise ValueError(
+            f"legacy t+1 sequence {sample.sample_id} assembled target shape {tuple(assembled.shape)} != {cfg.expected_target_shape}"
+        )
+    return assembled
+
+
+def _sample_is_loadable(sample: AdaptationSample, config: AdaptationDatasetConfig) -> tuple[bool, str]:
+    try:
+        _load_input_array(sample, config)
+        if sample.metadata.get("sample_contract") == LEGACY_T1_SEQUENCE_CONTRACT:
+            _load_legacy_t1_sequence_target(sample, config)
+        else:
+            _load_canonical_target_array(sample, config)
+    except Exception as exc:
+        return False, str(exc)
+    return True, ""
+
+
+def _metadata_for_default_collate(value: Any) -> Any:
+    """Return metadata containing only values accepted by PyTorch default_collate."""
+    if value is None:
+        return ""
+    if isinstance(value, dict):
+        return {str(key): _metadata_for_default_collate(item) for key, item in value.items() if item is not None}
+    if isinstance(value, (list, tuple)):
+        return [_metadata_for_default_collate(item) for item in value if item is not None]
+    if isinstance(value, np.ndarray):
+        if value.shape == ():
+            return _metadata_for_default_collate(value.item())
+        return value
+    if isinstance(value, np.generic):
+        return _metadata_for_default_collate(value.item())
+    if isinstance(value, (str, int, float, bool)):
+        return value
+    return str(value)
+
+
+def _summarize_reasons(reasons: Any) -> str:
+    counts: dict[str, int] = {}
+    for reason in reasons:
+        text = str(reason) if reason else "unknown"
+        counts[text] = counts.get(text, 0) + 1
+    if not counts:
+        return "unknown"
+    return "; ".join(f"{reason} ({count})" for reason, count in sorted(counts.items())[:5])
 
 
 def _assemble_legacy_t1_sequences(
