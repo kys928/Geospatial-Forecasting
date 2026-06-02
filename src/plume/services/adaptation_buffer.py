@@ -27,7 +27,7 @@ REJECTED = "rejected"
 RESERVE_USED = "reserve_used"
 
 _VALID_STATUSES = {PENDING, ACCEPTED_TRAIN, ACCEPTED_VAL, REJECTED, RESERVE_USED}
-_VALID_SOURCE_KINDS = {"npz", "raw_observation", "sensor_interpolated"}
+_VALID_SOURCE_KINDS = {"npz", "raw_observation", "sensor_interpolated", "seeded_full_windows_dataset"}
 _SAMPLE_ID_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
 
 
@@ -224,6 +224,63 @@ class AdaptationBuffer:
         self._save_manifest(manifest)
         self._append_event("sample_registered_pending", {"sample_id": sample_id})
         return record
+
+
+    def ingest_seed_sample(
+        self,
+        source_path: Path | str,
+        *,
+        sample_id: str,
+        split: str,
+        metadata: dict[str, Any] | None = None,
+    ) -> AdaptationSampleRecord:
+        """Copy a validated seed NPZ directly into accepted buffer storage.
+
+        This is a dev/ops ingestion-boundary helper for local seeding scripts. It
+        writes the same accepted sample manifest/events shape consumed by
+        readiness and adaptation dataset services; it does not train, promote,
+        approve, activate, or delete model artifacts.
+        """
+        source = Path(source_path)
+        if not source.exists():
+            raise FileNotFoundError(f"NPZ source file does not exist: {source}")
+        if source.suffix.lower() != ".npz":
+            raise ValueError(f"Adaptation windows must be .npz files: {source}")
+        if split not in {"train", "val"}:
+            raise ValueError(f"split must be 'train' or 'val': {split}")
+        self._validate_sample_id(sample_id)
+
+        manifest = self._load_manifest()
+        if self._find_sample(manifest, sample_id) is not None:
+            raise ValueError(f"Sample already exists in adaptation buffer: {sample_id}")
+
+        status = ACCEPTED_VAL if split == "val" else ACCEPTED_TRAIN
+        destination = self.root / "accepted" / split / f"{sample_id}.npz"
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, destination)
+
+        now = _utc_now()
+        record = AdaptationSampleRecord(
+            sample_id=sample_id,
+            status=status,
+            window_path=self._relative_path(destination),
+            source_kind="seeded_full_windows_dataset",
+            quality_score=1.0,
+            quality_reasons=[],
+            used_count=0,
+            created_at=str((metadata or {}).get("created_at") or now),
+            updated_at=now,
+        )
+        payload = record.to_dict()
+        for key, value in (metadata or {}).items():
+            if key not in {"sample_id", "status", "window_path", "quality_report_path", "source_kind", "quality_score", "quality_reasons", "used_count", "updated_at"}:
+                payload[key] = value
+        payload["source_kind"] = "seeded_full_windows_dataset"
+        payload["split"] = split
+        manifest["samples"].append(payload)
+        self._save_manifest(manifest)
+        self._append_event("seed_sample_ingested", {"sample_id": sample_id, "split": split, "source_path": str(source)})
+        return AdaptationSampleRecord.from_dict(payload)
 
     def validate_npz_window(self, path: Path | str) -> dict[str, Any]:
         """Inspect an NPZ file for canonical input and target tensor shapes."""

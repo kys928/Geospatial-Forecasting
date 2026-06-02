@@ -113,6 +113,21 @@ python scripts/train_three_stage_adaptation.py \
 
 The script is manual only: it builds a dataset manifest from CLI-provided reference and/or adaptation-buffer paths, optionally performs model-only resume, and writes run artifacts under the selected output directory. Use `--dry-run` to write `dataset_manifest_preview.json` without starting training.
 
+Safe dev/ops adaptation-buffer seeding from a discovered full windows dataset is available for validating readiness checks without OpenRemote polling or training side effects. It defaults to dry-run; pass `--execute` to write accepted train/validation samples through the existing buffer service format:
+
+```bash
+python scripts/seed_adaptation_buffer_from_windows.py \
+  --repo-root /workspace/Geospatial-Forecasting \
+  --source-dataset-dir /workspace/Dataset/hysplit-plume-convlstm-multiyear-2024-2026 \
+  --buffer-root /workspace/Geospatial-Forecasting/artifacts/adaptation/buffer \
+  --count 64 \
+  --frame-interval-minutes 60 \
+  --start-time 2026-06-01T00:00:00Z \
+  --dry-run
+```
+
+The adaptation smoke script can include this seed step with `--seed-buffer-from-reference`; it remains non-mutating unless `--execute-seed` is supplied.
+
 Online endpoints:
 - `POST /sessions`
 - `GET /sessions`

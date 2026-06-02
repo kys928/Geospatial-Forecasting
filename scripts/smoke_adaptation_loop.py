@@ -58,6 +58,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--config-dir", type=Path, default=None, help="Config directory; defaults to <repo-root>/configs")
     parser.add_argument("--reference-dataset-dir", type=Path, default=None, help="Optional reference dataset directory")
     parser.add_argument("--buffer-root", type=Path, default=None, help="Optional existing adaptation buffer root")
+    parser.add_argument("--seed-buffer-from-reference", action="store_true", help="Dry-run seed accepted buffer samples from --reference-dataset-dir unless --execute-seed is also supplied")
+    parser.add_argument("--seed-count", type=int, default=64, help="Number of reference windows to seed when --seed-buffer-from-reference is used")
+    parser.add_argument("--seed-buffer-root", type=Path, default=None, help="Optional buffer root for seeding; defaults to --buffer-root or adaptation config")
+    parser.add_argument("--clear-seeded-buffer", action="store_true", help="Clear only the seed buffer root before seeding; requires --execute-seed")
+    parser.add_argument("--execute-seed", action="store_true", help="Actually mutate the adaptation buffer during seed integration")
     parser.add_argument("--resume-checkpoint", type=Path, default=None, help="Optional robust checkpoint to inspect or resume from")
     parser.add_argument("--api-base-url", default=None, help="Optional Ops API base URL, for example http://localhost:8000")
     parser.add_argument("--ops-token", default=None, help="Optional bearer token for Ops API checks; never printed in full")
@@ -282,6 +287,44 @@ def check_dataset_manifest(args: argparse.Namespace) -> CheckResult:
     return CheckResult("dataset_manifest_dry_run", "pass", f"Dataset manifest is usable: train={train_total}, val={val_total}", details)
 
 
+
+def check_seed_buffer_from_reference(args: argparse.Namespace) -> CheckResult:
+    if not args.seed_buffer_from_reference:
+        return CheckResult("seed_buffer_from_reference", "skip", "Reference buffer seeding not requested", {})
+    if args.reference_dataset_dir is None:
+        return CheckResult("seed_buffer_from_reference", "fail", "--seed-buffer-from-reference requires --reference-dataset-dir", {})
+    _ensure_repo_importable(args.repo_root)
+    scripts_dir = args.repo_root / "scripts"
+    if str(scripts_dir) not in sys.path:
+        sys.path.insert(0, str(scripts_dir))
+    try:
+        from seed_adaptation_buffer_from_windows import SeedOptions, run_seed
+    except Exception as exc:
+        return CheckResult("seed_buffer_from_reference", "fail", f"Unable to import seed helper: {exc}", {})
+
+    seed_buffer_root = args.seed_buffer_root or args.buffer_root
+    options = SeedOptions(
+        repo_root=args.repo_root,
+        source_dataset_dir=args.reference_dataset_dir,
+        buffer_root=seed_buffer_root,
+        count=args.seed_count,
+        clear_existing=args.clear_seeded_buffer,
+        dry_run=not args.execute_seed,
+        execute=bool(args.execute_seed),
+    )
+    code, report = run_seed(options)
+    details = report.to_dict()
+    if code != 0:
+        return CheckResult("seed_buffer_from_reference", "fail", "Reference buffer seeding check failed", details)
+    mode = "executed" if args.execute_seed else "dry-run"
+    status = "pass" if args.execute_seed else "warn"
+    return CheckResult(
+        "seed_buffer_from_reference",
+        status,
+        f"Reference buffer seeding {mode}: {report.written_count} sample(s) planned/written",
+        details,
+    )
+
 def check_checkpoint(args: argparse.Namespace) -> CheckResult:
     path = args.resume_checkpoint
     if path is None:
@@ -472,6 +515,7 @@ def run_checks(args: argparse.Namespace) -> list[CheckResult]:
         check_buffer_status(args),
         check_reference_dataset(args),
         check_dataset_manifest(args),
+        check_seed_buffer_from_reference(args),
         check_checkpoint(args),
         check_trainer_cli_dry_run(args),
         check_optional_tiny_training(args),
