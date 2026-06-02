@@ -522,7 +522,10 @@ def _metadata_value(metadata: object, key: str) -> str | None:
 
 def _job_has_adaptation_metadata(job: dict[str, object]) -> bool:
     metadata = job.get("metadata")
-    return isinstance(metadata, dict) and any(key in metadata for key in ("adaptation", "adaptation_readiness", "readiness", "readiness_snapshot"))
+    return isinstance(metadata, dict) and (
+        metadata.get("manual_trigger") is True
+        or any(key in metadata for key in ("adaptation", "adaptation_readiness", "readiness", "readiness_snapshot"))
+    )
 
 
 def _storage_warnings(config: AdaptationReadinessConfig) -> dict[str, object]:

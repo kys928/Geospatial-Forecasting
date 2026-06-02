@@ -147,10 +147,16 @@ export function OpsTrainingTab() {
       active ??
       latestBySequence(retrainingJobs) ??
       statusState.status?.latest_retraining_job ??
+      (adaptationTraining?.latest_manual_job as OpsJobRecord | null) ??
       (adaptationTraining?.latest_job as OpsJobRecord | null) ??
       null
     );
-  }, [adaptationTraining?.latest_job, jobs, statusState.status?.latest_retraining_job]);
+  }, [
+    adaptationTraining?.latest_job,
+    adaptationTraining?.latest_manual_job,
+    jobs,
+    statusState.status?.latest_retraining_job,
+  ]);
   const trainingView = useMemo(
     () => deriveTrainingView(statusState.status, latestJob, adaptationTraining),
     [statusState.status, latestJob, adaptationTraining],
@@ -570,7 +576,8 @@ function collectLogs(
   const failure =
     asStr(pick(jobObj, ["failure_reason", "error_message"])) ??
     (latestJob ? null : asStr(status?.last_retraining_job_failure_reason));
-  if (failure) lines.push(`ERROR: ${failure}`);
+  if (failure)
+    lines.push(isManual ? `Manual training job failed: ${failure}` : `ERROR: ${failure}`);
   return lines;
 }
 function buildSummaryText(
