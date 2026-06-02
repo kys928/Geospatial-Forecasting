@@ -95,9 +95,40 @@ def test_smoke_detects_full_dataset_layout(tmp_path):
     trainer_check = smoke.check_trainer_cli_dry_run(args)
 
     assert reference_check.status == "pass"
-    assert "Full dataset layout detected" in reference_check.message
+    assert "Full windows dataset layout detected" in reference_check.message
     assert manifest_check.status == "warn"
     assert manifest_check.name == "adaptation_npz_manifest_not_applicable"
-    assert "not adaptation-buffer NPZ layout" in manifest_check.message
+    assert "manifest is not applicable" in manifest_check.message
     assert trainer_check.status == "warn"
     assert "not adaptation-buffer NPZ layout" in trainer_check.message
+
+
+def test_smoke_reference_dataset_status_passes_full_windows_npz(tmp_path):
+    full = tmp_path / "full"
+    (full / "windows").mkdir(parents=True)
+    (full / "windows" / "window-0.npz").write_bytes(b"window")
+    args = smoke.parse_args(["--repo-root", str(REPO_ROOT), "--reference-dataset-dir", str(full)])
+    smoke._prepare_paths(args)
+
+    reference_check = smoke.check_reference_dataset(args)
+
+    assert reference_check.status == "pass"
+    assert "Full windows dataset layout detected" in reference_check.message
+    assert "windows npz count: 1" in reference_check.message
+
+
+def test_smoke_manifest_dry_run_warns_not_applicable_for_full_windows_npz(tmp_path):
+    full = tmp_path / "full"
+    (full / "windows").mkdir(parents=True)
+    (full / "windows" / "window-0.npz").write_bytes(b"window")
+    args = smoke.parse_args(["--repo-root", str(REPO_ROOT), "--reference-dataset-dir", str(full)])
+    smoke._prepare_paths(args)
+
+    manifest_check = smoke.check_dataset_manifest(args)
+
+    assert manifest_check.status == "warn"
+    assert manifest_check.name == "adaptation_npz_manifest_not_applicable"
+    assert "manifest is not applicable" in manifest_check.message
+    assert manifest_check.details["dataset_layout"]["layout_kind"] == "full_windows_npz"
+    assert manifest_check.details["dataset_layout"]["npz_count"] == 1
+    assert manifest_check.details["dataset_layout"]["windows_dir_exists"] is True
