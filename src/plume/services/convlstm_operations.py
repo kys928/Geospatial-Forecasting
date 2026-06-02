@@ -282,7 +282,12 @@ class RetrainingJobStore:
             payload = self.load()
             jobs = payload["jobs"]
             queued = sorted(
-                [item for item in jobs if isinstance(item, dict) and item.get("status") == "queued"],
+                [
+                    item
+                    for item in jobs
+                    if isinstance(item, dict)
+                    and (item.get("status") == "queued" or (item.get("status") == "waiting" and _is_manual_retraining_job(item)))
+                ],
                 key=lambda item: int(item.get("created_sequence", -1)),
             )
             if not queued:
@@ -291,8 +296,17 @@ class RetrainingJobStore:
             updated = dict(target)
             updated["status"] = "running"
             updated["started_at"] = _utc_now_iso()
+            updated["finished_at"] = None
             updated["error_message"] = None
             updated["worker_pid"] = worker_pid
+            metadata = _with_job_log(
+                target.get("metadata"),
+                "Manual training job claimed by worker." if _is_manual_retraining_job(target) else "Retraining job claimed by worker.",
+                worker_claimed=True if _is_manual_retraining_job(target) else None,
+            )
+            if _is_manual_retraining_job(target):
+                metadata = _with_job_log(metadata, "Manual training job started.", worker_claimed=True)
+            updated["metadata"] = metadata
             _validate_job_transition(current_status=str(target.get("status", "queued")), next_status="running")
             validated = RetrainingJobRecord.from_dict(updated).to_dict()
             for idx, item in enumerate(jobs):
@@ -535,6 +549,12 @@ class RetrainingJobStore:
             if row is None:
                 raise ValueError(f"Unknown retraining job id: {job_id}")
             current = dict(row)
+            if isinstance(current.get("metadata"), str):
+                try:
+                    decoded = json.loads(current["metadata"])
+                    current["metadata"] = decoded if isinstance(decoded, dict) else None
+                except Exception:
+                    current["metadata"] = None
             updated = dict(current)
             updated.update(changes)
             _validate_job_transition(current_status=str(current.get("status", "queued")), next_status=str(updated.get("status")))
@@ -569,9 +589,10 @@ class RetrainingJobStore:
     def _claim_next_queued_job_sqlite(self, *, worker_pid: int | None) -> dict[str, object] | None:
         with self._sqlite_conn() as conn:
             conn.execute("BEGIN IMMEDIATE")
-            row = conn.execute(
-                "SELECT * FROM retraining_jobs WHERE status='queued' ORDER BY created_sequence ASC LIMIT 1"
-            ).fetchone()
+            rows = conn.execute(
+                "SELECT * FROM retraining_jobs WHERE status IN ('queued', 'waiting') ORDER BY created_sequence ASC"
+            ).fetchall()
+            row = next((candidate for candidate in rows if candidate["status"] == "queued" or _is_manual_retraining_job(dict(candidate))), None)
             if row is None:
                 conn.commit()
                 return None
@@ -579,12 +600,30 @@ class RetrainingJobStore:
             updated = dict(current)
             updated["status"] = "running"
             updated["started_at"] = _utc_now_iso()
+            updated["finished_at"] = None
             updated["error_message"] = None
             updated["worker_pid"] = worker_pid
+            metadata = _with_job_log(
+                current.get("metadata"),
+                "Manual training job claimed by worker." if _is_manual_retraining_job(current) else "Retraining job claimed by worker.",
+                worker_claimed=True if _is_manual_retraining_job(current) else None,
+            )
+            if _is_manual_retraining_job(current):
+                metadata = _with_job_log(metadata, "Manual training job started.", worker_claimed=True)
+            updated["metadata"] = metadata
+            _validate_job_transition(current_status=str(current.get("status", "queued")), next_status="running")
             validated = RetrainingJobRecord.from_dict(updated).to_dict()
             conn.execute(
-                "UPDATE retraining_jobs SET status=?, started_at=?, error_message=?, worker_pid=? WHERE job_id=?",
-                (validated["status"], validated["started_at"], validated["error_message"], validated["worker_pid"], validated["job_id"]),
+                "UPDATE retraining_jobs SET status=?, started_at=?, finished_at=?, error_message=?, worker_pid=?, metadata=? WHERE job_id=?",
+                (
+                    validated["status"],
+                    validated["started_at"],
+                    validated["finished_at"],
+                    validated["error_message"],
+                    validated["worker_pid"],
+                    json.dumps(validated["metadata"]) if isinstance(validated.get("metadata"), dict) else None,
+                    validated["job_id"],
+                ),
             )
             conn.commit()
             return validated
@@ -1485,6 +1524,8 @@ def execute_retraining_job(
             raise ValueError("train_fn must return payload with string run_dir")
         run_id = run_payload.get("run_id")
         metadata = _merge_job_metadata(running_job.get("metadata"), run_payload.get("metadata"))
+        if _is_manual_retraining_job(running_job):
+            metadata = _with_job_log(metadata, "Manual training job started.", worker_claimed=True)
         return job_store.update_job(
             job_id=job_id,
             status="succeeded",
@@ -1497,6 +1538,8 @@ def execute_retraining_job(
         )
     except RetrainingJobDeferred as exc:
         metadata = _merge_job_metadata(running_job.get("metadata"), exc.metadata)
+        if _is_manual_retraining_job(running_job):
+            metadata = _with_job_log(metadata, f"Manual training job failed before start: {exc}", worker_claimed=True)
         return job_store.update_job(
             job_id=job_id,
             status="waiting",
@@ -1509,6 +1552,8 @@ def execute_retraining_job(
         )
     except Exception as exc:
         metadata = _merge_job_metadata(running_job.get("metadata"), {"failure": {"error_message": str(exc)}})
+        if _is_manual_retraining_job(running_job):
+            metadata = _with_job_log(metadata, f"Manual training job failed before start: {exc}", worker_claimed=True)
         return job_store.update_job(
             job_id=job_id,
             status="failed",
@@ -1575,25 +1620,37 @@ def run_adaptation_retraining_job(
     statuses = [str(item.get("status")) for item in job_store.list_jobs()] if job_store is not None else []
     running_others = sum(1 for item in (job_store.list_jobs() if job_store is not None else []) if item.get("status") == "running" and item.get("job_id") != job.get("job_id"))
 
-    readiness = AdaptationReadinessService(readiness_config).evaluate(
-        active_checkpoint_path=active_checkpoint_path,
-        latest_best_checkpoint_path=latest_best_checkpoint_path,
-        checkpoint_dir=_checkpoint_storage_root(registry_payload, latest_best_checkpoint_path),
-        current_training_jobs=running_others,
-        current_job_statuses=statuses,
-    )
-    readiness_payload = readiness.to_dict()
-    if not readiness.ready:
-        raise RetrainingJobDeferred(
-            "Adaptation retraining readiness is not green",
-            metadata={"readiness": readiness_payload, "deferred_reason": "adaptation_readiness_not_green"},
+    manual_override = _is_manual_retraining_job(job)
+    readiness_payload: dict[str, object] | None = None
+    if manual_override:
+        dataset_source = _resolve_manual_training_dataset(job=job, readiness_config=readiness_config)
+        checkpoint_path = _resolve_manual_training_checkpoint(
+            job=job,
+            registry_payload=registry_payload,
+            registry_path=registry.path if registry is not None else None,
+            fallback_checkpoint=training_cfg_payload.get("fallback_checkpoint"),
         )
-
-    resume_selection = select_adaptation_resume_checkpoint(
-        active_checkpoint_path=active_checkpoint_path,
-        latest_best_checkpoint_path=latest_best_checkpoint_path,
-        allow_fresh_start=readiness_config.allow_fresh_start,
-    )
+        resume_selection = AdaptationResumeSelection(checkpoint_path=checkpoint_path, source="manual_override", resume_mode="model_only")
+    else:
+        readiness = AdaptationReadinessService(readiness_config).evaluate(
+            active_checkpoint_path=active_checkpoint_path,
+            latest_best_checkpoint_path=latest_best_checkpoint_path,
+            checkpoint_dir=_checkpoint_storage_root(registry_payload, latest_best_checkpoint_path),
+            current_training_jobs=running_others,
+            current_job_statuses=statuses,
+        )
+        readiness_payload = readiness.to_dict()
+        if not readiness.ready:
+            raise RetrainingJobDeferred(
+                "Adaptation retraining readiness is not green",
+                metadata={"readiness": readiness_payload, "deferred_reason": "adaptation_readiness_not_green"},
+            )
+        dataset_source = readiness_config.resolve_reference_dataset_path()
+        resume_selection = select_adaptation_resume_checkpoint(
+            active_checkpoint_path=active_checkpoint_path,
+            latest_best_checkpoint_path=latest_best_checkpoint_path,
+            allow_fresh_start=readiness_config.allow_fresh_start,
+        )
 
     buffer = AdaptationBuffer(
         AdaptationBufferConfig(
@@ -1603,11 +1660,13 @@ def run_adaptation_retraining_job(
         )
     )
     manifest = build_adaptation_dataset_manifest(
-        reference_dataset_dir=readiness_config.resolve_reference_dataset_path(),
+        reference_dataset_dir=dataset_source,
         adaptation_buffer=buffer,
         config=_adaptation_dataset_config_from_payload(adaptation_config_path),
     )
     if int(manifest.counts.get("train_total", 0)) == 0 or int(manifest.counts.get("val_total", 0)) == 0:
+        if manual_override:
+            raise ValueError(f"No usable dataset source found for manual training. Adaptation trainer requires canonical train and validation NPZ samples; counts: {manifest.counts}; warnings: {manifest.warnings}")
         raise ValueError(f"Adaptation dataset manifest requires non-empty train and validation samples: {manifest.counts}")
 
     run_id = str(job.get("job_id") or f"adaptation-{uuid.uuid4().hex[:12]}")
@@ -1953,6 +2012,114 @@ def _validate_adaptation_resume_checkpoint(path: Path) -> None:
         raise ValueError(f"Selected adaptation resume checkpoint is not a robust trainer checkpoint: {path}")
 
 
+
+def _job_run_config(job: dict[str, object]) -> dict[str, object]:
+    try:
+        return _parse_json_object_ref(job.get("run_config_ref"), field="run_config_ref", allow_empty=True)
+    except Exception:
+        raise ValueError("run_config_ref must be valid JSON for manual training")
+
+
+def _is_manual_retraining_job(job: dict[str, object]) -> bool:
+    if job.get("manual_override") is True:
+        return True
+    metadata = job.get("metadata")
+    if isinstance(metadata, str):
+        try:
+            decoded = json.loads(metadata)
+            metadata = decoded if isinstance(decoded, dict) else None
+        except Exception:
+            metadata = None
+    if isinstance(metadata, dict) and (metadata.get("manual_trigger") is True or metadata.get("manual_override") is True):
+        return True
+    try:
+        run_payload = _parse_json_object_ref(job.get("run_config_ref"), field="run_config_ref", allow_empty=True)
+    except Exception:
+        return False
+    return run_payload.get("manual_override") is True
+
+
+def _with_job_log(metadata: object, line: str, *, worker_claimed: bool | None = None) -> dict[str, object]:
+    if isinstance(metadata, str):
+        try:
+            decoded = json.loads(metadata)
+            current = decoded if isinstance(decoded, dict) else {}
+        except Exception:
+            current = {}
+    else:
+        current = dict(metadata) if isinstance(metadata, dict) else {}
+    logs = current.get("logs")
+    lines = list(logs) if isinstance(logs, list) else []
+    if line not in lines:
+        lines.append(line)
+    current["logs"] = lines
+    if worker_claimed is not None:
+        current["worker_claimed"] = worker_claimed
+    return current
+
+
+def _resolve_manual_training_dataset(*, job: dict[str, object], readiness_config: AdaptationReadinessConfig) -> Path:
+    value = _optional_str(job.get("dataset_snapshot_ref"))
+    if value and value != "buffered_internal_dataset":
+        path = Path(value).expanduser()
+        if path.exists():
+            return path
+        raise ValueError(f"Manual training dataset source does not exist: {path}")
+
+    configured_reference = readiness_config.resolve_reference_dataset_path()
+    if configured_reference.exists():
+        return configured_reference
+
+    default_full = Path("/workspace/Dataset/hysplit-plume-convlstm-multiyear-2024-2026")
+    if default_full.exists():
+        return default_full
+    return configured_reference
+
+
+def _resolve_manual_training_checkpoint(
+    *,
+    job: dict[str, object],
+    registry_payload: dict[str, object],
+    registry_path: Path | None,
+    fallback_checkpoint: object,
+) -> str:
+    run_payload = _job_run_config(job)
+    explicit = run_payload.get("checkpoint_ref")
+    if isinstance(explicit, str) and explicit.strip():
+        path = Path(explicit).expanduser()
+        if path.exists():
+            _validate_adaptation_resume_checkpoint(path)
+            return str(path)
+        raise ValueError(f"Manual training checkpoint_ref does not exist: {path}")
+
+    for candidate in (
+        _active_checkpoint_path(registry_payload),
+        _latest_best_checkpoint_path(registry_payload=registry_payload, fallback_checkpoint=fallback_checkpoint),
+    ):
+        if candidate and Path(candidate).exists():
+            _validate_adaptation_resume_checkpoint(Path(candidate))
+            return str(candidate)
+
+    search_roots = [Path.cwd()]
+    if registry_path is not None:
+        search_roots.append(registry_path.parent)
+    patterns = [
+        "artifacts/models/**/final_full_checkpoint.pt",
+        "artifacts/models/**/best_full_checkpoint.pt",
+        "runs/**/final_full_checkpoint.pt",
+        "runs/**/best_full_checkpoint.pt",
+    ]
+    candidates: list[Path] = []
+    for root in search_roots:
+        for pattern in patterns:
+            candidates.extend(path for path in root.glob(pattern) if path.exists())
+    if candidates:
+        selected = max(candidates, key=lambda path: path.stat().st_mtime)
+        _validate_adaptation_resume_checkpoint(selected)
+        return str(selected)
+
+    raise ValueError("No usable base checkpoint found for manual training.")
+
 def _merge_job_metadata(current: object, update: object) -> dict[str, object] | None:
     if current is None and update is None:
         return None
@@ -2275,7 +2442,7 @@ def _validate_job_transition(*, current_status: str, next_status: str) -> None:
     allowed = {
         "queued": {"running", "cancelled"},
         "running": {"waiting", "succeeded", "failed", "cancelled"},
-        "waiting": {"queued", "cancelled"},
+        "waiting": {"queued", "running", "cancelled"},
         "succeeded": set(),
         "failed": set(),
         "cancelled": set(),

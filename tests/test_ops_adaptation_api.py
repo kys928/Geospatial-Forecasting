@@ -587,3 +587,73 @@ def test_storage_warnings_threshold_still_triggers(monkeypatch, tmp_path: Path):
     assert response.json()["checkpoint_count"] == 21
     assert response.json()["checkpoint_count_warning"] is True
     assert response.json()["message"] == "Storage warnings present for registered adaptation checkpoint files"
+
+
+def test_ops_jobs_returns_manual_job_status_and_logs(monkeypatch, tmp_path: Path):
+    client, paths = _client(monkeypatch, tmp_path)
+    paths["jobs"].write_text(
+        json.dumps(
+            {
+                "jobs": [
+                    {
+                        "job_id": "manual-log",
+                        "status": "failed",
+                        "created_sequence": 0,
+                        "created_at": "2026-01-01T00:00:00Z",
+                        "error_message": "No usable dataset source found for manual training.",
+                        "metadata": {
+                            "manual_trigger": True,
+                            "worker_claimed": True,
+                            "logs": [
+                                "Manual training job claimed by worker.",
+                                "Manual training job failed before start: No usable dataset source found for manual training.",
+                            ],
+                        },
+                    }
+                ],
+                "next_sequence": 1,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    body = client.get("/ops/jobs").json()
+
+    assert body["latest_job"]["job_id"] == "manual-log"
+    assert body["latest_job"]["status"] == "failed"
+    assert "Manual training job claimed by worker." in body["latest_job"]["metadata"]["logs"]
+
+
+def test_adaptation_training_status_does_not_hide_manual_job(monkeypatch, tmp_path: Path):
+    client, paths = _client(monkeypatch, tmp_path)
+    paths["jobs"].write_text(
+        json.dumps(
+            {
+                "jobs": [
+                    {
+                        "job_id": "auto-wait",
+                        "status": "waiting",
+                        "created_sequence": 0,
+                        "created_at": "2026-01-01T00:00:00Z",
+                        "error_message": "Adaptation retraining readiness is not green",
+                        "metadata": {"readiness": {"blocking_reasons": ["not enough samples"]}},
+                    },
+                    {
+                        "job_id": "manual-newer",
+                        "status": "queued",
+                        "created_sequence": 1,
+                        "created_at": "2026-01-01T00:01:00Z",
+                        "metadata": {"manual_trigger": True, "worker_claimed": False},
+                    },
+                ],
+                "next_sequence": 2,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    body = client.get("/ops/adaptation/training/status").json()
+
+    assert body["latest_job"]["job_id"] == "manual-newer"
+    assert body["latest_manual_job"]["job_id"] == "manual-newer"
+    assert body["error_message"] is None

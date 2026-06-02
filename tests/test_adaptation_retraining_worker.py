@@ -258,3 +258,137 @@ def test_worker_records_failure_on_trainer_exception(monkeypatch, tmp_path: Path
     job = RetrainingJobStore(tmp_path / "jobs.json").latest_job()
     assert job["status"] == "failed"
     assert "trainer exploded" in job["error_message"]
+
+
+def _manual_job(tmp_path: Path, *, status: str = "queued", dataset: str | None = None, run_config: dict[str, object] | None = None) -> None:
+    store = RetrainingJobStore(tmp_path / "jobs.json")
+    job = store.create_job(
+        dataset_snapshot_ref=dataset,
+        run_config_ref=json.dumps({"manual_override": True, **(run_config or {})}),
+        output_dir=str(tmp_path / "runs"),
+    )
+    store.update_job(job_id=str(job["job_id"]), metadata={"manual_trigger": True, "worker_claimed": False})
+    if status != "queued":
+        payload = json.loads((tmp_path / "jobs.json").read_text(encoding="utf-8"))
+        payload["jobs"][0]["status"] = status
+        (tmp_path / "jobs.json").write_text(json.dumps(payload), encoding="utf-8")
+
+
+def _manual_seed(tmp_path: Path, *, status: str = "queued", dataset: str | None = None, checkpoint: Path | None = None, buffer_train: int = 0, buffer_val: int = 0) -> Path:
+    buffer = tmp_path / "buffer"
+    reference = tmp_path / "reference"
+    config_dir = tmp_path / "configs"
+    if buffer_train or buffer_val:
+        _buffer(buffer, train=buffer_train, val=buffer_val)
+    _reference(reference)
+    _write_config(config_dir, buffer=buffer, reference=reference)
+    _manual_job(tmp_path, status=status, dataset=dataset or str(reference))
+    OperationalStateStore(tmp_path / "state.json").save(OperationalState(phase="collecting"))
+    models = []
+    active_id = None
+    if checkpoint is not None:
+        active_id = "active"
+        models.append({"model_id": "active", "status": "active", "path": str(checkpoint), "timestamp": "2026-01-01T00:00:00Z"})
+    ModelRegistry(tmp_path / "registry.json").save({"models": models, "events": [], "active_model_id": active_id, "previous_active_model_id": None})
+    return config_dir
+
+
+def test_worker_claims_waiting_manual_training_job(monkeypatch, tmp_path: Path):
+    monkeypatch.setattr("plume.services.convlstm_operations._validate_adaptation_resume_checkpoint", lambda _path: None)
+    calls = _mock_trainer(monkeypatch)
+    config_dir = _manual_seed(tmp_path, status="waiting", checkpoint=_checkpoint(tmp_path / "active.pt"))
+
+    result = _run(tmp_path, config_dir)
+
+    assert result["claimed"] is True
+    assert result["status"] == "succeeded"
+    assert len(calls) == 1
+    job = RetrainingJobStore(tmp_path / "jobs.json").latest_job()
+    assert job["metadata"]["worker_claimed"] is True
+    assert "Manual training job claimed by worker." in job["metadata"]["logs"]
+
+
+def test_worker_claims_queued_manual_training_job(monkeypatch, tmp_path: Path):
+    monkeypatch.setattr("plume.services.convlstm_operations._validate_adaptation_resume_checkpoint", lambda _path: None)
+    calls = _mock_trainer(monkeypatch)
+    config_dir = _manual_seed(tmp_path, status="queued", checkpoint=_checkpoint(tmp_path / "active.pt"))
+
+    result = _run(tmp_path, config_dir)
+
+    assert result["claimed"] is True
+    assert result["status"] == "succeeded"
+    assert len(calls) == 1
+
+
+def test_manual_training_bypasses_adaptation_readiness_gate(monkeypatch, tmp_path: Path):
+    monkeypatch.setattr("plume.services.convlstm_operations._validate_adaptation_resume_checkpoint", lambda _path: None)
+    calls = _mock_trainer(monkeypatch)
+    config_dir = _manual_seed(tmp_path, status="queued", checkpoint=_checkpoint(tmp_path / "active.pt"), buffer_train=0, buffer_val=0)
+
+    result = _run(tmp_path, config_dir)
+
+    assert result["status"] == "succeeded"
+    assert len(calls) == 1
+    job = RetrainingJobStore(tmp_path / "jobs.json").latest_job()
+    assert job["error_message"] is None
+
+
+def test_automatic_training_still_requires_readiness(monkeypatch, tmp_path: Path):
+    _buffer(tmp_path / "buffer", train=0, val=0)
+    reference = tmp_path / "reference"
+    _reference(reference)
+    config_dir = tmp_path / "configs"
+    _write_config(config_dir, buffer=tmp_path / "buffer", reference=reference)
+    store = RetrainingJobStore(tmp_path / "jobs.json")
+    store.create_job(dataset_snapshot_ref=str(reference), run_config_ref="{}", output_dir=str(tmp_path / "runs"))
+    OperationalStateStore(tmp_path / "state.json").save(OperationalState(phase="collecting"))
+    ModelRegistry(tmp_path / "registry.json").save({"models": [], "events": [], "active_model_id": None, "previous_active_model_id": None})
+    calls = _mock_trainer(monkeypatch)
+
+    result = _run(tmp_path, config_dir)
+
+    assert result["status"] == "waiting"
+    assert calls == []
+    assert "Adaptation retraining readiness is not green" in RetrainingJobStore(tmp_path / "jobs.json").latest_job()["error_message"]
+
+
+def test_manual_training_missing_dataset_fails_clearly(monkeypatch, tmp_path: Path):
+    monkeypatch.setattr("plume.services.convlstm_operations._validate_adaptation_resume_checkpoint", lambda _path: None)
+    config_dir = _manual_seed(tmp_path, dataset=str(tmp_path / "missing-dataset"), checkpoint=_checkpoint(tmp_path / "active.pt"))
+
+    result = _run(tmp_path, config_dir)
+
+    assert result["status"] == "failed"
+    job = RetrainingJobStore(tmp_path / "jobs.json").latest_job()
+    assert job["status"] == "failed"
+    assert "dataset source does not exist" in job["error_message"]
+    assert "Manual training job failed before start" in "\n".join(job["metadata"]["logs"])
+
+
+def test_manual_training_missing_checkpoint_fails_clearly(monkeypatch, tmp_path: Path):
+    config_dir = _manual_seed(tmp_path, checkpoint=None)
+    monkeypatch.chdir(tmp_path)
+
+    result = _run(tmp_path, config_dir)
+
+    assert result["status"] == "failed"
+    job = RetrainingJobStore(tmp_path / "jobs.json").latest_job()
+    assert "No usable base checkpoint found for manual training" in job["error_message"]
+
+
+def test_manual_training_buffered_internal_dataset_resolves_or_fails_clearly(monkeypatch, tmp_path: Path):
+    monkeypatch.setattr("plume.services.convlstm_operations._validate_adaptation_resume_checkpoint", lambda _path: None)
+    buffer = tmp_path / "buffer"
+    reference = tmp_path / "missing-reference"
+    config_dir = tmp_path / "configs"
+    _write_config(config_dir, buffer=buffer, reference=reference)
+    _manual_job(tmp_path, dataset="buffered_internal_dataset")
+    ckpt = _checkpoint(tmp_path / "active.pt")
+    OperationalStateStore(tmp_path / "state.json").save(OperationalState(phase="collecting"))
+    ModelRegistry(tmp_path / "registry.json").save({"models": [{"model_id": "active", "status": "active", "path": str(ckpt)}], "events": [], "active_model_id": "active", "previous_active_model_id": None})
+
+    result = _run(tmp_path, config_dir)
+
+    assert result["status"] == "failed"
+    job = RetrainingJobStore(tmp_path / "jobs.json").latest_job()
+    assert "No usable dataset source found for manual training" in job["error_message"]
