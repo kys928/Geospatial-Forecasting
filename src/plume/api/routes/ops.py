@@ -462,13 +462,28 @@ def _parse_iso(value: object) -> datetime | None:
         return None
 
 
+TRAINING_LOG_INITIALIZED_LINE = "Training log initialized; waiting for trainer output..."
+
+
+def _normalize_workspace_path(path: str | Path) -> Path:
+    candidate = Path(path)
+    if not candidate.is_absolute():
+        candidate = Path.cwd() / candidate
+    return candidate.resolve(strict=False)
+
+
 def _tail_training_log(path: str | Path | None, *, max_lines: int = 200) -> tuple[list[str], bool]:
     if not path:
         return [], False
-    log_path = Path(path)
+    log_path = _normalize_workspace_path(path)
     if not log_path.exists() or not log_path.is_file():
         return [], False
-    lines = log_path.read_text(encoding="utf-8", errors="replace").splitlines()
+    try:
+        lines = log_path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return [], False
+    if not lines:
+        return [TRAINING_LOG_INITIALIZED_LINE], True
     return lines[-max_lines:], True
 
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -118,6 +119,107 @@ def test_auto_enqueue_cooldown_and_readiness_block(monkeypatch, tmp_path: Path):
     assert blocked["reason"] == "readiness_not_green"
 
 
+def _configure_ops_paths(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("PLUME_OPS_JOBS_PATH", str(tmp_path / "jobs.json"))
+    monkeypatch.setenv("PLUME_OPS_REGISTRY_PATH", str(tmp_path / "registry.json"))
+    monkeypatch.setenv("PLUME_OPS_STATE_PATH", str(tmp_path / "state.json"))
+    monkeypatch.setenv("PLUME_OPS_EVENTS_PATH", str(tmp_path / "events.jsonl"))
+
+
+def test_retraining_job_claim_creates_stable_training_log(monkeypatch, tmp_path: Path):
+    _configure_ops_paths(monkeypatch, tmp_path)
+    store = RetrainingJobStore(tmp_path / "jobs.json")
+    job = store.create_job(
+        dataset_snapshot_ref=None,
+        run_config_ref=None,
+        output_dir=str(tmp_path / "runs"),
+        job_id="claimed-log",
+    )
+
+    claimed = store.claim_next_queued_job(worker_pid=12345)
+
+    assert claimed is not None
+    metadata = claimed["metadata"]
+    assert isinstance(metadata, dict)
+    log_file_path = metadata["log_file_path"]
+    assert Path(str(log_file_path)).is_absolute()
+    assert Path(str(log_file_path)).exists()
+    assert Path(str(log_file_path)).is_file()
+    assert metadata["log_available"] is True
+    assert claimed["status"] == "running"
+    assert claimed["started_at"] is not None
+
+
+def test_training_status_running_empty_log_returns_initialized_line(monkeypatch, tmp_path: Path):
+    _configure_ops_paths(monkeypatch, tmp_path)
+    store = RetrainingJobStore(tmp_path / "jobs.json")
+    run_dir = tmp_path / "runs" / "running-empty"
+    run_dir.mkdir(parents=True)
+    log_path = run_dir / "training.log"
+    log_path.touch()
+    job = store.create_job(
+        dataset_snapshot_ref=None,
+        run_config_ref=None,
+        output_dir=str(tmp_path / "runs"),
+        job_id="running-empty",
+    )
+    store.update_job(
+        job_id=job["job_id"],
+        status="running",
+        started_at="2026-01-01T00:00:00+00:00",
+        result_run_dir=str(run_dir),
+        metadata={
+            "automatic_trigger": True,
+            "log_file_path": str(log_path),
+            "log_available": True,
+        },
+    )
+    _registry(tmp_path / "registry.json")
+
+    latest = _adaptation_training_status()["latest_job"]
+
+    assert latest["log_available"] is True
+    assert latest["log_tail"] == ["Training log initialized; waiting for trainer output..."]
+    assert "Real training log file not available" not in "\n".join(latest["log_tail"])
+    assert latest["status"] == "running"
+    assert latest["elapsed_seconds"] is not None
+    assert latest["runtime_seconds"] is None
+
+
+def test_training_status_running_relative_log_path_is_resolved(monkeypatch, tmp_path: Path):
+    _configure_ops_paths(monkeypatch, tmp_path)
+    store = RetrainingJobStore(tmp_path / "jobs.json")
+    run_dir = tmp_path / "runs" / "relative-log"
+    run_dir.mkdir(parents=True)
+    log_path = run_dir / "training.log"
+    log_path.write_text("relative log line\n", encoding="utf-8")
+    relative_log_path = Path(os.path.relpath(log_path, Path.cwd()))
+    job = store.create_job(
+        dataset_snapshot_ref=None,
+        run_config_ref=None,
+        output_dir=str(tmp_path / "runs"),
+        job_id="relative-log",
+    )
+    store.update_job(
+        job_id=job["job_id"],
+        status="running",
+        started_at="2026-01-01T00:00:00+00:00",
+        result_run_dir=str(run_dir),
+        metadata={
+            "automatic_trigger": True,
+            "log_file_path": str(relative_log_path),
+            "log_available": True,
+        },
+    )
+    _registry(tmp_path / "registry.json")
+
+    latest = _adaptation_training_status()["latest_job"]
+
+    assert latest["log_available"] is True
+    assert latest["log_tail"] == ["relative log line"]
+    assert latest["log_file_path"] == str(relative_log_path)
+
+
 def test_training_status_log_tail_runtime_cooldown_and_checkpoints(monkeypatch, tmp_path: Path):
     monkeypatch.setenv("PLUME_OPS_JOBS_PATH", str(tmp_path / "jobs.json"))
     monkeypatch.setenv("PLUME_OPS_REGISTRY_PATH", str(tmp_path / "registry.json"))
@@ -147,6 +249,13 @@ def test_training_status_log_tail_runtime_cooldown_and_checkpoints(monkeypatch, 
     assert len(latest["log_tail"]) == 200
     assert latest["log_tail"][0] == "line 50"
     assert payload["cooldown_seconds"] == 3600
+    assert "job_counts" in payload
+    assert payload["job_counts"]["succeeded"] == 1
+    assert "latest_job" in payload
+    assert "log_tail" in latest
+    assert "status" in latest
+    assert "elapsed_seconds" in latest
+    assert "runtime_seconds" in latest
     assert latest["trigger_source"] == "automatic"
 
 

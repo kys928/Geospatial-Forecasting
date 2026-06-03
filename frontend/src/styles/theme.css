@@ -715,7 +715,7 @@ textarea {
 
 .ops-actions-button{border:1px solid #d6deea;background:#fff;border-radius:8px;padding:3px 8px;font-size:16px;line-height:1;cursor:pointer;color:#334155;}
 .ops-actions-button:disabled{opacity:.5;cursor:not-allowed;}
-.ops-row-menu{min-width:180px;box-shadow:0 6px 16px rgba(15,23,42,.12);}
+.ops-row-menu{width:190px;min-width:180px;box-sizing:border-box;box-shadow:0 6px 16px rgba(15,23,42,.12);}
 .ops-row-menu button[disabled]{color:#94a3b8;cursor:not-allowed;}
 .ops-model-details-modal{width:min(760px,94vw);max-height:88vh;overflow:auto;display:grid;gap:12px;}
 .ops-model-details-list{display:grid;gap:8px;margin:0;}

@@ -65,15 +65,36 @@ def _tail_text_file(path: str | Path, *, max_lines: int = 200) -> list[str]:
     return lines[-max_lines:]
 
 
+def _normalize_workspace_path(path: str | Path) -> Path:
+    candidate = Path(path)
+    if not candidate.is_absolute():
+        candidate = Path.cwd() / candidate
+    return candidate.resolve(strict=False)
+
+
 def _job_log_path(job: dict[str, object]) -> Path:
     metadata = job.get("metadata") if isinstance(job.get("metadata"), dict) else {}
     existing = metadata.get("log_file_path") if isinstance(metadata, dict) else None
     if isinstance(existing, str) and existing.strip():
-        return Path(existing)
+        return _normalize_workspace_path(existing)
+    result_run_dir = job.get("result_run_dir")
+    if isinstance(result_run_dir, str) and result_run_dir.strip():
+        return _normalize_workspace_path(Path(result_run_dir) / "training.log")
     run_id = str(job.get("job_id") or f"adaptation-{uuid.uuid4().hex[:12]}")
     output_root = Path(str(job.get("output_dir") or Path("artifacts") / "runs"))
     output_dir = output_root / run_id if output_root.name != run_id else output_root
-    return output_dir / "training.log"
+    return _normalize_workspace_path(output_dir / "training.log")
+
+
+def _prepare_job_log_metadata(job: dict[str, object], metadata: object) -> dict[str, object]:
+    log_path = _job_log_path({**job, "metadata": metadata})
+    updated_metadata = _merge_job_metadata(metadata, {"log_file_path": str(log_path)})
+    try:
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        log_path.touch(exist_ok=True)
+    except OSError:
+        return _merge_job_metadata(updated_metadata, {"log_available": False})
+    return _merge_job_metadata(updated_metadata, {"log_available": log_path.exists() and log_path.is_file()})
 
 
 OPERATIONAL_PHASES = {
@@ -335,7 +356,7 @@ class RetrainingJobStore:
             )
             if _is_manual_retraining_job(target):
                 metadata = _with_job_log(metadata, "Manual training job started.", worker_claimed=True)
-            updated["metadata"] = metadata
+            updated["metadata"] = _prepare_job_log_metadata(updated, metadata)
             _validate_job_transition(current_status=str(target.get("status", "queued")), next_status="running")
             validated = RetrainingJobRecord.from_dict(updated).to_dict()
             for idx, item in enumerate(jobs):
@@ -639,7 +660,7 @@ class RetrainingJobStore:
             )
             if _is_manual_retraining_job(current):
                 metadata = _with_job_log(metadata, "Manual training job started.", worker_claimed=True)
-            updated["metadata"] = metadata
+            updated["metadata"] = _prepare_job_log_metadata(updated, metadata)
             _validate_job_transition(current_status=str(current.get("status", "queued")), next_status="running")
             validated = RetrainingJobRecord.from_dict(updated).to_dict()
             conn.execute(
@@ -1602,12 +1623,17 @@ def execute_retraining_job(
     if current is None:
         raise ValueError(f"Unknown retraining job id: {job_id}")
     if current.get("status") == "queued":
+        metadata = _prepare_job_log_metadata(
+            {**current, "status": "running"},
+            _with_job_log(current.get("metadata"), "Retraining job claimed by worker."),
+        )
         running_job = job_store.update_job(
             job_id=job_id,
             status="running",
             started_at=_utc_now_iso(),
             error_message=None,
             worker_pid=_optional_int(current.get("worker_pid")) or os.getpid(),
+            metadata=metadata,
         )
     elif current.get("status") == "running":
         running_job = current
@@ -1767,12 +1793,18 @@ def run_adaptation_retraining_job(
         raise ValueError(detail)
 
     run_id = str(job.get("job_id") or f"adaptation-{uuid.uuid4().hex[:12]}")
-    output_root = Path(str(job.get("output_dir") or training_cfg_payload.get("output_dir") or Path("artifacts") / "runs"))
-    output_dir = output_root / run_id if output_root.name != run_id else output_root
+    if isinstance(job.get("metadata"), dict) and job["metadata"].get("log_file_path"):
+        log_path = _job_log_path(job)
+        output_dir = log_path.parent
+    else:
+        output_root = Path(str(job.get("output_dir") or training_cfg_payload.get("output_dir") or Path("artifacts") / "runs"))
+        output_dir = output_root / run_id if output_root.name != run_id else output_root
+        output_dir = _normalize_workspace_path(output_dir)
+        log_path = output_dir / "training.log"
     output_dir.mkdir(parents=True, exist_ok=True)
-    log_path = output_dir / "training.log"
+    log_path.touch(exist_ok=True)
     if job_store is not None and job.get("job_id"):
-        metadata = _merge_job_metadata(job.get("metadata"), {"log_file_path": str(log_path), "log_available": True})
+        metadata = _merge_job_metadata(job.get("metadata"), {"log_file_path": str(log_path), "log_available": log_path.exists() and log_path.is_file()})
         job_store.update_job(job_id=str(job["job_id"]), result_run_dir=str(output_dir), metadata=metadata)
 
     trainer_config = _three_stage_trainer_config_from_payload(training_cfg_payload, run_name=run_id)

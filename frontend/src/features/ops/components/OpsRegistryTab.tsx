@@ -6,7 +6,38 @@ import type { RegistryModelRecord } from "../../registry/types/registry.types";
 import type { CandidateDecisionRequest } from "../types/ops.types";
 
 type RowActionMenu = { id: string; top: number; left: number } | null;
+type MenuAnchorRect = Pick<DOMRect, "top" | "right" | "bottom">;
+type ViewportMenuPositionOptions = {
+  rect: MenuAnchorRect;
+  viewportWidth: number;
+  viewportHeight: number;
+  menuWidth?: number;
+  menuHeight?: number;
+  gap?: number;
+};
 type DisplayModel = RegistryModelRecord & { isDemo?: boolean };
+
+const ROW_MENU_WIDTH = 190;
+const ROW_MENU_HEIGHT = 120;
+const ROW_MENU_GAP = 8;
+
+export function computeViewportMenuPosition({
+  rect,
+  viewportWidth,
+  viewportHeight,
+  menuWidth = ROW_MENU_WIDTH,
+  menuHeight = ROW_MENU_HEIGHT,
+  gap = ROW_MENU_GAP,
+}: ViewportMenuPositionOptions): { top: number; left: number } {
+  const maxLeft = Math.max(gap, viewportWidth - menuWidth - gap);
+  const preferredTop = rect.bottom + gap;
+  const upwardTop = rect.top - menuHeight - gap;
+  const rawTop = preferredTop + menuHeight > viewportHeight ? upwardTop : preferredTop;
+  return {
+    top: Math.max(gap, Math.min(rawTop, Math.max(gap, viewportHeight - menuHeight - gap))),
+    left: Math.max(gap, Math.min(rect.right - menuWidth, maxLeft)),
+  };
+}
 type DetailRow = { label: string; value: string };
 type MetricRow = { label: string; value: string };
 
@@ -525,10 +556,15 @@ export function OpsRegistryTab() {
                             const rect = (
                               event.currentTarget as HTMLButtonElement
                             ).getBoundingClientRect();
+                            const position = computeViewportMenuPosition({
+                              rect,
+                              viewportWidth: window.innerWidth,
+                              viewportHeight: window.innerHeight,
+                            });
                             setMenuOpen({
                               id: modelId,
-                              top: rect.bottom + 6,
-                              left: Math.max(8, rect.right - 190),
+                              top: position.top,
+                              left: position.left,
                             });
                           }}
                           disabled={!modelId}
