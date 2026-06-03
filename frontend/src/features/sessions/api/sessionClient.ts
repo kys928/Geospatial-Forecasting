@@ -15,6 +15,7 @@ import type {
 } from "../types/session.types";
 
 const ACTIVE_SESSION_STORAGE_KEY = "plume_active_session_id";
+const ACTIVE_FORECAST_SESSION_CONTRACT = "active-convlstm-session-v2";
 
 export interface RunSessionForecastResult {
   sessionId: string;
@@ -28,6 +29,56 @@ interface EnsureSessionResult {
   recreatedSession: boolean;
   resetReason?: string;
 }
+
+function nestedRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+}
+
+function nestedString(record: Record<string, unknown>, key: string): string | null {
+  const value = record[key];
+  return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+export function activeConvLstmSessionCompatibility(session: SessionDetail): { compatible: boolean; reason?: string } {
+  if (session.backend_name !== "convlstm_online") {
+    return { compatible: false, reason: `stored session backend is ${session.backend_name || "unknown"}` };
+  }
+  const runtime = nestedRecord(session.runtime_metadata);
+  const metadata = nestedRecord(session.metadata);
+  const modelLoad = nestedRecord(runtime.model_load);
+  const resolvedActive = nestedRecord(modelLoad.resolved_active_model);
+  const provenance = nestedRecord(runtime.provenance);
+  const configuredContract = nestedString(metadata, "frontend_session_contract") || nestedString(runtime, "frontend_session_contract");
+  if (configuredContract && configuredContract !== ACTIVE_FORECAST_SESSION_CONTRACT) {
+    return { compatible: false, reason: `stored session contract is ${configuredContract}` };
+  }
+  const predictionEngine = nestedString(runtime, "prediction_engine") || nestedString(modelLoad, "prediction_engine");
+  if (predictionEngine === "ridge_baseline") {
+    return { compatible: false, reason: "stored session uses ridge_baseline" };
+  }
+  if (runtime.temporary_model_substitution === true || modelLoad.temporary_model_substitution === true) {
+    return { compatible: false, reason: "stored session used temporary model substitution" };
+  }
+  const runtimeSource = nestedString(runtime, "forecast_source") || nestedString(provenance, "forecast_source");
+  const runtimeInput = nestedString(runtime, "input_source") || nestedString(provenance, "input_source");
+  const runtimeOutput = nestedString(runtime, "output_source") || nestedString(provenance, "output_source");
+  if (runtimeSource === "dataset_playback" || runtimeInput === "dataset_playback" || runtimeOutput === "dataset_playback") {
+    return { compatible: false, reason: "stored session points at dataset_playback output" };
+  }
+  const activeModelId = nestedString(modelLoad, "active_model_id") || nestedString(runtime, "active_registry_model_id") || nestedString(resolvedActive, "model_id");
+  const checkpointPath = nestedString(modelLoad, "checkpoint_path") || nestedString(resolvedActive, "checkpoint_path");
+  if (!activeModelId || !checkpointPath) {
+    return { compatible: false, reason: "stored session lacks active ConvLSTM model load metadata" };
+  }
+  return { compatible: true };
+}
+
+const activeSessionCreatePayload = (): CreateSessionRequest => ({
+  metadata: {
+    requested_forecast_mode: "active_model",
+    frontend_session_contract: ACTIVE_FORECAST_SESSION_CONTRACT
+  }
+});
 
 export const sessionClient = {
   listSessions(): Promise<SessionSummary[]> { return httpGet<SessionSummary[]>("/sessions"); },
@@ -69,19 +120,26 @@ export const sessionClient = {
     const stored = localStorage.getItem(ACTIVE_SESSION_STORAGE_KEY);
     if (stored) {
       try {
-        await this.getSession(stored);
-        return { sessionId: stored, recreatedSession: false };
+        const session = await this.getSession(stored);
+        const compatibility = activeConvLstmSessionCompatibility(session);
+        if (compatibility.compatible) {
+          return { sessionId: stored, recreatedSession: false };
+        }
+        this.clearSession();
+        const created = await this.createSession(activeSessionCreatePayload());
+        localStorage.setItem(ACTIVE_SESSION_STORAGE_KEY, created.session_id);
+        return { sessionId: created.session_id, recreatedSession: true, resetReason: compatibility.reason };
       } catch (error) {
         this.clearSession();
         const reason = error instanceof Error ? error.message : "stored session unavailable";
-        const created = await this.createSession({});
+        const created = await this.createSession(activeSessionCreatePayload());
         localStorage.setItem(ACTIVE_SESSION_STORAGE_KEY, created.session_id);
         return { sessionId: created.session_id, recreatedSession: true, resetReason: reason };
       }
     }
-    const created = await this.createSession({});
+    const created = await this.createSession(activeSessionCreatePayload());
     localStorage.setItem(ACTIVE_SESSION_STORAGE_KEY, created.session_id);
-    return { sessionId: created.session_id, recreatedSession: true, resetReason: "new session created" };
+    return { sessionId: created.session_id, recreatedSession: true, resetReason: "new active ConvLSTM session created" };
   },
   async runSessionForecast(payload: SessionPredictionRequest = {}): Promise<RunSessionForecastResult> {
     const ensured = await this.ensureSession();

@@ -76,6 +76,8 @@ class ForecastContextService:
                 "fallback_used",
                 "temporary_model_substitution",
                 "prediction_engine",
+                "input_window_source",
+                "output_source",
                 "dataset_playback_enabled",
                 "active_registry_model_id",
                 "generated_at",
@@ -91,6 +93,9 @@ class ForecastContextService:
             "situation_summary": self._nested(explanation_payload, "explanation.summary"),
         }
 
+        provenance_summary = self._as_dict(summary.get("provenance"))
+        source_summary = self._as_dict(summary.get("source"))
+
         context = self._empty_context(session_id=session_id)
         context["forecast"] = {
             "forecast_id": self._first(summary.get("forecast_id"), result.forecast_id),
@@ -98,7 +103,7 @@ class ForecastContextService:
             "issued_at": self._first(summary.get("issued_at"), result.issued_at.isoformat()),
             "status": self._derive_status(summary, explanation_payload),
             "risk_level": self._first(decision_support.get("risk_level"), "unknown"),
-            "input_source": self._first(self._nested(session_state, "input_mode"), self._nested(session_state, "runtime.input_mode"), "unknown"),
+            "input_source": self._first(provenance_summary.get("input_source"), self._nested(session_state, "input_mode"), self._nested(session_state, "runtime.input_mode"), "unknown"),
             "scenario_id": self._first(summary.get("run_name"), self._nested(session_state, "scenario_id")),
         }
 
@@ -116,8 +121,6 @@ class ForecastContextService:
             "meteorology_timestamp": self._first(self._nested(session_state, "meteorology.timestamp"), self._nested(summary, "meteorology.timestamp")),
         }
 
-        provenance_summary = self._as_dict(summary.get("provenance"))
-        source_summary = self._as_dict(summary.get("source"))
         context["source"] = {
             "latitude": self._first(source_summary.get("latitude"), self._nested(explanation_payload, "summary.source_latitude")),
             "longitude": self._first(source_summary.get("longitude"), self._nested(explanation_payload, "summary.source_longitude")),
@@ -158,6 +161,10 @@ class ForecastContextService:
             "inference_mode": provenance_summary.get("inference_mode"),
             "fallback_used": provenance_summary.get("fallback_used"),
             "dataset_playback_enabled": provenance_summary.get("dataset_playback_enabled"),
+            "input_window_source": provenance_summary.get("input_window_source"),
+            "output_source": provenance_summary.get("output_source"),
+            "temporary_model_substitution": provenance_summary.get("temporary_model_substitution"),
+            "prediction_engine": provenance_summary.get("prediction_engine"),
             "fallback_reason": provenance_summary.get("fallback_reason"),
             "active_registry_model_id": provenance_summary.get("active_registry_model_id"),
             "input_source": provenance_summary.get("input_source"),
@@ -209,8 +216,8 @@ class ForecastContextService:
             "conditions": {"wind_speed_ms": None, "wind_direction_deg": None, "wind_direction_label": None, "u10m_ms": None, "v10m_ms": None, "temperature_c": None, "humidity_pct": None, "surface_pressure_hpa": None, "pbl_height_m": None, "meteorology_source": None, "meteorology_timestamp": None},
             "source": {"latitude": None, "longitude": None, "pollutant": None, "emission_rate": None, "release_height_m": None, "duration_minutes": None, "start_time": None, "end_time": None},
             "plume_metrics": {"max_concentration": None, "mean_concentration": None, "affected_cells_above_threshold": None, "affected_area_m2": None, "affected_area_hectares": None, "dominant_spread_direction": None, "threshold_used": None, "grid_rows": None, "grid_columns": None},
-            "runtime": {"backend": None, "model_name": None, "model_source": None, "model_version": None, "forecast_source": None, "model_id": None, "model_family": "Unknown", "model_backend": None, "checkpoint_path": None, "inference_mode": "unknown", "fallback_used": False, "dataset_playback_enabled": False, "output_space": None, "input_mode": None, "prediction_trust": None, "missing_channels": [], "missing_frame_indices": [], "meteorology_available": None, "observations_available": None, "limitations": [], "fallback_reason": "forecast unavailable", "active_registry_model_id": None, "input_source": "unknown", "generated_at": None},
-            "provenance": {"forecast_source": "fallback", "model_id": None, "model_family": "Unknown", "model_backend": None, "checkpoint_path": None, "inference_mode": "unknown", "fallback_used": True, "fallback_reason": "forecast unavailable", "dataset_playback_enabled": False, "active_registry_model_id": None, "input_source": "unknown", "generated_at": None},
+            "runtime": {"backend": None, "model_name": None, "model_source": None, "model_version": None, "forecast_source": None, "model_id": None, "model_family": "Unknown", "model_backend": None, "checkpoint_path": None, "inference_mode": "unknown", "fallback_used": False, "dataset_playback_enabled": False, "input_window_source": None, "output_source": None, "temporary_model_substitution": False, "prediction_engine": None, "output_space": None, "input_mode": None, "prediction_trust": None, "missing_channels": [], "missing_frame_indices": [], "meteorology_available": None, "observations_available": None, "limitations": [], "fallback_reason": "forecast unavailable", "active_registry_model_id": None, "input_source": "unknown", "generated_at": None},
+            "provenance": {"forecast_source": "fallback", "model_id": None, "model_family": "Unknown", "model_backend": None, "checkpoint_path": None, "inference_mode": "unknown", "fallback_used": True, "fallback_reason": "forecast unavailable", "dataset_playback_enabled": False, "input_window_source": None, "output_source": None, "temporary_model_substitution": False, "prediction_engine": None, "active_registry_model_id": None, "input_source": "unknown", "generated_at": None},
             "raw": {"summary": {}, "explanation": {}, "session_state": {}, "decision_support": {}},
         }
 

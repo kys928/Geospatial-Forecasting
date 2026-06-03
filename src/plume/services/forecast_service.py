@@ -117,6 +117,8 @@ class ForecastService:
             "fallback_used",
             "temporary_model_substitution",
             "prediction_engine",
+            "input_window_source",
+            "output_source",
             "dataset_playback_enabled",
             "active_registry_model_id",
             "generated_at",

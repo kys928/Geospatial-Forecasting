@@ -233,7 +233,7 @@ class DecisionSupportService:
 
     def latest(self, session_id: str | None = None) -> DecisionSupportResponse:
         if self.forecast_context_service is not None:
-            context = self.forecast_context_service.latest(session_id=session_id, source="auto").payload
+            context = self.forecast_context_service.latest(session_id=session_id, source="session").payload
             context_ready, readiness_reason = self._is_usable_forecast_context(context if isinstance(context, dict) else None)
             if not context_ready:
                 return DecisionSupportResponse(payload={
@@ -262,13 +262,24 @@ class DecisionSupportService:
             has_plume = ("plume detected" in status.lower()) or (risk.lower() in {"medium", "high"}) or (
                 isinstance(max_concentration, (int, float)) and max_concentration > 0
             )
+            provenance = context.get("provenance", {}) if isinstance(context.get("provenance"), dict) else {}
+            runtime = context.get("runtime", {}) if isinstance(context.get("runtime"), dict) else {}
+            input_source = str(provenance.get("input_source") or forecast.get("input_source") or runtime.get("input_source") or "unknown")
+            input_note = (
+                " Input is a dataset window seed, not live sensor confirmation."
+                if input_source == "dataset_window"
+                else " Input is degraded session state, not live sensor confirmation."
+                if input_source == "degraded_session_state"
+                else ""
+            )
             if has_plume:
                 briefing = (
                     f"Plume is present with {risk} risk. Wind direction: {wind}. "
                     "Use precautionary controls based on current forecast context."
+                    f"{input_note}"
                 )
             else:
-                briefing = "No meaningful plume is currently indicated by the active forecast context."
+                briefing = "No meaningful plume is currently indicated by the active forecast context." + input_note
 
             llm_explanation, llm_attempted, llm_error = self._interpret_context_with_llm(context if isinstance(context, dict) else {})
             if llm_explanation is not None:

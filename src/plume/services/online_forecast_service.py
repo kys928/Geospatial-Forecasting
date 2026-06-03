@@ -163,6 +163,8 @@ class OnlineForecastService:
             "fallback_reason": fallback_metadata.get("fallback_reason"),
             "temporary_model_substitution": bool(forecast_metadata.get("temporary_model_substitution", False)),
             "prediction_engine": str(forecast_metadata.get("prediction_engine") or forecast_metadata.get("inference_mode") or execution_backend_name),
+            "input_window_source": forecast_metadata.get("input_window_source"),
+            "output_source": forecast_metadata.get("output_source") or ("convlstm_prediction" if execution_backend_name == "convlstm_online" and not fallback_used else None),
             "dataset_playback_enabled": False,
             "active_registry_model_id": None if fallback_used else active_model_id,
             "input_source": forecast_metadata.get("input_source") or request.metadata.get("input_source") or "unknown",

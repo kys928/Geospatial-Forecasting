@@ -127,16 +127,18 @@ export function ForecastPage() {
   const sessionBundleFeatures = Array.isArray((sessionBundleGeojson as { features?: unknown[] } | null)?.features)
     ? (sessionBundleGeojson as { features: unknown[] }).features.length
     : 0;
-  const hasUsableSelectedFrame = hasMultiFrameSession && selectedFrameFeatures > 0;
+  const hasUsableSelectedFrameGeoJson = selectedFrameFeatures > 0;
+  const hasUsableSelectedRaster = Boolean(selectedFrameRaster?.grid && selectedFrameRaster.grid.length > 0);
+  const hasUsableSelectedFrame = hasUsableSelectedRaster || hasUsableSelectedFrameGeoJson;
   const hasUsableSessionBundle = sessionBundleFeatures > 0;
   const sourceMode: "session-frame" | "session-bundle" | "none" = hasUsableSelectedFrame ? "session-frame" : hasUsableSessionBundle ? "session-bundle" : "none";
   const rasterOverlay = useMemo(
-    () => (sourceMode === "session-frame" ? buildPlumeGridRasterOverlay(selectedFrameRaster) : null),
-    [sourceMode, selectedFrameRaster]
+    () => (hasUsableSelectedRaster ? buildPlumeGridRasterOverlay(selectedFrameRaster) : null),
+    [hasUsableSelectedRaster, selectedFrameRaster]
   );
 
   const mapGeojson = sourceMode === "session-frame"
-    ? (selectedFrameGeoJson as unknown as GeoJsonFeatureCollection)
+    ? (hasUsableSelectedFrameGeoJson ? (selectedFrameGeoJson as unknown as GeoJsonFeatureCollection) : null)
     : sourceMode === "session-bundle"
       ? sessionBundleGeojson
       : null;
@@ -151,7 +153,7 @@ export function ForecastPage() {
       rasterFrameIndex: selectedFrameRaster?.frame_index ?? selectedFrameIndex,
       hasRasterOverlay: Boolean(rasterOverlay?.imageDataUrl)
     });
-  }, [mapGeojson, sourceMode, selectedFrameRaster, selectedFrameIndex, rasterOverlay]);
+  }, [mapGeojson, sourceMode, selectedFrameRaster, selectedFrameIndex, rasterOverlay, hasUsableSelectedRaster]);
 
   useEffect(() => {
     if (!import.meta.env.DEV || !hasUsableSelectedFrame) return;
@@ -183,6 +185,7 @@ export function ForecastPage() {
           <div>
             <div className="muted">Forecast mode: Live / active ConvLSTM forecast</div>
             <strong>{provenanceLabel}</strong>
+            {sessionProvenance.input_source ? <div className="muted">Input: {sessionProvenance.input_source === "dataset_window" ? "dataset window" : sessionProvenance.input_source === "degraded_session_state" ? "degraded session state" : String(sessionProvenance.input_source)}</div> : null}
           </div>
         </div>
         <ForecastMap

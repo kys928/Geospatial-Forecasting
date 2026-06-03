@@ -1412,7 +1412,7 @@ def resolve_active_model_artifact(registry_path: str | Path) -> dict[str, object
     checkpoint_path = Path(str(active_record.get("path"))).expanduser()
     if not checkpoint_path.is_absolute():
         checkpoint_path = (_repo_root() / checkpoint_path).resolve(strict=False)
-    _validate_checkpoint_readable(checkpoint_path, context="Active model")
+    _validate_checkpoint_readable(checkpoint_path, context="Active model", record=active_record)
 
     activation_event = next(
         (
@@ -2762,7 +2762,7 @@ def _validate_legacy_checkpoint_readable(path: Path, *, context: str) -> None:
         raise ValueError(f"{context} checkpoint is not readable: {path}") from exc
 
 
-def _validate_checkpoint_readable(path: Path, *, context: str) -> None:
+def _validate_checkpoint_readable(path: Path, *, context: str, record: dict[str, object] | None = None) -> None:
     if not path.exists():
         raise FileNotFoundError(f"{context} artifact missing: {path}")
     suffix = path.suffix.lower()
@@ -2774,34 +2774,63 @@ def _validate_checkpoint_readable(path: Path, *, context: str) -> None:
             raise ValueError(f"{context} checkpoint is not readable: {path}") from exc
         return
     if suffix in {".pt", ".pth"}:
-        _validate_torch_checkpoint_payload(path, context=context)
+        _validate_torch_checkpoint_payload(path, context=context, record=record)
         return
     raise ValueError(f"{context} checkpoint must be .npz, .pt, or .pth, got: {path.suffix}")
 
 
 
-def _validate_torch_checkpoint_payload(path: Path, *, context: str) -> None:
+def _torch_serving_engine(record: dict[str, object] | None) -> str | None:
+    if not isinstance(record, dict):
+        return None
+    for key in ("prediction_engine", "convlstm_prediction_engine", "serving_engine", "engine"):
+        value = record.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip().lower()
+    metadata = record.get("metadata")
+    if isinstance(metadata, dict):
+        for key in ("prediction_engine", "serving_engine"):
+            value = metadata.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip().lower()
+    return None
+
+
+def _validate_torch_checkpoint_payload(path: Path, *, context: str, record: dict[str, object] | None) -> None:
     if path.stat().st_size <= 0:
         raise ValueError(f"{context} checkpoint is empty: {path}")
+    if record is not None and _is_adaptation_candidate_record(record):
+        compatibility = check_adaptation_checkpoint_compatibility(record, require_strict_torch=True)
+        if not compatibility.compatible:
+            raise ValueError(
+                f"{context} robust adaptation checkpoint is incompatible with serving contract: "
+                + ",".join(compatibility.reasons)
+            )
+        return
+
+    engine = _torch_serving_engine(record)
+    if engine not in {"torch_multistep", "torch_robust_multistep"}:
+        raise ValueError(
+            f"{context} torch checkpoint requires explicit compatible serving engine metadata; "
+            f"got: {engine or 'missing'}"
+        )
     if importlib.util.find_spec("torch") is None:
-        payload = None
-        try:
-            payload = json.loads(path.read_text(encoding="utf-8"))
-        except Exception:  # noqa: BLE001
-            pass
-        if isinstance(payload, dict) and isinstance(payload.get("model_state_dict"), dict):
-            return
         raise ValueError(f"{context} torch checkpoint cannot be inspected because torch is not installed: {path}")
     try:
-        import torch  # type: ignore
+        if engine == "torch_robust_multistep":
+            compatibility = check_adaptation_checkpoint_compatibility({**(record or {}), "path": str(path), "contract_version": "robust_convlstm_adaptation_v1"}, require_strict_torch=True)
+            if not compatibility.compatible:
+                raise ValueError(",".join(compatibility.reasons))
+            return
+        from plume.models.torch_multistep_convlstm import TorchMultiStepConvLSTMCheckpoint
 
-        payload = torch.load(path, map_location="cpu")
+        loader = TorchMultiStepConvLSTMCheckpoint(path, device="cpu", checkpoint_strict=False)
     except Exception as exc:  # noqa: BLE001
-        raise ValueError(f"{context} torch checkpoint is not readable: {path}: {exc}") from exc
-    if not isinstance(payload, dict):
-        raise ValueError(f"{context} torch checkpoint payload must be an object: {path}")
-    if not isinstance(payload.get("model_state_dict"), dict):
-        raise ValueError(f"{context} torch checkpoint missing model_state_dict: {path}")
+        raise ValueError(f"{context} torch checkpoint is not loadable by {engine}: {path}: {exc}") from exc
+    state_metadata = loader.metadata
+    missing = state_metadata.get("load_missing_keys") if isinstance(state_metadata, dict) else None
+    if isinstance(missing, list) and missing:
+        raise ValueError(f"{context} torch checkpoint is incomplete for {engine}: missing_keys={missing[:5]}")
 
 def _is_sqlite_path(path: Path) -> bool:
     suffixes = {s.lower() for s in path.suffixes}

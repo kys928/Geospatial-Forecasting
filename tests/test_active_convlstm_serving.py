@@ -33,9 +33,9 @@ def _grid() -> GridSpec:
     return GridSpec(grid_height=2.0, grid_width=2.0, grid_center=(0.0, 0.0), grid_spacing=1.0, number_of_rows=2, number_of_columns=2, projection="EPSG:4326", boundary_limits=(-1.0, -1.0, 1.0, 1.0))
 
 
-def test_active_model_resolver_accepts_pt_checkpoint_and_resolves_absolute_path(tmp_path: Path):
-    checkpoint = tmp_path / "active.pt"
-    checkpoint.write_text(json.dumps({"model_state_dict": {"weight": []}}), encoding="utf-8")
+def test_active_model_resolver_accepts_npz_checkpoint_and_resolves_absolute_path(tmp_path: Path):
+    checkpoint = tmp_path / "active.npz"
+    np.savez(checkpoint, weights=np.zeros((1,), dtype=float))
     registry_path = tmp_path / "registry.json"
     ModelRegistry(registry_path).save({
         "active_model_id": "active-convlstm",
@@ -85,14 +85,14 @@ def test_active_model_resolver_rejects_missing_checkpoint(tmp_path: Path):
 
 def test_active_model_relative_checkpoint_resolves_from_repo_root_when_cwd_differs(monkeypatch, tmp_path: Path):
     repo_root = tmp_path / "repo"
-    checkpoint = repo_root / "artifacts" / "models" / "active.pt"
+    checkpoint = repo_root / "artifacts" / "models" / "active.npz"
     checkpoint.parent.mkdir(parents=True)
-    checkpoint.write_text(json.dumps({"model_state_dict": {"weight": []}}), encoding="utf-8")
+    np.savez(checkpoint, weights=np.zeros((1,), dtype=float))
     registry_path = repo_root / "artifacts" / "convlstm_ops" / "model_registry.json"
     ModelRegistry(registry_path).save({
         "active_model_id": "active-convlstm",
         "previous_active_model_id": None,
-        "models": [{"model_id": "active-convlstm", "status": "active", "approval_status": "approved_for_activation", "path": "artifacts/models/active.pt", "contract_version": CONVLSTM_CONTRACT_VERSION, "target_policy": "plume_only"}],
+        "models": [{"model_id": "active-convlstm", "status": "active", "approval_status": "approved_for_activation", "path": "artifacts/models/active.npz", "contract_version": CONVLSTM_CONTRACT_VERSION, "target_policy": "plume_only"}],
         "events": [],
         "approval_audit": [],
     })
@@ -341,7 +341,7 @@ def test_active_mode_session_route_loads_registry_checkpoint_and_runs_convlstm(m
     ModelRegistry(registry_path).save({
         "active_model_id": "active-convlstm",
         "previous_active_model_id": None,
-        "models": [{"model_id": "active-convlstm", "status": "active", "approval_status": "approved_for_activation", "path": str(checkpoint), "contract_version": CONVLSTM_CONTRACT_VERSION, "target_policy": "plume_only"}],
+        "models": [{"model_id": "active-convlstm", "status": "active", "approval_status": "approved_for_activation", "path": str(checkpoint), "contract_version": CONVLSTM_CONTRACT_VERSION, "target_policy": "plume_only", "prediction_engine": "torch_multistep"}],
         "events": [],
         "approval_audit": [],
     })
@@ -383,6 +383,9 @@ convlstm_device: cpu
     assert provenance["fallback_used"] is False
     assert provenance["dataset_playback_enabled"] is False
     assert provenance["input_source"] == "dataset_window"
+    assert provenance["input_window_source"] == "dataset_scenario_service"
+    assert provenance["output_source"] == "convlstm_prediction"
+    assert provenance["temporary_model_substitution"] is False
     assert provenance["model_id"] == "active-convlstm"
     assert provenance["checkpoint_path"] == str(checkpoint)
 
@@ -520,3 +523,76 @@ def test_session_active_convlstm_provenance_has_no_substitution(monkeypatch):
     assert result.execution_metadata["model_id"] == "active-1"
     assert result.execution_metadata["checkpoint_path"] == "/models/active.pt"
     assert result.execution_metadata["inference_mode"] == "torch_robust_multistep"
+
+
+class _PredictErrorRuntime:
+    def __init__(self, exc: Exception):
+        self.exc = exc
+
+    def predict_session(self, *, session_id: str, payload: dict | None = None):
+        raise self.exc
+
+
+def test_predict_route_returns_structured_503_for_convlstm_input_unavailable():
+    app = FastAPI()
+    register_session_routes(
+        app,
+        runtime_client=_PredictErrorRuntime(RuntimeError("ConvLSTM input unavailable: dataset window missing")),
+        forecast_service=_ForecastService(),
+        export_service=_ExportService(),
+        explain_service=None,
+    )
+
+    response = TestClient(app).post("/sessions/session-1/predict", json={})
+
+    assert response.status_code == 503
+    detail = response.json()["detail"]
+    assert detail["code"] == "active_convlstm_unavailable"
+    assert detail["message"] == "ConvLSTM input unavailable: dataset window missing"
+    assert detail["backend"] == "convlstm_online"
+    assert detail["forecast_source"] == "active_model_inference"
+    assert detail["fallback_used"] is False
+
+
+def test_predict_route_classifies_checkpoint_value_error_as_503_not_bad_payload():
+    app = FastAPI()
+    register_session_routes(
+        app,
+        runtime_client=_PredictErrorRuntime(ValueError("Active model contract version is incompatible with serving contract")),
+        forecast_service=_ForecastService(),
+        export_service=_ExportService(),
+        explain_service=None,
+    )
+
+    response = TestClient(app).post("/sessions/session-1/predict", json={})
+
+    assert response.status_code == 503
+    detail = response.json()["detail"]
+    assert detail["code"] == "active_convlstm_contract_mismatch"
+    assert "contract version" in detail["message"]
+    assert detail["fallback_used"] is False
+
+
+def test_active_registry_bad_pt_with_model_state_but_no_engine_is_rejected(tmp_path: Path):
+    pytest = __import__("pytest")
+    torch = pytest.importorskip("torch")
+    checkpoint = tmp_path / "bad_model_state.pt"
+    torch.save({"model_state_dict": {}}, checkpoint)
+    registry_path = tmp_path / "registry.json"
+    ModelRegistry(registry_path).save({
+        "active_model_id": "bad-active",
+        "previous_active_model_id": None,
+        "models": [{
+            "model_id": "bad-active",
+            "status": "active",
+            "approval_status": "approved_for_activation",
+            "path": str(checkpoint),
+            "contract_version": CONVLSTM_CONTRACT_VERSION,
+            "target_policy": "plume_only",
+        }],
+        "events": [],
+        "approval_audit": [],
+    })
+
+    with pytest.raises(ValueError, match="explicit compatible serving engine metadata"):
+        resolve_active_model_artifact(registry_path)

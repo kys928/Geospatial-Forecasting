@@ -245,7 +245,13 @@ export function DecisionSupportPage() {
     const plumeLine = plumePresent ? `Predicted plume intensity remains limited with peak score near ${formatNumber(maxConcentration)} and spread trending ${formatDirection(dominantSpreadDirection)}.` : "The plume signal remains limited in this forecast window.";
     const provenance = context?.provenance ?? {};
     const activeConvLstm = provenance.forecast_source === "active_model_inference" && provenance.model_family === "ConvLSTM" && provenance.fallback_used !== true;
-    const limitationLine = activeConvLstm ? "This briefing is grounded in the active ConvLSTM session forecast context." : "Active ConvLSTM forecast context is unavailable or not confirmed by provenance.";
+    const inputSource = String(provenance.input_source ?? ctxForecast.input_source ?? "unknown");
+    const inputLine = inputSource === "dataset_window"
+      ? "Input is a dataset window seed, not live sensor confirmation."
+      : inputSource === "degraded_session_state"
+        ? "Input is degraded session state, not live sensor confirmation."
+        : "Input source is current session observations or configured session context.";
+    const limitationLine = activeConvLstm ? `This briefing is grounded in the active ConvLSTM session forecast context. ${inputLine}` : "Active ConvLSTM forecast context is unavailable or not confirmed by provenance.";
     return cleanAssistantText(`Scenario ${scenarioName} is currently ${riskLevel.toLowerCase()} risk with status ${status}. ${windLine} ${plumeLine} ${sourceLine} ${limitationLine}`);
   };
 
