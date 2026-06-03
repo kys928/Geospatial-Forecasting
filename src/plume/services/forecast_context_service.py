@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from typing import Any, Literal
 
 from plume.services.explanation_payloads import build_explanation_payload
+from plume.services.metadata_utils import CONDITION_FIELDS, json_safe, normalize_conditions, normalize_source
 
 
 @dataclass
@@ -54,7 +55,9 @@ class ForecastContextService:
         except Exception:  # noqa: BLE001
             explanation_payload = {}
 
-        execution_metadata = self._as_dict(getattr(result, "execution_metadata", {}))
+        execution_metadata = self._as_dict(json_safe(getattr(result, "execution_metadata", {})))
+        forecast_object = getattr(result, "forecast", None)
+        forecast_object_metadata = self._as_dict(json_safe(getattr(forecast_object, "metadata", {})))
 
         summary = self._as_dict(execution_metadata.get("summary"))
         if not summary:
@@ -68,9 +71,12 @@ class ForecastContextService:
                 "summary_statistics": result.summary_statistics,
             }
 
-        forecast_metadata = self._as_dict(summary.get("forecast_metadata"))
-        if not forecast_metadata:
-            forecast_metadata = self._as_dict(execution_metadata.get("forecast_metadata"))
+        forecast_metadata = self._merge_dict_candidates(
+            summary.get("forecast_metadata"),
+            execution_metadata.get("forecast_metadata"),
+            forecast_object_metadata,
+            getattr(result, "metadata", None),
+        )
 
         provenance_keys = (
             "forecast_source",
@@ -95,42 +101,54 @@ class ForecastContextService:
             provenance_summary = self._as_dict(execution_metadata.get("provenance"))
         if not provenance_summary:
             provenance_summary = {
-                key: forecast_metadata.get(key)
-                for key in provenance_keys
-                if forecast_metadata.get(key) is not None
-            }
-        if not provenance_summary:
-            provenance_summary = {
                 key: execution_metadata.get(key)
                 for key in provenance_keys
                 if execution_metadata.get(key) is not None
             }
+        if not provenance_summary:
+            provenance_summary = {
+                key: forecast_metadata.get(key)
+                for key in provenance_keys
+                if forecast_metadata.get(key) is not None
+            }
+        if bool(execution_metadata.get("fallback_used")):
+            provenance_summary = {
+                **provenance_summary,
+                "forecast_source": "fallback",
+                "fallback_used": True,
+                "fallback_reason": execution_metadata.get("fallback_reason") or provenance_summary.get("fallback_reason"),
+                "model_family": execution_metadata.get("model_family") or "GaussianFallback",
+                "model_id": None,
+                "checkpoint_path": None,
+            }
         if provenance_summary and "provenance" not in summary:
             summary["provenance"] = provenance_summary
 
-        source_summary = self._as_dict(summary.get("source"))
-        if not source_summary:
-            source_summary = self._as_dict(forecast_metadata.get("source"))
-        if not source_summary:
-            source_summary = self._as_dict(execution_metadata.get("source"))
+        source_summary = normalize_source(
+            summary.get("source"),
+            forecast_metadata.get("source"),
+            execution_metadata.get("source"),
+            forecast_object_metadata.get("source"),
+        )
 
-        meteorology_summary = self._as_dict(summary.get("meteorology"))
-        if not meteorology_summary:
-            meteorology_summary = self._as_dict(summary.get("conditions"))
-        if not meteorology_summary:
-            meteorology_summary = self._as_dict(forecast_metadata.get("conditions"))
-        if not meteorology_summary:
-            meteorology_summary = self._as_dict(forecast_metadata.get("meteorology"))
-        if not meteorology_summary:
-            meteorology_summary = self._as_dict(execution_metadata.get("conditions"))
-        if not meteorology_summary:
-            meteorology_summary = self._as_dict(execution_metadata.get("meteorology"))
+        meteorology_summary = normalize_conditions(
+            summary.get("forecast_metadata"),
+            execution_metadata.get("forecast_metadata"),
+            forecast_object_metadata,
+            summary.get("conditions"),
+            summary.get("meteorology"),
+            forecast_metadata.get("conditions"),
+            forecast_metadata.get("meteorology"),
+            execution_metadata.get("conditions"),
+            execution_metadata.get("meteorology"),
+        )
 
-        raw_reference_summary = self._as_dict(summary.get("raw_reference"))
-        if not raw_reference_summary:
-            raw_reference_summary = self._as_dict(forecast_metadata.get("raw_reference"))
-        if not raw_reference_summary:
-            raw_reference_summary = self._as_dict(execution_metadata.get("raw_reference"))
+        raw_reference_summary = self._merge_dict_candidates(
+            summary.get("raw_reference"),
+            forecast_metadata.get("raw_reference"),
+            execution_metadata.get("raw_reference"),
+            forecast_object_metadata.get("raw_reference"),
+        )
 
         decision_support = {
             "risk_level": self._nested(explanation_payload, "explanation.risk_level") or "unknown",
@@ -153,103 +171,26 @@ class ForecastContextService:
             "scenario_id": self._first(summary.get("run_name"), self._nested(session_state, "scenario_id")),
         }
 
-        context["conditions"] = {
-            "wind_speed_ms": self._first(
-                self._nested(session_state, "meteorology.wind_speed_ms"),
-                meteorology_summary.get("wind_speed_ms"),
-                self._nested(summary, "meteorology.wind_speed_ms"),
-                self._nested(execution_metadata, "meteorology.wind_speed_ms"),
-            ),
-            "wind_direction_deg": self._first(
-                self._nested(session_state, "meteorology.wind_direction_deg"),
-                meteorology_summary.get("wind_direction_deg"),
-                self._nested(summary, "meteorology.wind_direction_deg"),
-                self._nested(execution_metadata, "meteorology.wind_direction_deg"),
-            ),
-            "wind_direction_label": self._first(
-                self._nested(session_state, "meteorology.wind_direction_label"),
-                meteorology_summary.get("wind_direction_label"),
-                self._nested(summary, "meteorology.wind_direction_label"),
-                self._nested(execution_metadata, "meteorology.wind_direction_label"),
-            ),
-            "u10m_ms": self._first(
-                self._nested(session_state, "meteorology.u10m_ms"),
-                meteorology_summary.get("u10m_ms"),
-                self._nested(summary, "meteorology.u10m_ms"),
-                self._nested(execution_metadata, "meteorology.u10m_ms"),
-            ),
-            "v10m_ms": self._first(
-                self._nested(session_state, "meteorology.v10m_ms"),
-                meteorology_summary.get("v10m_ms"),
-                self._nested(summary, "meteorology.v10m_ms"),
-                self._nested(execution_metadata, "meteorology.v10m_ms"),
-            ),
-            "temperature_c": self._first(
-                self._nested(session_state, "meteorology.temperature_c"),
-                meteorology_summary.get("temperature_c"),
-                self._nested(summary, "meteorology.temperature_c"),
-                self._nested(execution_metadata, "meteorology.temperature_c"),
-            ),
-            "humidity_pct": self._first(
-                self._nested(session_state, "meteorology.humidity_pct"),
-                meteorology_summary.get("humidity_pct"),
-                self._nested(summary, "meteorology.humidity_pct"),
-                self._nested(execution_metadata, "meteorology.humidity_pct"),
-            ),
-            "surface_pressure_hpa": self._first(
-                self._nested(session_state, "meteorology.surface_pressure_hpa"),
-                meteorology_summary.get("surface_pressure_hpa"),
-                self._nested(summary, "meteorology.surface_pressure_hpa"),
-                self._nested(execution_metadata, "meteorology.surface_pressure_hpa"),
-            ),
-            "pbl_height_m": self._first(
-                self._nested(session_state, "meteorology.pbl_height_m"),
-                meteorology_summary.get("pbl_height_m"),
-                self._nested(summary, "meteorology.pbl_height_m"),
-                self._nested(execution_metadata, "meteorology.pbl_height_m"),
-            ),
-            "meteorology_source": self._first(
-                self._nested(session_state, "meteorology_source_kind"),
-                meteorology_summary.get("source"),
-                meteorology_summary.get("meteorology_source"),
-                self._nested(summary, "meteorology.source"),
-                self._nested(execution_metadata, "meteorology.source"),
-                self._nested(execution_metadata, "meteorology.meteorology_source"),
-            ),
-            "meteorology_timestamp": self._first(
-                self._nested(session_state, "meteorology.timestamp"),
-                meteorology_summary.get("timestamp"),
-                meteorology_summary.get("meteorology_timestamp"),
-                self._nested(summary, "meteorology.timestamp"),
-                self._nested(execution_metadata, "meteorology.timestamp"),
-                self._nested(execution_metadata, "meteorology.meteorology_timestamp"),
-            ),
-        }
+        context["conditions"] = {field: meteorology_summary.get(field) for field in CONDITION_FIELDS}
+
+        missing_condition_fields = [
+            field
+            for field, value in context["conditions"].items()
+            if value is None and field not in {"wind_direction_label", "meteorology_source", "meteorology_timestamp"}
+        ]
+
 
         context["source"] = {
-            "latitude": self._first(
-                source_summary.get("latitude"),
-                source_summary.get("lat"),
-                self._nested(execution_metadata, "source.latitude"),
-                self._nested(execution_metadata, "source.lat"),
-                self._nested(explanation_payload, "summary.source_latitude"),
-            ),
-            "longitude": self._first(
-                source_summary.get("longitude"),
-                source_summary.get("lon"),
-                source_summary.get("lng"),
-                self._nested(execution_metadata, "source.longitude"),
-                self._nested(execution_metadata, "source.lon"),
-                self._nested(execution_metadata, "source.lng"),
-                self._nested(explanation_payload, "summary.source_longitude"),
-            ),
-            "pollutant": self._first(source_summary.get("pollutant"), self._nested(summary, "pollutant")),
-            "emission_rate": self._first(source_summary.get("emission_rate"), self._nested(summary, "emission_rate"), self._nested(summary, "emissions_rate")),
-            "release_height_m": self._first(source_summary.get("release_height_m"), self._nested(summary, "release_height_m")),
-            "duration_minutes": self._first(source_summary.get("duration_minutes"), self._nested(summary, "duration_minutes")),
-            "start_time": self._first(source_summary.get("start_time"), self._nested(summary, "start_time"), self._nested(summary, "start"), raw_reference_summary.get("window_start")),
-            "end_time": self._first(source_summary.get("end_time"), self._nested(summary, "end_time"), self._nested(summary, "end"), raw_reference_summary.get("window_end")),
+            "latitude": source_summary.get("latitude"),
+            "longitude": source_summary.get("longitude"),
+            "pollutant": source_summary.get("pollutant"),
+            "emission_rate": source_summary.get("emission_rate"),
+            "release_height_m": source_summary.get("release_height_m"),
+            "duration_minutes": source_summary.get("duration_minutes"),
+            "start_time": self._first(source_summary.get("start_time"), raw_reference_summary.get("window_start")),
+            "end_time": self._first(source_summary.get("end_time"), raw_reference_summary.get("window_end")),
         }
+
 
         stats = self._as_dict(summary.get("summary_statistics"))
         context["plume_metrics"] = {
@@ -293,6 +234,7 @@ class ForecastContextService:
             "prediction_trust": self._nested(session_state, "prediction_trust"),
             "missing_channels": [str(v) for v in missing_channels],
             "missing_frame_indices": [int(v) for v in missing_frame_indices if isinstance(v, int) or (isinstance(v, str) and v.isdigit())],
+            "missing_condition_fields": missing_condition_fields,
             "meteorology_available": self._derive_meteorology_available(session_state, context["conditions"]),
             "observations_available": self._derive_observations_available(session_state),
             "limitations": self._derive_limitations(session_state, missing_channels, context["conditions"]),
@@ -309,7 +251,7 @@ class ForecastContextService:
             "forecast_metadata": forecast_metadata,
             "raw_reference": raw_reference_summary,
         }
-        return ForecastContextResponse(payload=context)
+        return ForecastContextResponse(payload=json_safe(context))
 
     def _dataset_context(self, *, require_playback_enabled: bool) -> dict[str, object] | None:
         service = self.dataset_scenario_service
@@ -339,13 +281,24 @@ class ForecastContextService:
             "conditions": {"wind_speed_ms": None, "wind_direction_deg": None, "wind_direction_label": None, "u10m_ms": None, "v10m_ms": None, "temperature_c": None, "humidity_pct": None, "surface_pressure_hpa": None, "pbl_height_m": None, "meteorology_source": None, "meteorology_timestamp": None},
             "source": {"latitude": None, "longitude": None, "pollutant": None, "emission_rate": None, "release_height_m": None, "duration_minutes": None, "start_time": None, "end_time": None},
             "plume_metrics": {"max_concentration": None, "mean_concentration": None, "affected_cells_above_threshold": None, "affected_area_m2": None, "affected_area_hectares": None, "dominant_spread_direction": None, "threshold_used": None, "grid_rows": None, "grid_columns": None},
-            "runtime": {"backend": None, "model_name": None, "model_source": None, "model_version": None, "forecast_source": None, "model_id": None, "model_family": "Unknown", "model_backend": None, "checkpoint_path": None, "inference_mode": "unknown", "fallback_used": False, "dataset_playback_enabled": False, "input_window_source": None, "output_source": None, "temporary_model_substitution": False, "prediction_engine": None, "output_space": None, "input_mode": None, "prediction_trust": None, "missing_channels": [], "missing_frame_indices": [], "meteorology_available": None, "observations_available": None, "limitations": [], "fallback_reason": "forecast unavailable", "active_registry_model_id": None, "input_source": "unknown", "generated_at": None},
+            "runtime": {"backend": None, "model_name": None, "model_source": None, "model_version": None, "forecast_source": None, "model_id": None, "model_family": "Unknown", "model_backend": None, "checkpoint_path": None, "inference_mode": "unknown", "fallback_used": False, "dataset_playback_enabled": False, "input_window_source": None, "output_source": None, "temporary_model_substitution": False, "prediction_engine": None, "output_space": None, "input_mode": None, "prediction_trust": None, "missing_channels": [], "missing_frame_indices": [], "missing_condition_fields": [], "meteorology_available": None, "observations_available": None, "limitations": [], "fallback_reason": "forecast unavailable", "active_registry_model_id": None, "input_source": "unknown", "generated_at": None},
             "provenance": {"forecast_source": "fallback", "model_id": None, "model_family": "Unknown", "model_backend": None, "checkpoint_path": None, "inference_mode": "unknown", "fallback_used": True, "fallback_reason": "forecast unavailable", "dataset_playback_enabled": False, "input_window_source": None, "output_source": None, "temporary_model_substitution": False, "prediction_engine": None, "active_registry_model_id": None, "input_source": "unknown", "generated_at": None},
             "raw": {"summary": {}, "explanation": {}, "session_state": {}, "decision_support": {}, "execution_metadata": {}, "raw_reference": {}},
         }
 
     @staticmethod
+    def _merge_dict_candidates(*values: Any) -> dict[str, Any]:
+        merged: dict[str, Any] = {}
+        for value in values:
+            value = json_safe(value)
+            if not isinstance(value, dict) or not value:
+                continue
+            merged.update(value)
+        return merged
+
+    @staticmethod
     def _as_dict(value: Any) -> dict[str, Any]:
+        value = json_safe(value)
         return value if isinstance(value, dict) else {}
 
     @staticmethod
