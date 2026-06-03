@@ -28,22 +28,17 @@ import {
 import { hasMeaningfulPlume } from "../features/decision-support/plumeLogic";
 import { isUsableForecastContext } from "../features/decision-support/contextReadiness";
 import type {
-  ActiveDatasetScenarioResponse,
   ChatMessage,
-  DatasetPlaybackState,
-  DatasetScenarioPreview,
   DecisionSupportLatest,
   ForecastContextResponse
 } from "../features/decision-support/types";
 
 export function DecisionSupportPage() {
-  const { activeSessionId, latestForecastBundle } = useSessionForecastView();
+  const { activeSessionId, latestForecastBundle, setActiveSessionId, setLatestForecastBundle } = useSessionForecastView();
   const [data, setData] = useState<DecisionSupportLatest | null>(null);
   const [context, setContext] = useState<ForecastContextResponse | null>(null);
   const [, setSession] = useState<SessionDetail | null>(null);
-  const [datasetScenarios, setDatasetScenarios] = useState<DatasetScenarioPreview[]>([]);
   const [activeScenario, setActiveScenario] = useState<string>("");
-  const [datasetModeEnabled, setDatasetModeEnabled] = useState(false);
   const [, setSessionState] = useState<SessionStateSummary | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [llmWarning, setLlmWarning] = useState<string | null>(null);
@@ -71,25 +66,43 @@ export function DecisionSupportPage() {
   });
   const threadRef = useRef<HTMLDivElement>(null);
   const lastBriefingKeyRef = useRef<string | null>(null);
+  const contextBootstrapInFlightRef = useRef(false);
+
+  const disableDatasetPlayback = () => httpPost("/forecast-context/dataset-playback/state", { enabled: false, playback_running: false });
 
   useEffect(() => {
-    Promise.all([
-      httpGet<{ enabled: boolean; scenarios: DatasetScenarioPreview[] }>("/forecast-context/dataset-scenarios"),
-      httpGet<ActiveDatasetScenarioResponse>("/forecast-context/dataset-scenarios/active"),
-      httpGet<DatasetPlaybackState>("/forecast-context/dataset-playback/state")
-    ])
-      .then(([listResp, activeResp, playback]) => {
-        const scenarios = Array.isArray(listResp.scenarios) ? listResp.scenarios : [];
-        setDatasetScenarios(scenarios);
-        setDatasetModeEnabled(Boolean(playback.enabled));
-        const selectedId = playback.active_scenario_id ?? activeResp.selected_scenario_id ?? activeResp.active_scenario_id ?? scenarios[0]?.scenario_id ?? "";
-        setActiveScenario(selectedId);
-        const contextUrl = playback.enabled ? "/forecast-context/latest?source=dataset" : "/forecast-context/latest";
-        void httpGet<ForecastContextResponse>(contextUrl).then(setContext).catch(() => setContext(null));
-        setIsContextLoading(true);
-      })
-      .catch(() => setDatasetScenarios([]));
-  }, []);
+    if (contextBootstrapInFlightRef.current) return;
+    contextBootstrapInFlightRef.current = true;
+    setIsContextLoading(true);
+    const loadActiveContext = async () => {
+      try {
+        let sessionId = activeSessionId;
+        if (!sessionId || !latestForecastBundle) {
+          await disableDatasetPlayback();
+          const runResult = await sessionClient.runSessionForecast({ metadata: { requested_forecast_mode: "active_model", requested_by: "forecast_overview" } });
+          const bundle = await sessionClient.getLatestForecastBundle(runResult.sessionId, { includeExplanation: false });
+          setActiveSessionId(runResult.sessionId);
+          setLatestForecastBundle(runResult.sessionId, bundle);
+          sessionId = runResult.sessionId;
+        }
+        const contextUrl = sessionId
+          ? `/forecast-context/latest?source=session&session_id=${encodeURIComponent(sessionId)}`
+          : "/forecast-context/latest?source=session";
+        const latestContext = await httpGet<ForecastContextResponse>(contextUrl);
+        setContext(latestContext);
+        const scenarioId = safeText(latestContext.forecast?.scenario_id, "");
+        setActiveScenario(scenarioId);
+        setError(null);
+      } catch (error) {
+        setContext(null);
+        setError(`Active ConvLSTM unavailable: ${error instanceof Error ? error.message : "forecast context unavailable"}`);
+      } finally {
+        setIsContextLoading(false);
+        contextBootstrapInFlightRef.current = false;
+      }
+    };
+    void loadActiveContext();
+  }, [activeSessionId, latestForecastBundle, setActiveSessionId, setLatestForecastBundle]);
 
   useEffect(() => {
     if (!activeSessionId) {
@@ -108,8 +121,8 @@ export function DecisionSupportPage() {
       });
   }, [activeSessionId]);
 
-  const explanation = datasetModeEnabled ? {} : (latestForecastBundle?.explanation ?? {});
-  const summary = datasetModeEnabled ? {} : (latestForecastBundle?.summary ?? {});
+  const explanation = latestForecastBundle?.explanation ?? {};
+  const summary = latestForecastBundle?.summary ?? {};
 
   useEffect(() => {
     try {
@@ -122,7 +135,7 @@ export function DecisionSupportPage() {
     thread.scrollTop = thread.scrollHeight;
   }, [messages]);
 
-  const hasContext = Boolean(latestForecastBundle || data || context || activeScenario || datasetScenarios.length);
+  const hasContext = Boolean(latestForecastBundle || data || context || activeScenario);
   const values = summary as Record<string, unknown>;
   const ctxForecast = context?.forecast ?? {};
   const ctxConditions = context?.conditions ?? {};
@@ -249,16 +262,24 @@ export function DecisionSupportPage() {
     const candidateBriefing = safeText(briefingText, "");
     if (candidateBriefing && candidateBriefing.length > 40 && !/\b\d+[\d,]*\s+grid cells?\b/i.test(candidateBriefing)) return cleanAssistantText(candidateBriefing);
     const status = formatUnknown(ctxForecast.status) || plumeStatus;
-    const scenarioName = datasetScenarios.find((item) => item.scenario_id === activeScenario)?.label ?? safeText(ctxForecast.scenario_id, "current scenario");
+    const scenarioName = safeText(ctxForecast.scenario_id, activeScenario || "current scenario");
     const windLine = windSpeed !== "Unavailable" && windDirection !== "Unavailable" ? `Wind is ${windDirection} at ${windSpeed}.` : "Wind details are partially available from current context.";
     const sourceLine = sourceLocation ? `The modeled source location is ${sourceLocation}.` : "Source location is not fully configured in this context.";
     const plumeLine = plumePresent ? `Predicted plume intensity remains limited with peak score near ${formatNumber(maxConcentration)} and spread trending ${formatDirection(dominantSpreadDirection)}.` : "The plume signal remains limited in this forecast window.";
-    const limitationLine = "This is demo dataset playback and model-based guidance, not live sensor-confirmed field truth.";
+    const provenance = context?.provenance ?? {};
+    const activeConvLstm = provenance.forecast_source === "active_model_inference" && provenance.model_family === "ConvLSTM" && provenance.fallback_used !== true;
+    const inputSource = String(provenance.input_source ?? ctxForecast.input_source ?? "unknown");
+    const inputLine = inputSource === "dataset_window"
+      ? "Input is a dataset window seed, not live sensor confirmation."
+      : inputSource === "degraded_session_state"
+        ? "Input is degraded session state, not live sensor confirmation."
+        : "Input source is current session observations or configured session context.";
+    const limitationLine = activeConvLstm ? `This briefing is grounded in the active ConvLSTM session forecast context. ${inputLine}` : "Active ConvLSTM forecast context is unavailable or not confirmed by provenance.";
     return cleanAssistantText(`Scenario ${scenarioName} is currently ${riskLevel.toLowerCase()} risk with status ${status}. ${windLine} ${plumeLine} ${sourceLine} ${limitationLine}`);
   };
 
   const briefingKey = String(activeScenario || ctxForecast.scenario_id || ctxForecast.forecast_id || forecastTime || "default");
-  const scenarioLabel = datasetScenarios.find((item) => item.scenario_id === activeScenario)?.label ?? safeText(ctxForecast.scenario_id, "Scenario");
+  const scenarioLabel = safeText(ctxForecast.scenario_id, activeScenario || "Scenario");
 
   useEffect(() => {
     if (!hasContext || !isContextReady) {
@@ -288,18 +309,9 @@ export function DecisionSupportPage() {
       });
   }, [briefingKey, hasContext, isContextReady, data?.briefing, scenarioLabel]);
 
-  async function activateDatasetScenario(scenarioId: string) {
-    setActiveScenario(scenarioId);
-    setIsContextLoading(true);
-    try {
-      await httpPost(`/forecast-context/dataset-scenarios/${scenarioId}/activate`, {});
-      await httpPost("/forecast-context/dataset-playback/state", { enabled: true, active_scenario_id: scenarioId, playback_running: false });
-      const refreshed = await httpGet<ForecastContextResponse>("/forecast-context/latest?source=dataset");
-      setContext(refreshed);
-      setDatasetModeEnabled(true);
-    } catch {
-      // ignore
-    }
+  async function activateDatasetScenario(_scenarioId: string) {
+    // Dataset playback is not part of the normal Forecast Overview workflow.
+    return Promise.resolve();
   }
 
   async function sendQuestion(question: string) {
@@ -329,7 +341,7 @@ export function DecisionSupportPage() {
     {error ? <section className="panel"><p>{error}</p></section> : null}
     <div className="decision-support-layout">
       <DecisionChatPanel hasContext={hasContext && !isContextLoading} llmWarning={llmWarning} messages={messages} chatQuestion={chatQuestion} setChatQuestion={setChatQuestion} sendQuestion={sendQuestion} threadRef={threadRef} loadingMessage={isContextLoading ? "Loading forecast context..." : undefined} />
-      <ConditionsPanel datasetScenarios={datasetScenarios} activeScenario={activeScenario} activateDatasetScenario={activateDatasetScenario} currentConditionsRows={currentConditionsRows} currentForecastRows={currentForecastRows} plumePresent={plumePresent} plumeDetailRows={plumeDetailRows} detailsRows={detailsRows} filterAvailableRows={filterAvailableRows} rawContext={rawContext} />
+      <ConditionsPanel datasetScenarios={[]} activeScenario={activeScenario} activateDatasetScenario={activateDatasetScenario} currentConditionsRows={currentConditionsRows} currentForecastRows={currentForecastRows} plumePresent={plumePresent} plumeDetailRows={plumeDetailRows} detailsRows={detailsRows} filterAvailableRows={filterAvailableRows} rawContext={rawContext} />
     </div>
   </AppShell>;
 }

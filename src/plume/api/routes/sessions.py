@@ -10,6 +10,46 @@ from plume.services.explanation_payloads import build_explanation_payload
 from plume.api.schemas import ObservationIngestRequest, SessionCreateRequest, SessionPredictionRequest
 
 
+def _backend_error_detail(exc: Exception) -> dict[str, object]:
+    message = str(exc) or exc.__class__.__name__
+    code = "active_convlstm_unavailable"
+    lowered = message.lower()
+    if "contract" in lowered:
+        code = "active_convlstm_contract_mismatch"
+    elif "checkpoint" in lowered or "artifact" in lowered:
+        code = "active_convlstm_checkpoint_unavailable"
+    return {
+        "code": code,
+        "message": message,
+        "backend": "convlstm_online",
+        "forecast_source": "active_model_inference",
+        "fallback_used": False,
+    }
+
+
+def _is_active_convlstm_unavailable_error(exc: Exception) -> bool:
+    if isinstance(exc, (FileNotFoundError, ModuleNotFoundError, RuntimeError)):
+        return True
+    if not isinstance(exc, ValueError):
+        return False
+    message = str(exc).lower()
+    backend_markers = (
+        "convlstm",
+        "active model",
+        "active registry",
+        "checkpoint",
+        "contract",
+        "torch",
+        "artifact",
+        "tensor",
+        "state_dict",
+        "robust",
+        "input unavailable",
+        "missing active",
+        "shape mismatch",
+    )
+    return any(marker in message for marker in backend_markers)
+
 def _session_response(session) -> dict[str, object]:
     return {
         "session_id": session.session_id,
@@ -56,7 +96,10 @@ def register_session_routes(
     @app.post("/sessions")
     def create_session(payload: SessionCreateRequest | None = None):
         payload = (payload.model_dump(exclude_none=True) if payload is not None else {})
-        session = runtime_client.create_session(payload)
+        try:
+            session = runtime_client.create_session(payload)
+        except (FileNotFoundError, ModuleNotFoundError, RuntimeError, ValueError) as exc:
+            raise HTTPException(status_code=503, detail=_backend_error_detail(exc)) from exc
         return _session_response(session)
 
     @app.get("/sessions")
@@ -137,8 +180,14 @@ def register_session_routes(
             )
         except KeyError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
-        except (TypeError, ValueError) as exc:
+        except TypeError as exc:
             raise HTTPException(status_code=400, detail=f"Invalid prediction payload: {exc}") from exc
+        except ValueError as exc:
+            if _is_active_convlstm_unavailable_error(exc):
+                raise HTTPException(status_code=503, detail=_backend_error_detail(exc)) from exc
+            raise HTTPException(status_code=400, detail=f"Invalid prediction payload: {exc}") from exc
+        except (FileNotFoundError, ModuleNotFoundError, RuntimeError) as exc:
+            raise HTTPException(status_code=503, detail=_backend_error_detail(exc)) from exc
 
         return forecast_service.summarize_forecast(result)
 
@@ -177,7 +226,7 @@ def register_session_routes(
             "frame_indices": indices,
             "default_frame_index": 0,
             "shape": shape,
-            "metadata": {**(result.forecast.metadata if isinstance(result.forecast.metadata, dict) else {}), "provenance": {key: result.execution_metadata.get(key) for key in ("forecast_source", "model_id", "model_family", "model_backend", "checkpoint_path", "inference_mode", "fallback_used", "dataset_playback_enabled", "active_registry_model_id", "generated_at", "fallback_reason", "input_source")}},
+            "metadata": {**(result.forecast.metadata if isinstance(result.forecast.metadata, dict) else {}), "provenance": {key: result.execution_metadata.get(key) for key in ("forecast_source", "model_id", "model_family", "model_backend", "checkpoint_path", "inference_mode", "fallback_used", "temporary_model_substitution", "prediction_engine", "input_window_source", "output_source", "dataset_playback_enabled", "active_registry_model_id", "generated_at", "fallback_reason", "input_source")}},
         }
 
     @app.get("/sessions/{session_id}/forecast/latest/frames/{frame_index}/summary")
@@ -224,7 +273,7 @@ def register_session_routes(
                 "model": frame_result.model_name,
                 "model_version": frame_result.model_version,
                 "georeferencing_note": raster_metadata.get("georeferencing_note"),
-                "provenance": {key: frame_result.execution_metadata.get(key) for key in ("forecast_source", "model_id", "model_family", "model_backend", "checkpoint_path", "inference_mode", "fallback_used", "dataset_playback_enabled", "active_registry_model_id", "generated_at", "fallback_reason", "input_source")},
+                "provenance": {key: frame_result.execution_metadata.get(key) for key in ("forecast_source", "model_id", "model_family", "model_backend", "checkpoint_path", "inference_mode", "fallback_used", "temporary_model_substitution", "prediction_engine", "input_window_source", "output_source", "dataset_playback_enabled", "active_registry_model_id", "generated_at", "fallback_reason", "input_source")},
             },
         }
 

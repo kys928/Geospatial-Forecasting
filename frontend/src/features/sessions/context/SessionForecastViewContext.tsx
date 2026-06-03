@@ -42,7 +42,10 @@ export function SessionForecastViewProvider({ children }: { children: ReactNode 
 
   const setLatestForecastBundle = useCallback(
     (sessionId: string | null, bundle: SessionForecastBundle | null) => {
-      if (sessionId !== activeSessionId) {
+      if (sessionId && sessionId !== activeSessionId) {
+        setActiveSessionIdState(sessionId);
+      }
+      if (!sessionId && activeSessionId) {
         return;
       }
       setLatestForecastBundleState(bundle);
