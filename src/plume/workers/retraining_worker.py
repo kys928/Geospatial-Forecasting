@@ -16,6 +16,7 @@ from plume.services.convlstm_operations import (
     register_candidate_from_run,
     run_adaptation_retraining_job,
     run_local_retraining_job,
+    maybe_enqueue_automatic_adaptation_job,
 )
 
 
@@ -45,9 +46,24 @@ def run_retraining_worker_once(
             }
         }
 
+    auto_enqueue_info: dict[str, object] = {}
+    if (config_dir / "adaptation.yaml").exists():
+        try:
+            auto_enqueue_info = {
+                "auto_enqueue": maybe_enqueue_automatic_adaptation_job(
+                    job_store=job_store,
+                    event_log=event_log,
+                    config_dir=config_dir,
+                    registry=ModelRegistry(registry_path),
+                )
+            }
+        except Exception as exc:
+            event_log.append(event_type="automatic_retraining_enqueue_error", payload={"error_message": str(exc)})
+            auto_enqueue_info = {"auto_enqueue": {"enqueued": False, "reason": "error", "error_message": str(exc)}}
+
     claimed = job_store.claim_next_queued_job(worker_pid=resolved_pid)
     if claimed is None:
-        return {"claimed": False, "status": "idle", **recovery_info}
+        return {"claimed": False, "status": "idle", **recovery_info, **auto_enqueue_info}
 
     job_id = str(claimed["job_id"])
     event_log.append(event_type="retraining_job_claimed", payload={"job_id": job_id, "worker_pid": resolved_pid})

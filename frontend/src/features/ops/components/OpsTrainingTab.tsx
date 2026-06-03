@@ -108,7 +108,7 @@ const TRAINING_JOB_TIMESTAMP_KEYS = [
   "submitted_at",
 ] as const;
 
-const ACTIVE_JOB_STATUSES = ["queued", "running", "waiting", "starting"];
+const ACTIVE_JOB_STATUSES = ["queued", "running", "starting", "claimed"];
 
 const hasJobIdentity = (job: unknown): job is OpsJobRecord => {
   const obj = asObj(job);
@@ -473,17 +473,13 @@ function deriveTrainingView(
   };
   const state = mapState[(stateRaw ?? "").toLowerCase()] ?? "Not reported";
   const started = asStr(pick(jobObj, ["started_at", "start_time"]));
-  const completed = asStr(pick(jobObj, ["completed_at", "end_time"]));
+  const completed = asStr(pick(jobObj, ["finished_at", "completed_at", "end_time"]));
+  const runtimeSeconds = typeof jobObj.runtime_seconds === "number" ? jobObj.runtime_seconds : null;
+  const elapsedSeconds = typeof jobObj.elapsed_seconds === "number" ? jobObj.elapsed_seconds : null;
   const elapsed = started
-    ? `${Math.max(
-        0,
-        Math.floor(
-          ((completed ? Date.parse(completed) : Date.now()) -
-            Date.parse(started)) /
-            1000,
-        ),
-      )}s`
+    ? formatDurationSeconds(elapsedSeconds ?? Math.max(0, Math.floor(((completed ? Date.parse(completed) : Date.now()) - Date.parse(started)) / 1000)))
     : "Not reported";
+  const runtime = runtimeSeconds !== null ? formatDurationSeconds(runtimeSeconds) : completed && started ? formatDurationSeconds(Math.max(0, Math.floor((Date.parse(completed) - Date.parse(started)) / 1000))) : null;
   const progress = pick(metrics, ["progress"]);
   const progressPct =
     typeof progress === "number"
@@ -526,16 +522,42 @@ function deriveTrainingView(
     },
     {
       label: "Best checkpoint",
-      value: adaptationTraining?.best_overall_checkpoint ?? "Not reported",
+      value:
+        (typeof jobObj.best_checkpoint === "string"
+          ? jobObj.best_checkpoint
+          : null) ??
+        adaptationTraining?.best_overall_checkpoint ??
+        "Not reported",
     },
     {
       label: "Final checkpoint",
-      value: adaptationTraining?.final_checkpoint ?? "Not reported",
+      value:
+        (typeof jobObj.final_checkpoint === "string"
+          ? jobObj.final_checkpoint
+          : null) ??
+        adaptationTraining?.final_checkpoint ??
+        "Not reported",
     },
     { label: "Started", value: started ?? "Not reported" },
-    { label: "Elapsed", value: elapsed },
+    ...(runtime
+      ? [{ label: "Runtime", value: runtime }]
+      : [{ label: "Elapsed", value: elapsed }]),
+    {
+      label: "Retraining cooldown",
+      value: formatDurationSeconds(adaptationTraining?.cooldown_seconds ?? 3600),
+    },
     { label: "Job counts", value: jobCountSummary },
-  ];
+  ].filter(
+    (row) =>
+      row.value !== "Not reported" ||
+      [
+        "Current state",
+        "Latest job",
+        "Latest status",
+        "Retraining cooldown",
+        "Job counts",
+      ].includes(row.label),
+  );
   const metricRows = collectTrainingMetricRows(metricSources, progressPct);
   return {
     state,
@@ -599,6 +621,17 @@ function formatProgressValue(value: unknown): string {
   return `${Math.max(0, Math.min(100, pct)).toFixed(1)}%`;
 }
 
+function formatDurationSeconds(totalSeconds: number): string {
+  const seconds = Math.max(0, Math.floor(totalSeconds));
+  const hours = Math.floor(seconds / 3600);
+  const minutes = Math.floor((seconds % 3600) / 60);
+  const secs = seconds % 60;
+  if (hours > 0 && minutes === 0 && secs === 0) return `${hours}h`;
+  if (hours > 0) return `${hours}h ${minutes}m ${secs}s`;
+  if (minutes > 0) return `${minutes}m ${secs}s`;
+  return `${secs}s`;
+}
+
 function formatJobCountSummary(jobCounts: Record<string, number>): string {
   const entries = [
     ["queued", jobCounts.queued],
@@ -620,6 +653,8 @@ function collectLogs(
 ): string[] {
   const jobObj = asObj(latestJob);
   const lines: string[] = [];
+  const latestLogTail = Array.isArray(adaptationTraining?.latest_job?.log_tail) ? adaptationTraining.latest_job.log_tail : [];
+  if (latestLogTail.length) return latestLogTail.map((line) => String(line));
   const logs = pick(jobObj, ["logs", "log_lines", "events"]);
   if (Array.isArray(logs))
     logs.forEach((l) =>

@@ -92,6 +92,7 @@ class ForecastContextService:
             "meteorology_timestamp": self._first(self._nested(session_state, "meteorology.timestamp"), self._nested(summary, "meteorology.timestamp")),
         }
 
+        provenance_summary = self._as_dict(summary.get("provenance"))
         source_summary = self._as_dict(summary.get("source"))
         context["source"] = {
             "latitude": self._first(source_summary.get("latitude"), self._nested(explanation_payload, "summary.source_latitude")),
@@ -121,10 +122,18 @@ class ForecastContextService:
         missing_channels = input_completeness.get("missing_channels") if isinstance(input_completeness.get("missing_channels"), list) else []
         missing_frame_indices = input_completeness.get("missing_frame_indices") if isinstance(input_completeness.get("missing_frame_indices"), list) else []
         context["runtime"] = {
-            "backend": self._first(self._nested(session_state, "backend_name"), self._nested(session_state, "backend")),
+            "backend": self._first(provenance_summary.get("model_backend"), self._nested(session_state, "backend_name"), self._nested(session_state, "backend")),
             "model_name": self._first(summary.get("model"), self._nested(session_state, "model_name")),
-            "model_source": self._nested(session_state, "model_source"),
+            "model_source": self._first(provenance_summary.get("forecast_source"), self._nested(session_state, "model_source")),
             "model_version": self._first(summary.get("model_version"), self._nested(session_state, "model_version")),
+            "forecast_source": provenance_summary.get("forecast_source"),
+            "model_id": provenance_summary.get("model_id"),
+            "model_family": provenance_summary.get("model_family"),
+            "model_backend": provenance_summary.get("model_backend"),
+            "checkpoint_path": provenance_summary.get("checkpoint_path"),
+            "inference_mode": provenance_summary.get("inference_mode"),
+            "fallback_used": provenance_summary.get("fallback_used"),
+            "dataset_playback_enabled": provenance_summary.get("dataset_playback_enabled"),
             "output_space": self._nested(session_state, "output_space"),
             "input_mode": self._first(self._nested(session_state, "input_mode"), self._nested(session_state, "runtime.input_mode")),
             "prediction_trust": self._nested(session_state, "prediction_trust"),
@@ -135,6 +144,7 @@ class ForecastContextService:
             "limitations": self._derive_limitations(session_state, missing_channels),
         }
 
+        context["provenance"] = provenance_summary
         context["raw"] = {
             "summary": summary,
             "explanation": explanation_payload,
@@ -171,7 +181,8 @@ class ForecastContextService:
             "conditions": {"wind_speed_ms": None, "wind_direction_deg": None, "wind_direction_label": None, "u10m_ms": None, "v10m_ms": None, "temperature_c": None, "humidity_pct": None, "surface_pressure_hpa": None, "pbl_height_m": None, "meteorology_source": None, "meteorology_timestamp": None},
             "source": {"latitude": None, "longitude": None, "pollutant": None, "emission_rate": None, "release_height_m": None, "duration_minutes": None, "start_time": None, "end_time": None},
             "plume_metrics": {"max_concentration": None, "mean_concentration": None, "affected_cells_above_threshold": None, "affected_area_m2": None, "affected_area_hectares": None, "dominant_spread_direction": None, "threshold_used": None, "grid_rows": None, "grid_columns": None},
-            "runtime": {"backend": None, "model_name": None, "model_source": None, "model_version": None, "output_space": None, "input_mode": None, "prediction_trust": None, "missing_channels": [], "missing_frame_indices": [], "meteorology_available": None, "observations_available": None, "limitations": []},
+            "runtime": {"backend": None, "model_name": None, "model_source": None, "model_version": None, "forecast_source": None, "model_id": None, "model_family": "Unknown", "model_backend": None, "checkpoint_path": None, "inference_mode": "unknown", "fallback_used": False, "dataset_playback_enabled": False, "output_space": None, "input_mode": None, "prediction_trust": None, "missing_channels": [], "missing_frame_indices": [], "meteorology_available": None, "observations_available": None, "limitations": []},
+            "provenance": {"forecast_source": "fallback", "model_id": None, "model_family": "Unknown", "model_backend": None, "checkpoint_path": None, "inference_mode": "unknown", "fallback_used": True, "dataset_playback_enabled": False},
             "raw": {"summary": {}, "explanation": {}, "session_state": {}, "decision_support": {}},
         }
 

@@ -107,6 +107,19 @@ class ForecastService:
             },
             "timestamp": result.forecast.timestamp.isoformat(),
         }
+        provenance_keys = (
+            "forecast_source",
+            "model_id",
+            "model_family",
+            "model_backend",
+            "checkpoint_path",
+            "inference_mode",
+            "fallback_used",
+            "dataset_playback_enabled",
+        )
+        provenance = {key: result.execution_metadata.get(key) for key in provenance_keys}
+        if any(value is not None for value in provenance.values()):
+            payload["provenance"] = provenance
         if result.forecast.concentration_sequence is not None:
             sequence = result.forecast.concentration_sequence
             payload["frames"] = {

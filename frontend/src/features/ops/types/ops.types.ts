@@ -191,6 +191,7 @@ export interface AdaptationTrainingStatus {
   result_run_dir?: string | null;
   best_overall_checkpoint?: string | null;
   final_checkpoint?: string | null;
+  cooldown_seconds?: number | null;
   error_message?: string | null;
 }
 

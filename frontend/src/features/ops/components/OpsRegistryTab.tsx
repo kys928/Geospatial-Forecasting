@@ -44,6 +44,30 @@ const MODEL_METRIC_KEYS = [
   "score",
 ];
 
+const METRIC_LABELS: Record<string, string> = {
+  selection_score: "Checkpoint selection score",
+  val_rollout_weighted_mse: "Rollout weighted MSE",
+  val_rollout_weighted_mse_t3: "Rollout weighted MSE T+3",
+  val_rollout_weighted_mse_t4: "Rollout weighted MSE T+4",
+  val_rollout_mae: "Rollout MAE",
+  plume_iou: "Plume IoU",
+  weighted_mse: "Weighted MSE",
+  mae: "MAE",
+  mass_abs_error: "Mass absolute error",
+  peak_location_error: "Peak location error",
+  val_loss: "Validation loss",
+  train_loss: "Training loss",
+};
+
+function metricLabel(key: string): string {
+  return METRIC_LABELS[key] ?? key.replace(/_/g, " ").replace(/\b\w/g, (char) => char.toUpperCase());
+}
+
+function formatNumber(value: number): string {
+  if (value !== 0 && Math.abs(value) < 0.001) return value.toExponential(3);
+  return Number(value.toPrecision(4)).toString();
+}
+
 const demoRow: DisplayModel = {
   model_id: "demo_convlstm_v0_1",
   status: "ready",
@@ -63,12 +87,8 @@ function formatCellValue(value: unknown, fallback = "Not reported") {
 function formatStructuredValue(value: unknown): string {
   if (value === null || value === undefined || value === "")
     return "Not reported";
-  if (
-    typeof value === "string" ||
-    typeof value === "number" ||
-    typeof value === "boolean"
-  )
-    return String(value);
+  if (typeof value === "number") return formatNumber(value);
+  if (typeof value === "string" || typeof value === "boolean") return String(value);
   if (Array.isArray(value)) {
     const lines = value
       .map((item) => formatStructuredValue(item))
@@ -182,6 +202,15 @@ function coreRows(
   ];
 }
 
+function formatResumeCheckpoint(value: unknown): unknown {
+  const record = asRecord(value);
+  if (!record) return value;
+  const parts = ["checkpoint_path", "source", "resume_mode"]
+    .map((key) => (record[key] ? `${key}: ${formatStructuredValue(record[key])}` : null))
+    .filter(Boolean);
+  return parts.length ? parts.join("; ") : undefined;
+}
+
 function adaptationRows(model: DisplayModel): DetailRow[] {
   if (!isAdaptationRecord(model)) return [];
   const exists = checkpointFileExists(model);
@@ -221,13 +250,13 @@ function adaptationRows(model: DisplayModel): DetailRow[] {
         ["metadata", "final_checkpoint"],
       ]),
     ),
-    fieldRow(
+    structuredRow(
       "Selected resume checkpoint",
-      pickValue(model, [
+      formatResumeCheckpoint(pickValue(model, [
         ["selected_resume_checkpoint"],
         ["adaptation_run", "selected_resume_checkpoint"],
         ["metadata", "selected_resume_checkpoint"],
-      ]),
+      ])),
     ),
     structuredRow(
       "Dataset counts",
@@ -313,7 +342,7 @@ function collectModelMetricRows(model: DisplayModel): MetricRow[] {
       const value = record[key];
       if (value === null || value === undefined || value === "") continue;
       if (seen.has(key)) break;
-      rows.push({ label: key, value: formatStructuredValue(value) });
+      rows.push({ label: metricLabel(key), value: formatStructuredValue(value) });
       seen.add(key);
       break;
     }
@@ -399,7 +428,7 @@ export function OpsRegistryTab() {
     )
       return;
     const confirmed = window.confirm(
-      `Delete checkpoint file for ${modelId}? This does not delete registry metadata/history, and the row remains visible unless the backend stops returning it.`,
+      `Delete checkpoint file for ${modelId}? The model record and history stay visible. Only the .pt file is removed. This cannot be undone.`,
     );
     if (!confirmed) return;
     await runAction(modelId, "Delete checkpoint file", () =>
@@ -620,10 +649,6 @@ export function OpsRegistryTab() {
                 rows={adaptationRows(inspectModel)}
               />
             ) : null}
-            <ModelDetailSection
-              title="Additional Model Details"
-              rows={supplementalRows(inspectModel)}
-            />
             <details className="advanced-section">
               <summary>Model Metrics</summary>
               {collectModelMetricRows(inspectModel).length ? (
@@ -634,6 +659,12 @@ export function OpsRegistryTab() {
                       <dd>{row.value}</dd>
                     </div>
                   ))}
+                  {collectModelMetricRows(inspectModel).some((row) => row.label === "Checkpoint selection score") ? (
+                    <div>
+                      <dt>Checkpoint selection score note</dt>
+                      <dd>Internal score used to choose the best checkpoint for this adaptation run.</dd>
+                    </div>
+                  ) : null}
                 </dl>
               ) : (
                 <p className="muted">No model metrics reported.</p>

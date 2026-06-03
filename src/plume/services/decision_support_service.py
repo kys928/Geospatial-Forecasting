@@ -25,6 +25,7 @@ class DecisionSupportService:
             "Do not mention raw grid cells or cell counts; translate model metrics into plain-language terms such as limited, moderate, broad, weak, stronger, or more widespread. "
             "Do not invent casualties, evacuation orders, exact weather, exact emergency instructions, or certainty. "
             "Do not claim live sensor confirmation unless observations_available=true appears in the context. "
+            "Use provenance fields as the source of truth: never claim ConvLSTM is doing predictions unless forecast_source=active_model_inference and model_family=ConvLSTM; if forecast_source=dataset_playback, say it is demo/dataset playback and not active ConvLSTM inference. "
             "Return ONLY strict JSON with exactly these fields: "
             "summary, risk_level, recommendation, uncertainty_note."
         )
@@ -62,6 +63,7 @@ class DecisionSupportService:
         runtime = context.get("runtime", {}) if isinstance(context.get("runtime"), dict) else {}
         raw = context.get("raw", {}) if isinstance(context.get("raw"), dict) else {}
         weather_context = context.get("weather_context", {}) if isinstance(context.get("weather_context"), dict) else {}
+        provenance = context.get("provenance", {}) if isinstance(context.get("provenance"), dict) else {}
         model_inference = context.get("model_inference", {}) if isinstance(context.get("model_inference"), dict) else {}
         raw_model_inference = raw.get("model_inference", {}) if isinstance(raw.get("model_inference"), dict) else {}
         model_meta = model_inference or raw_model_inference
@@ -79,7 +81,14 @@ class DecisionSupportService:
                 "name": self._truncate_string(model_meta.get("name") or model_meta.get("model_name")),
                 "source": self._truncate_string(model_meta.get("source") or runtime.get("model_source")),
                 "output_space": self._truncate_string(model_meta.get("output_space")),
-                "prediction_engine": self._truncate_string(model_meta.get("prediction_engine") or runtime.get("prediction_engine")),
+                "prediction_engine": self._truncate_string(model_meta.get("prediction_engine") or runtime.get("prediction_engine") or provenance.get("inference_mode")),
+                "forecast_source": self._truncate_string(provenance.get("forecast_source") or runtime.get("forecast_source")),
+                "model_id": self._truncate_string(provenance.get("model_id") or runtime.get("model_id")),
+                "model_family": self._truncate_string(provenance.get("model_family") or runtime.get("model_family")),
+                "model_backend": self._truncate_string(provenance.get("model_backend") or runtime.get("model_backend")),
+                "checkpoint_path": self._truncate_string(provenance.get("checkpoint_path") or runtime.get("checkpoint_path")),
+                "fallback_used": bool(provenance.get("fallback_used") or runtime.get("fallback_used")),
+                "dataset_playback_enabled": bool(provenance.get("dataset_playback_enabled") or runtime.get("dataset_playback_enabled")),
             },
             "source": {
                 "latitude": self._round_float(source.get("latitude"), 5),
@@ -114,7 +123,8 @@ class DecisionSupportService:
             "truthfulness": {
                 "observations_available": bool(runtime.get("observations_available", False)),
                 "live_sensor_confirmed": bool(runtime.get("live_sensor_confirmed", False)),
-                "is_demo_dataset_playback": bool(forecast.get("input_source") == "dataset_playback"),
+                "is_demo_dataset_playback": bool(forecast.get("input_source") == "dataset_playback" or provenance.get("forecast_source") == "dataset_playback" or runtime.get("forecast_source") == "dataset_playback"),
+                "provenance_truth_rule": "ConvLSTM may be claimed only when forecast_source=active_model_inference and model_family=ConvLSTM.",
                 "georeferencing_status": self._truncate_string(runtime.get("georeferencing_status")),
                 "limitations": [self._truncate_string(item, max_len=120) for item in self._limit_list(context.get("limitations"), max_items=6) if self._truncate_string(item, max_len=120)],
             },
@@ -324,6 +334,7 @@ class DecisionSupportService:
                 prompt = (
                     "You are an AI decision-support assistant for geospatial plume forecasts. "
                     "Answer the user's question using only the provided forecast context. "
+                    "Use provenance fields as truth: never claim ConvLSTM is doing predictions unless forecast_source=active_model_inference and model_family=ConvLSTM; dataset_playback means demo/playback, not active ConvLSTM inference. "
                     "Do not mention raw grid cell counts; describe plume extent in plain language. "
                     "Be concise and honest about uncertainty."
                 )

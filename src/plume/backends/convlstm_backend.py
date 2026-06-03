@@ -88,6 +88,7 @@ class ConvLSTMBackend(BaseBackend):
             "model_registry_path": self.model_registry_path,
             "load_status": "not_attempted",
         }
+        self.active_model_id: str | None = None
         self._initialize_model_weights()
 
     def _require_contract_value(self, key: str, expected: int) -> int:
@@ -98,12 +99,31 @@ class ConvLSTMBackend(BaseBackend):
         return value
 
     def _initialize_model_weights(self) -> None:
+        active: dict[str, object] | None = None
+        checkpoint = self.checkpoint_path
+        if self.use_model_registry:
+            if self.model_registry_path is None or not str(self.model_registry_path).strip():
+                raise ValueError("use_model_registry=true requires model_registry_path")
+            active = resolve_active_model_artifact(str(Path(self.model_registry_path)))
+            checkpoint = active["checkpoint_path"]
+            self.model_source = "registry_active"
+            self.model_version = str(active["model_id"])
+            self.active_model_id = str(active["model_id"])
+            self.load_metadata = {
+                **self.load_metadata,
+                "resolved_active_model": {
+                    "model_id": active["model_id"],
+                    "checkpoint_path": active["checkpoint_path"],
+                    "model_source": "registry_active",
+                    "activation_event": active.get("activation_event"),
+                    "previous_active_model_id": active.get("previous_active_model_id"),
+                },
+            }
         if self.prediction_engine in {"torch_multistep", "torch_robust_multistep"}:
-            checkpoint = self.checkpoint_path
             if checkpoint is None or not str(checkpoint).strip():
                 raise ValueError(
                     "convlstm_prediction_engine=torch_multistep or torch_robust_multistep "
-                    "requires convlstm_checkpoint_path"
+                    "requires convlstm_checkpoint_path or registry active checkpoint"
                 )
             if importlib.util.find_spec("torch") is None:
                 raise ModuleNotFoundError(
@@ -128,7 +148,8 @@ class ConvLSTMBackend(BaseBackend):
                     device=self.device,
                     checkpoint_strict=self.checkpoint_strict,
                 )
-            self.model_source = "checkpoint"
+            if active is None:
+                self.model_source = "checkpoint"
             stage_name = self.torch_model.metadata.get("stage_name")
             global_epoch = self.torch_model.metadata.get("global_epoch")
             if stage_name is not None or global_epoch is not None:
@@ -143,6 +164,7 @@ class ConvLSTMBackend(BaseBackend):
                 "checkpoint_path": str(resolved_checkpoint),
                 "model_source": self.model_source,
                 "model_version": self.model_version,
+                "active_model_id": self.active_model_id,
                 "output_space": self.output_space,
                 "temporary_model_substitution": False,
                 "checkpoint_metadata": self.torch_model.metadata,
