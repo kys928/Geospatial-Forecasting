@@ -13,7 +13,7 @@ import json
 import math
 import os
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Callable, Literal
 
 from plume.training.adaptation_dataset import AdaptationNPZDataset, AdaptationSample
 
@@ -358,6 +358,7 @@ class ThreeStageAdaptationTrainer:
         self.resume_checkpoint_path = Path(resume_checkpoint_path) if resume_checkpoint_path else None
         self.resume_mode = resume_mode
         self.start_stage = start_stage
+        self.cancel_callback = cancel_callback
         self.device = self._resolve_device(device)
         self.batch_size = int(self.config.initial_batch_size)
         self.global_epoch = 0
@@ -461,12 +462,15 @@ class ThreeStageAdaptationTrainer:
             selection_gate_summary=dict(self.selection_gate_summary),
         )
         try:
+            self._raise_if_cancelled()
             stages = self._stages_from_start()
             for stage_index, stage in stages:
+                self._raise_if_cancelled()
                 if not stage.enabled:
                     continue
                 stage_summary = self._run_stage(stage_index, stage)
                 summary.stage_summaries.append(stage_summary)
+            self._raise_if_cancelled()
             final_metrics = self._evaluate(self._make_loader(self.val_samples, shuffle=False))
             final_ckpt = self._save_checkpoint("final_full_checkpoint.pt", "final", 0, final_metrics)
             summary.final_checkpoint = str(final_ckpt)
@@ -486,6 +490,10 @@ class ThreeStageAdaptationTrainer:
             summary.selection_gate_summary = dict(self.selection_gate_summary)
             self._write_json(self.output_dir / "training_summary.json", summary.to_dict())
             raise
+
+    def _raise_if_cancelled(self) -> None:
+        if self.cancel_callback is not None and self.cancel_callback():
+            raise RuntimeError("Training cancelled by operator")
 
     def _existing_path(self, name: str) -> str | None:
         path = self.output_dir / name
@@ -528,6 +536,7 @@ class ThreeStageAdaptationTrainer:
         completed_epochs = 0
 
         for epoch_in_stage in range(1, stage.max_epochs + 1):
+            self._raise_if_cancelled()
             tf_prob = teacher_forcing_prob(
                 epoch_in_stage - 1,
                 stage.max_epochs,
@@ -535,7 +544,9 @@ class ThreeStageAdaptationTrainer:
                 stage.teacher_forcing_end,
             )
             train_loss = self._train_one_epoch(train_loader, optimizer, stage, stage_index, tf_prob)
+            self._raise_if_cancelled()
             val_metrics = self._evaluate(val_loader)
+            self._raise_if_cancelled()
             val_metrics.update(
                 {
                     "stage_name": stage.name,
@@ -756,6 +767,7 @@ def train_three_stage_adaptation(
     resume_mode: ResumeMode = "none",
     start_stage: StageKey = "stage1",
     device: str = "auto",
+    cancel_callback: Callable[[], bool] | None = None,
 ) -> TrainingRunSummary:
     trainer = ThreeStageAdaptationTrainer(
         train_samples=train_samples,
@@ -766,6 +778,7 @@ def train_three_stage_adaptation(
         resume_mode=resume_mode,
         start_stage=start_stage,
         device=device,
+        cancel_callback=cancel_callback,
     )
     return trainer.train()
 

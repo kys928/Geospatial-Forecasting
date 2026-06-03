@@ -31,6 +31,7 @@ from plume.schemas.prediction_request import PredictionRequest
 from plume.schemas.scenario import Scenario
 from plume.schemas.update_result import UpdateResult
 from plume.services.convlstm_operations import resolve_active_model_artifact
+from plume.services.dataset_scenario_service import DatasetScenarioService
 from plume.utils.config import Config
 
 
@@ -110,21 +111,29 @@ class ConvLSTMBackend(BaseBackend):
         if self.use_model_registry:
             if self.model_registry_path is None or not str(self.model_registry_path).strip():
                 raise ValueError("use_model_registry=true requires model_registry_path")
-            active = resolve_active_model_artifact(str(Path(self.model_registry_path)))
-            checkpoint = active["checkpoint_path"]
-            self.model_source = "registry_active"
-            self.model_version = str(active["model_id"])
-            self.active_model_id = str(active["model_id"])
-            self.load_metadata = {
-                **self.load_metadata,
-                "resolved_active_model": {
-                    "model_id": active["model_id"],
-                    "checkpoint_path": active["checkpoint_path"],
-                    "model_source": "registry_active",
-                    "activation_event": active.get("activation_event"),
-                    "previous_active_model_id": active.get("previous_active_model_id"),
-                },
-            }
+            try:
+                active = resolve_active_model_artifact(str(Path(self.model_registry_path)))
+            except ValueError as exc:
+                if "no active model id" not in str(exc):
+                    raise
+                self.load_metadata = {**self.load_metadata, "resolved_active_model_available": False, "resolved_active_model_reason": str(exc)}
+                active = None
+            if active is not None:
+                checkpoint = active["checkpoint_path"]
+                self.model_source = "registry_active"
+                self.model_version = str(active["model_id"])
+                self.active_model_id = str(active["model_id"])
+                self.load_metadata = {
+                    **self.load_metadata,
+                    "resolved_active_model_available": True,
+                    "resolved_active_model": {
+                        "model_id": active["model_id"],
+                        "checkpoint_path": active["checkpoint_path"],
+                        "model_source": "registry_active",
+                        "activation_event": active.get("activation_event"),
+                        "previous_active_model_id": active.get("previous_active_model_id"),
+                    },
+                }
         if self.prediction_engine in {"torch_multistep", "torch_robust_multistep"}:
             if checkpoint is None or not str(checkpoint).strip():
                 raise ValueError(
@@ -207,25 +216,33 @@ class ConvLSTMBackend(BaseBackend):
         if self.use_model_registry:
             if self.model_registry_path is None or not str(self.model_registry_path).strip():
                 raise ValueError("use_model_registry=true requires model_registry_path")
-            active = resolve_active_model_artifact(str(Path(self.model_registry_path)))
-            checkpoint = active["checkpoint_path"]
-            self.model_source = "registry_active"
-            self.model_version = str(active["model_id"])
-            self.load_metadata = {
-                **self.load_metadata,
-                "resolved_active_model": {
-                    "model_id": active["model_id"],
-                    "checkpoint_path": active["checkpoint_path"],
-                    "model_source": "registry_active",
-                    "activation_event": active.get("activation_event"),
-                    "previous_active_model_id": active.get("previous_active_model_id"),
-                },
-            }
-            record = active.get("record")
-            if isinstance(record, dict):
-                value = record.get("output_space")
-                if isinstance(value, str) and value.strip():
-                    self.output_space = value.strip()
+            try:
+                active = resolve_active_model_artifact(str(Path(self.model_registry_path)))
+            except ValueError as exc:
+                if "no active model id" not in str(exc):
+                    raise
+                self.load_metadata = {**self.load_metadata, "resolved_active_model_available": False, "resolved_active_model_reason": str(exc)}
+                active = None
+            if active is not None:
+                checkpoint = active["checkpoint_path"]
+                self.model_source = "registry_active"
+                self.model_version = str(active["model_id"])
+                self.load_metadata = {
+                    **self.load_metadata,
+                    "resolved_active_model_available": True,
+                    "resolved_active_model": {
+                        "model_id": active["model_id"],
+                        "checkpoint_path": active["checkpoint_path"],
+                        "model_source": "registry_active",
+                        "activation_event": active.get("activation_event"),
+                        "previous_active_model_id": active.get("previous_active_model_id"),
+                    },
+                }
+                record = active.get("record")
+                if isinstance(record, dict):
+                    value = record.get("output_space")
+                    if isinstance(value, str) and value.strip():
+                        self.output_space = value.strip()
         if checkpoint is not None and str(checkpoint).strip():
             metadata = self.model.load_checkpoint(str(Path(checkpoint)), strict=self.checkpoint_strict)
             checkpoint_output_space = metadata.get("output_space")
@@ -377,6 +394,16 @@ class ConvLSTMBackend(BaseBackend):
         scenario = self._resolve_scenario(request)
         grid_spec = self._resolve_grid_spec(request)
         adapter_result = self.input_adapter.prepare(state=state, scenario=scenario, grid_spec=grid_spec)
+        input_source = "openremote_sensor_grid" if state.observation_count > 0 else str(request.metadata.get("input_source") or "degraded_session_state")
+        if state.observation_count <= 0 and self.model_source == "registry_active" and self.prediction_engine in {"torch_multistep", "torch_robust_multistep"}:
+            try:
+                dataset_service = DatasetScenarioService.from_env()
+                if dataset_service.is_enabled():
+                    dataset_tensor, dataset_payload = dataset_service.active_input_window()
+                    adapter_result = replace(adapter_result, tensor=dataset_tensor, metadata={**adapter_result.metadata, "input_source": "dataset_window", "dataset_window": dataset_payload.get("forecast", {})})
+                    input_source = "dataset_window"
+            except Exception as exc:  # noqa: BLE001
+                raise RuntimeError(f"ConvLSTM input unavailable: {exc}") from exc
         state.internal_state["expected_input_shape"] = adapter_result.tensor.shape
         state.internal_state["last_input_adapter_metadata"] = adapter_result.metadata
         if self.prediction_engine == "ridge_baseline":
@@ -426,6 +453,7 @@ class ConvLSTMBackend(BaseBackend):
                     "fallback_used": False,
                     "dataset_playback_enabled": False,
                     "active_registry_model_id": self.active_model_id,
+                    "input_source": input_source,
                     "generated_at": datetime.now(timezone.utc).isoformat(),
                     "frame_count": int(sequence.shape[0]),
                     "frame_indices": list(range(sequence.shape[0])),

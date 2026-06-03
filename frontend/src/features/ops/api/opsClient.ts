@@ -12,6 +12,7 @@ import type {
   RetrainingRecommendation,
   RetrainingTriggerRequest,
   RetrainingTriggerResponse,
+  RetrainingStopResponse,
   RollbackResponse,
   OpsSystemStatusResponse,
   AdaptationBufferStatus,
@@ -70,6 +71,10 @@ export const opsClient = {
 
   triggerRetraining(payload: RetrainingTriggerRequest): Promise<RetrainingTriggerResponse> {
     return httpPost<RetrainingTriggerResponse, RetrainingTriggerRequest>("/ops/retraining/trigger", payload, opsHeaders());
+  },
+
+  stopRetraining(): Promise<RetrainingStopResponse> {
+    return httpPost<RetrainingStopResponse>("/ops/retraining/stop", {}, opsHeaders());
   },
 
   approveCandidate(candidateId: string, payload: CandidateDecisionRequest): Promise<ApprovalActionResponse> {

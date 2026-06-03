@@ -303,8 +303,8 @@ class DatasetScenarioService:
             "conditions": {"u10m_ms": u10, "v10m_ms": v10, "wind_speed_ms": wspd, "wind_direction_deg": direction, "wind_direction_label": self._direction_label(direction), "pbl_height_m": float(np.nanmedian(last[6])), "surface_pressure_hpa": float(np.nanmedian(last[7])), "humidity_pct": float(np.nanmedian(last[8])), "temperature_c": float(np.nanmedian(last[9])) - 273.15, "meteorology_source": "kaggle_hysplit_enriched_npz", "meteorology_timestamp": start.isoformat()},
             "source": {"latitude": float(manifest_row.get("lat", 0)), "longitude": float(manifest_row.get("lon", 0)), "pollutant": "demo_release", "emission_rate": float(manifest_row.get("emission_rate", 0)), "release_height_m": float(manifest_row.get("height_m", 0)), "duration_minutes": run_hours * 60, "start_time": start.isoformat(), "end_time": (start + timedelta(hours=run_hours)).isoformat()},
             "plume_metrics": {"max_plume_score": float(np.nanmax(plume_channel)), "mean_plume_score": float(np.nanmean(plume_channel)), "detection_threshold": threshold, "plume_cell_count": affected, "plume_fraction": plume_fraction, "dominant_spread_direction": spread_direction, "max_concentration": float(np.nanmax(plume_channel)), "mean_concentration": float(np.nanmean(plume_channel)), "affected_cells_above_threshold": affected, "affected_area_m2": None, "affected_area_hectares": None, "threshold_used": threshold, "grid_rows": int(plume_channel.shape[-2]), "grid_columns": int(plume_channel.shape[-1])},
-            "runtime": {"backend": "dataset_playback", "model_name": "ridge_plume_baseline", "model_source": "dataset_input_inference", "model_version": str(self._get_ridge_artifact().get("model_version") or "ridge_baseline_pickle"), "forecast_source": "dataset_playback", "model_id": None, "model_family": "DatasetPlayback", "model_backend": "dataset_playback", "checkpoint_path": None, "inference_mode": "dataset_playback_ridge_demo", "fallback_used": False, "dataset_playback_enabled": True, "active_registry_model_id": None, "generated_at": start.isoformat(), "output_space": "ridge_prediction", "input_mode": "dataset_stream_window", "missing_channels": [], "missing_frame_indices": [], "meteorology_available": True, "observations_available": False, "limitations": ["Dataset playback from Kaggle HYSPLIT/ConvLSTM dataset; not live OpenRemote data.", "Values are for demo/development playback.", "Plume values may be transformed dataset values unless model/output-space metadata defines physical units."]},
-            "provenance": {"forecast_source": "dataset_playback", "model_id": None, "model_family": "DatasetPlayback", "model_backend": "dataset_playback", "checkpoint_path": None, "inference_mode": "dataset_playback_ridge_demo", "fallback_used": False, "dataset_playback_enabled": True, "active_registry_model_id": None, "generated_at": start.isoformat()},
+            "runtime": {"backend": "dataset_playback", "model_name": "ridge_plume_baseline", "model_source": "dataset_input_inference", "model_version": str(self._get_ridge_artifact().get("model_version") or "ridge_baseline_pickle"), "forecast_source": "dataset_playback", "model_id": None, "model_family": "DatasetPlayback", "model_backend": "dataset_playback", "checkpoint_path": None, "inference_mode": "dataset_playback_ridge_demo", "fallback_used": False, "dataset_playback_enabled": True, "active_registry_model_id": None, "input_source": "dataset_playback", "fallback_reason": None, "generated_at": start.isoformat(), "output_space": "ridge_prediction", "input_mode": "dataset_stream_window", "missing_channels": [], "missing_frame_indices": [], "meteorology_available": True, "observations_available": False, "limitations": ["Dataset playback from Kaggle HYSPLIT/ConvLSTM dataset; not live OpenRemote data.", "Values are for demo/development playback.", "Plume values may be transformed dataset values unless model/output-space metadata defines physical units."]},
+            "provenance": {"forecast_source": "dataset_playback", "model_id": None, "model_family": "DatasetPlayback", "model_backend": "dataset_playback", "checkpoint_path": None, "inference_mode": "dataset_playback_ridge_demo", "fallback_used": False, "dataset_playback_enabled": True, "active_registry_model_id": None, "input_source": "dataset_playback", "fallback_reason": None, "generated_at": start.isoformat()},
             "raw": {"source_file": str(window_row.get("source_file")), "manifest_row": manifest_row, "window_row": window_row, "input_shape": list(input_data.shape), "target_shape": list(target.shape), "prediction_shape": list(prediction.shape), "target_usage": "optional_reference_only", "channel_order": self.CHANNELS, "model_inference": {"model_name": "ridge_plume_baseline", "artifact_path": str(self._get_ridge_artifact().get("artifact_path", self.config.ridge_model_path)), "input_shape": list(input_data.shape), "prediction_shape": list(prediction.shape), "used_ridge_model": True, "output_space": "ridge_prediction", "threshold_method": "relative_to_prediction_peak", "threshold_description": "Cutoff used to decide which predicted grid cells are rendered as plume. This is a model-display threshold, not a physical safety threshold."}},
         }
 
@@ -434,6 +434,23 @@ class DatasetScenarioService:
         if not isinstance(scenario_id, str):
             raise KeyError("no active scenario")
         return self.frame_overlay_for_scenario(scenario_id, frame_index)
+
+    def active_input_window(self) -> tuple[np.ndarray, dict[str, Any]]:
+        active = self.get_active_payload()
+        scenario_id = active.get("selected_scenario_id") or active.get("active_scenario_id")
+        if not isinstance(scenario_id, str):
+            raise KeyError("no active scenario")
+        payload = self.get_scenario(scenario_id)
+        sample_path = str(payload.get("raw", {}).get("window_row", {}).get("sample_path", ""))
+        if not sample_path:
+            source_file = str(payload.get("raw", {}).get("source_file", ""))
+            sample_path = source_file
+        npz_path = self.config.windows_dir / Path(sample_path).name
+        if not npz_path.exists():
+            raise FileNotFoundError(f"Dataset input window unavailable: {npz_path}")
+        with np.load(npz_path, allow_pickle=False) as arr:
+            input_data = np.asarray(arr["input"], dtype=np.float32)
+        return input_data, payload
 
     def raster_active(self) -> dict[str, Any]:
         self.resolve_current_playback_state()

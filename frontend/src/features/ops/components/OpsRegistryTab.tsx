@@ -76,7 +76,7 @@ const MODEL_METRIC_KEYS = [
 ];
 
 const METRIC_LABELS: Record<string, string> = {
-  selection_score: "Checkpoint selection score",
+  selection_score: "Internal checkpoint selection score",
   val_rollout_weighted_mse: "Rollout weighted MSE",
   val_rollout_weighted_mse_t3: "Rollout weighted MSE T+3",
   val_rollout_weighted_mse_t4: "Rollout weighted MSE T+4",
@@ -347,6 +347,14 @@ function supplementalRows(model: DisplayModel): DetailRow[] {
     ),
     structuredRow("Notes", model.notes),
   ];
+}
+
+function collectTrainingLogLines(model: DisplayModel): string[] {
+  const value = pickValue(model, [["training_log_tail"], ["adaptation_run", "training_log_tail"], ["metadata", "training_log_tail"]]);
+  if (Array.isArray(value)) {
+    return value.map((line) => String(line)).filter((line) => line.trim().length > 0).slice(-100);
+  }
+  return [];
 }
 
 function collectModelMetricRows(model: DisplayModel): MetricRow[] {
@@ -685,25 +693,14 @@ export function OpsRegistryTab() {
                 rows={adaptationRows(inspectModel)}
               />
             ) : null}
-            <details className="advanced-section">
-              <summary>Model Metrics</summary>
-              {collectModelMetricRows(inspectModel).length ? (
-                <dl className="ops-model-details-list">
-                  {collectModelMetricRows(inspectModel).map((row) => (
-                    <div key={row.label}>
-                      <dt>{row.label}</dt>
-                      <dd>{row.value}</dd>
-                    </div>
-                  ))}
-                  {collectModelMetricRows(inspectModel).some((row) => row.label === "Checkpoint selection score") ? (
-                    <div>
-                      <dt>Checkpoint selection score note</dt>
-                      <dd>Internal score used to choose the best checkpoint for this adaptation run.</dd>
-                    </div>
-                  ) : null}
-                </dl>
+            <details className="advanced-section" open>
+              <summary>Training Logs</summary>
+              {collectTrainingLogLines(inspectModel).length ? (
+                <pre className="ops-log-window">
+                  {collectTrainingLogLines(inspectModel).join("\n")}
+                </pre>
               ) : (
-                <p className="muted">No model metrics reported.</p>
+                <p className="muted">Training log unavailable for this model.</p>
               )}
             </details>
             <div className="button-row" style={{ justifyContent: "flex-end" }}>
