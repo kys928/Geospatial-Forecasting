@@ -28,7 +28,7 @@ def _backend_error_detail(exc: Exception) -> dict[str, object]:
 
 
 def _is_active_convlstm_unavailable_error(exc: Exception) -> bool:
-    if isinstance(exc, (FileNotFoundError, ModuleNotFoundError, RuntimeError)):
+    if isinstance(exc, (FileNotFoundError, ModuleNotFoundError, NameError, RuntimeError)):
         return True
     if not isinstance(exc, ValueError):
         return False
@@ -98,7 +98,7 @@ def register_session_routes(
         payload = (payload.model_dump(exclude_none=True) if payload is not None else {})
         try:
             session = runtime_client.create_session(payload)
-        except (FileNotFoundError, ModuleNotFoundError, RuntimeError, ValueError) as exc:
+        except (FileNotFoundError, ModuleNotFoundError, NameError, RuntimeError, ValueError) as exc:
             raise HTTPException(status_code=503, detail=_backend_error_detail(exc)) from exc
         return _session_response(session)
 
@@ -186,7 +186,7 @@ def register_session_routes(
             if _is_active_convlstm_unavailable_error(exc):
                 raise HTTPException(status_code=503, detail=_backend_error_detail(exc)) from exc
             raise HTTPException(status_code=400, detail=f"Invalid prediction payload: {exc}") from exc
-        except (FileNotFoundError, ModuleNotFoundError, RuntimeError) as exc:
+        except (FileNotFoundError, ModuleNotFoundError, NameError, RuntimeError) as exc:
             raise HTTPException(status_code=503, detail=_backend_error_detail(exc)) from exc
 
         return forecast_service.summarize_forecast(result)

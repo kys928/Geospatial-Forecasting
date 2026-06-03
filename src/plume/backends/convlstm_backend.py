@@ -30,7 +30,10 @@ from plume.schemas.observation_batch import ObservationBatch
 from plume.schemas.prediction_request import PredictionRequest
 from plume.schemas.scenario import Scenario
 from plume.schemas.update_result import UpdateResult
-from plume.services.convlstm_operations import resolve_active_model_artifact
+from plume.services.convlstm_operations import (
+    load_dataset_window_runtime_context,
+    resolve_active_model_artifact,
+)
 from plume.services.dataset_scenario_service import DatasetScenarioService
 from plume.utils.config import Config
 
@@ -407,12 +410,47 @@ class ConvLSTMBackend(BaseBackend):
         grid_spec = self._resolve_grid_spec(request)
         adapter_result = self.input_adapter.prepare(state=state, scenario=scenario, grid_spec=grid_spec)
         input_source = "openremote_sensor_grid" if state.observation_count > 0 else str(request.metadata.get("input_source") or "degraded_session_state")
+        dataset_window_context: dict[str, object] = {}
+        dataset_payload: dict[str, object] = {}
+
         if state.observation_count <= 0 and self.model_source == "registry_active" and self.prediction_engine in {"torch_multistep", "torch_robust_multistep"}:
             try:
                 dataset_service = DatasetScenarioService.from_env()
                 if dataset_service.is_enabled():
                     dataset_tensor, dataset_payload = dataset_service.active_input_window()
-                    adapter_result = replace(adapter_result, tensor=dataset_tensor, metadata={**adapter_result.metadata, "input_source": "dataset_window", "input_window_source": "dataset_scenario_service", "dataset_window": dataset_payload.get("forecast", {})})
+
+                    raw_payload = dataset_payload.get("raw", {}) if isinstance(dataset_payload, dict) else {}
+                    source_file = raw_payload.get("source_file") if isinstance(raw_payload, dict) else None
+                    dataset_window_context = load_dataset_window_runtime_context(source_file)
+
+                    payload_conditions = dataset_payload.get("conditions", {}) if isinstance(dataset_payload, dict) else {}
+                    payload_source = dataset_payload.get("source", {}) if isinstance(dataset_payload, dict) else {}
+                    payload_forecast = dataset_payload.get("forecast", {}) if isinstance(dataset_payload, dict) else {}
+                    payload_raw = dataset_payload.get("raw", {}) if isinstance(dataset_payload, dict) else {}
+
+                    context_meteorology = dataset_window_context.get("meteorology", {}) if isinstance(dataset_window_context, dict) else {}
+                    context_source = dataset_window_context.get("source", {}) if isinstance(dataset_window_context, dict) else {}
+                    context_raw_reference = dataset_window_context.get("raw_reference", {}) if isinstance(dataset_window_context, dict) else {}
+
+                    adapter_result = replace(
+                        adapter_result,
+                        tensor=dataset_tensor,
+                        metadata={
+                            **adapter_result.metadata,
+                            "input_source": "dataset_window",
+                            "input_window_source": "dataset_scenario_service",
+                            "dataset_window": payload_forecast,
+                            "meteorology": payload_conditions or context_meteorology,
+                            "conditions": payload_conditions or context_meteorology,
+                            "source": payload_source or context_source,
+                            "raw_reference": context_raw_reference or {
+                                "source_file": source_file,
+                                "scenario_id": payload_forecast.get("scenario_id") if isinstance(payload_forecast, dict) else None,
+                                "target_usage": "input_window_for_convlstm_inference",
+                            },
+                            "dataset_payload_raw": payload_raw,
+                        },
+                    )
                     input_source = "dataset_window"
             except Exception as exc:  # noqa: BLE001
                 raise RuntimeError(f"ConvLSTM input unavailable: {exc}") from exc
@@ -468,6 +506,10 @@ class ConvLSTMBackend(BaseBackend):
                     "active_registry_model_id": self.active_model_id,
                     "input_source": input_source,
                     "input_window_source": "dataset_scenario_service" if input_source == "dataset_window" else None,
+                    "meteorology": adapter_result.metadata.get("meteorology") or adapter_result.metadata.get("conditions") or {},
+                    "conditions": adapter_result.metadata.get("conditions") or adapter_result.metadata.get("meteorology") or {},
+                    "source": adapter_result.metadata.get("source") or {},
+                    "raw_reference": adapter_result.metadata.get("raw_reference") or {},
                     "output_source": "convlstm_prediction",
                     "generated_at": datetime.now(timezone.utc).isoformat(),
                     "frame_count": int(sequence.shape[0]),

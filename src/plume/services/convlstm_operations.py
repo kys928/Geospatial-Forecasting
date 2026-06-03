@@ -20,6 +20,7 @@ import yaml
 from plume.services.adaptation_buffer import AdaptationBuffer, AdaptationBufferConfig
 from plume.services.adaptation_promotion import (
     AdaptationPromotionThresholds,
+     check_adaptation_checkpoint_compatibility,
     evaluate_adaptation_candidate,
     validate_adaptation_checkpoint_for_activation,
 )
@@ -79,7 +80,136 @@ def _normalize_workspace_path(path: str | Path) -> Path:
     if not candidate.is_absolute():
         candidate = _repo_root() / candidate
     return candidate.resolve(strict=False)
+def _npz_scalar(data: np.lib.npyio.NpzFile, *keys: str) -> object | None:
+    for key in keys:
+        if key not in data.files:
+            continue
+        value = data[key]
+        arr = np.asarray(value)
+        if arr.size == 0:
+            continue
+        item = arr.reshape(-1)[-1]
+        if isinstance(item, np.generic):
+            item = item.item()
+        if isinstance(item, bytes):
+            return item.decode("utf-8", errors="replace")
+        if isinstance(item, str):
+            return item
+        if isinstance(item, (int, float, bool)):
+            return item
+        try:
+            return float(item)
+        except Exception:  # noqa: BLE001
+            return item
+    return None
 
+
+def _float_or_none(value: object) -> float | None:
+    if value is None:
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not np.isfinite(number):
+        return None
+    return number
+
+
+def _wind_direction_label(degrees: float | None) -> str | None:
+    if degrees is None:
+        return None
+    labels = ("N", "NE", "E", "SE", "S", "SW", "W", "NW")
+    return labels[int((degrees + 22.5) // 45) % 8]
+
+
+def _wind_from_uv(u_value: object, v_value: object) -> tuple[float | None, float | None, str | None]:
+    u = _float_or_none(u_value)
+    v = _float_or_none(v_value)
+    if u is None or v is None:
+        return None, None, None
+    speed = float((u * u + v * v) ** 0.5)
+
+    # Meteorological convention: direction wind comes FROM.
+    degrees = float((270.0 - np.degrees(np.arctan2(v, u))) % 360.0)
+    return speed, degrees, _wind_direction_label(degrees)
+
+
+def load_dataset_window_runtime_context(path: str | Path | None) -> dict[str, object]:
+    """Extract operator-facing meteorology/source/provenance from the NPZ window used for ConvLSTM inference.
+
+    This intentionally does not affect model inference. It only preserves the context of the input
+    window so Forecast Overview and AI Decision Support stop showing "Not available".
+    """
+    if path is None:
+        return {"meteorology": {}, "source": {}, "raw_reference": {}}
+
+    resolved = _normalize_workspace_path(path)
+    if not resolved.exists() or resolved.suffix.lower() != ".npz":
+        return {
+            "meteorology": {},
+            "source": {},
+            "raw_reference": {
+                "source_file": str(resolved),
+                "metadata_status": "window_npz_missing",
+            },
+        }
+
+    with np.load(resolved, allow_pickle=False) as data:
+        u10 = _npz_scalar(data, "u10m_ms", "u10", "u_wind", "u", "u_component_of_wind_10m")
+        v10 = _npz_scalar(data, "v10m_ms", "v10", "v_wind", "v", "v_component_of_wind_10m")
+        wind_speed = _float_or_none(_npz_scalar(data, "wind_speed_ms", "wind_speed", "windspeed"))
+        wind_direction = _float_or_none(_npz_scalar(data, "wind_direction_deg", "wind_direction", "wind_dir_deg"))
+        wind_label = _npz_scalar(data, "wind_direction_label", "wind_label", "wind_dir_label")
+
+        if wind_speed is None or wind_direction is None:
+            derived_speed, derived_direction, derived_label = _wind_from_uv(u10, v10)
+            wind_speed = wind_speed if wind_speed is not None else derived_speed
+            wind_direction = wind_direction if wind_direction is not None else derived_direction
+            wind_label = wind_label if wind_label is not None else derived_label
+
+        meteorology = {
+            "u10m_ms": _float_or_none(u10),
+            "v10m_ms": _float_or_none(v10),
+            "wind_speed_ms": wind_speed,
+            "wind_direction_deg": wind_direction,
+            "wind_direction_label": str(wind_label) if wind_label is not None else _wind_direction_label(wind_direction),
+            "temperature_c": _float_or_none(_npz_scalar(data, "temperature_c", "temp_c", "temperature", "t2m", "temperature_2m")),
+            "humidity_pct": _float_or_none(_npz_scalar(data, "humidity_pct", "relative_humidity", "rh", "humidity")),
+            "surface_pressure_hpa": _float_or_none(_npz_scalar(data, "surface_pressure_hpa", "pressure_hpa", "surface_pressure", "sp")),
+            "pbl_height_m": _float_or_none(_npz_scalar(data, "pbl_height_m", "pblh", "boundary_layer_height", "planetary_boundary_layer_height")),
+            "source": str(_npz_scalar(data, "meteorology_source", "met_source", "source_kind") or "dataset_window_npz"),
+            "timestamp": _npz_scalar(data, "meteorology_timestamp", "timestamp", "time", "window_start"),
+        }
+
+        source = {
+            "latitude": _float_or_none(_npz_scalar(data, "latitude", "lat", "source_latitude", "source_lat")),
+            "longitude": _float_or_none(_npz_scalar(data, "longitude", "lon", "lng", "source_longitude", "source_lon")),
+            "pollutant": _npz_scalar(data, "pollutant", "pollutant_name"),
+            "emission_rate": _float_or_none(_npz_scalar(data, "emission_rate", "emissions_rate")),
+            "release_height_m": _float_or_none(_npz_scalar(data, "release_height_m", "release_height")),
+            "duration_minutes": _float_or_none(_npz_scalar(data, "duration_minutes", "release_duration_minutes")),
+            "start_time": _npz_scalar(data, "start_time", "window_start"),
+            "end_time": _npz_scalar(data, "end_time", "window_end"),
+        }
+
+        scenario_id = _npz_scalar(data, "scenario_id", "scenario")
+        window_id = _npz_scalar(data, "window_id", "id")
+        window_start = _npz_scalar(data, "window_start", "start_time")
+        window_end = _npz_scalar(data, "window_end", "end_time")
+
+    return {
+        "meteorology": {key: value for key, value in meteorology.items() if value is not None},
+        "source": {key: value for key, value in source.items() if value is not None},
+        "raw_reference": {
+            "source_file": str(resolved),
+            "scenario_id": str(scenario_id) if scenario_id is not None else None,
+            "window_id": str(window_id) if window_id is not None else resolved.stem,
+            "window_start": window_start,
+            "window_end": window_end,
+            "target_usage": "input_window_for_convlstm_inference",
+        },
+    }
 
 def _job_log_path(job: dict[str, object]) -> Path:
     metadata = job.get("metadata") if isinstance(job.get("metadata"), dict) else {}
