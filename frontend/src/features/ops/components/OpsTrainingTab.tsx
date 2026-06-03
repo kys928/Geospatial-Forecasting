@@ -367,6 +367,11 @@ export function OpsTrainingTab() {
             </button>
           </div>
         </div>
+        {adaptationTraining?.latest_job?.log_available === false ? (
+          <p className="muted" style={{ margin: "8px 0 0" }}>
+            Real training log file not available; showing summary.
+          </p>
+        ) : null}
         {!logs.length ? (
           <p className="muted" style={{ marginBottom: 0 }}>
             No training logs reported yet.
@@ -471,7 +476,8 @@ function deriveTrainingView(
     succeeded: "Completed",
     idle: "Idle",
   };
-  const state = mapState[(stateRaw ?? "").toLowerCase()] ?? "Not reported";
+  let state = mapState[(stateRaw ?? "").toLowerCase()] ?? "Not reported";
+  if ((state === "Idle" || state === "Completed") && (adaptationTraining?.cooldown_remaining_seconds ?? 0) > 0) state = "Cooling down";
   const started = asStr(pick(jobObj, ["started_at", "start_time"]));
   const completed = asStr(pick(jobObj, ["finished_at", "completed_at", "end_time"]));
   const runtimeSeconds = typeof jobObj.runtime_seconds === "number" ? jobObj.runtime_seconds : null;
@@ -546,6 +552,9 @@ function deriveTrainingView(
       label: "Retraining cooldown",
       value: formatDurationSeconds(adaptationTraining?.cooldown_seconds ?? 3600),
     },
+    ...(adaptationTraining?.cooldown_remaining_seconds && adaptationTraining.cooldown_remaining_seconds > 0
+      ? [{ label: "Next automatic training eligible in", value: formatDurationSeconds(adaptationTraining.cooldown_remaining_seconds) }]
+      : []),
     { label: "Job counts", value: jobCountSummary },
   ].filter(
     (row) =>

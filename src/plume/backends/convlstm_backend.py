@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import replace
 from datetime import datetime, timezone
 import importlib.util
+import os
 from pathlib import Path
 from uuid import uuid4
 
@@ -74,8 +75,13 @@ class ConvLSTMBackend(BaseBackend):
         self.init_mode = str(self.backend_config.get("convlstm_init_mode", "random_init"))
         self.checkpoint_path = self.backend_config.get("convlstm_checkpoint_path")
         self.checkpoint_strict = bool(self.backend_config.get("convlstm_checkpoint_strict", True))
-        self.use_model_registry = bool(self.backend_config.get("use_model_registry", False))
-        self.model_registry_path = self.backend_config.get("model_registry_path")
+        registry_env_enabled = str(os.getenv("PLUME_CONVLSTM_USE_MODEL_REGISTRY", "")).strip().lower() in {"1", "true", "yes", "on"}
+        self.use_model_registry = bool(self.backend_config.get("use_model_registry", False)) or registry_env_enabled
+        self.model_registry_path = (
+            self.backend_config.get("model_registry_path")
+            or os.getenv("PLUME_OPS_DB_PATH")
+            or os.getenv("PLUME_OPS_REGISTRY_PATH")
+        )
         self.model_version: str | None = None
         self.model_source = "random_init"
         self.output_space = "unknown"
@@ -375,9 +381,22 @@ class ConvLSTMBackend(BaseBackend):
         state.internal_state["last_input_adapter_metadata"] = adapter_result.metadata
         if self.prediction_engine == "ridge_baseline":
             concentration_grid = self._predict_with_ridge(adapter_result.tensor)
+            generated_at = datetime.now(timezone.utc)
             return Forecast(
                 concentration_grid=concentration_grid,
-                timestamp=datetime.now(timezone.utc),
+                metadata={
+                    "forecast_source": "session_forecast",
+                    "model_id": None,
+                    "model_family": "Ridge",
+                    "model_backend": "convlstm_online",
+                    "checkpoint_path": None,
+                    "inference_mode": "ridge_baseline",
+                    "fallback_used": False,
+                    "dataset_playback_enabled": False,
+                    "active_registry_model_id": None,
+                    "generated_at": generated_at.isoformat(),
+                },
+                timestamp=generated_at,
                 scenario=scenario,
                 grid_spec=grid_spec,
             )
@@ -398,6 +417,16 @@ class ConvLSTMBackend(BaseBackend):
                 concentration_sequence=sequence,
                 metadata={
                     "prediction_engine": self.prediction_engine,
+                    "forecast_source": "active_model_inference" if self.model_source == "registry_active" and self.active_model_id else "session_forecast",
+                    "model_id": self.active_model_id,
+                    "model_family": "ConvLSTM",
+                    "model_backend": "convlstm_online",
+                    "checkpoint_path": str(self.load_metadata.get("checkpoint_path")) if self.load_metadata.get("checkpoint_path") else None,
+                    "inference_mode": self.prediction_engine,
+                    "fallback_used": False,
+                    "dataset_playback_enabled": False,
+                    "active_registry_model_id": self.active_model_id,
+                    "generated_at": datetime.now(timezone.utc).isoformat(),
                     "frame_count": int(sequence.shape[0]),
                     "frame_indices": list(range(sequence.shape[0])),
                     "default_frame_index": 0,

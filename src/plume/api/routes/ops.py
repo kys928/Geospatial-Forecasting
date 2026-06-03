@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 import json
 import os
 from pathlib import Path
@@ -537,6 +537,13 @@ def _adaptation_training_status() -> dict[str, object]:
         best_checkpoint = candidate_path
     log_file_path = _metadata_value(metadata, "log_file_path") or (str(Path(str(run_dir)) / "training.log") if isinstance(run_dir, str) else None)
     log_tail, log_available = _tail_training_log(log_file_path)
+    if latest is not None and not log_available:
+        fallback_lines = ["Real training log file not available; showing summary."]
+        if latest.get("status"):
+            fallback_lines.append(f"Latest job status: {latest.get('status')}")
+        if latest.get("error_message"):
+            fallback_lines.append(f"ERROR: {latest.get('error_message')}")
+        log_tail = fallback_lines
     latest_enriched = dict(latest) if isinstance(latest, dict) else None
     if latest_enriched is not None:
         started_at = latest_enriched.get("started_at")
@@ -552,6 +559,8 @@ def _adaptation_training_status() -> dict[str, object]:
             "log_tail": log_tail,
             "log_file_path": log_file_path if log_available else log_file_path,
             "log_available": log_available,
+            "candidate_model_id": latest_enriched.get("result_candidate_id"),
+            "trigger_source": _trigger_source(latest_enriched),
         })
         if started_dt and finished_dt:
             latest_enriched["runtime_seconds"] = max(0, int((finished_dt - started_dt).total_seconds()))
@@ -559,6 +568,7 @@ def _adaptation_training_status() -> dict[str, object]:
         elif started_dt and str(latest_enriched.get("status", "")).lower() == "running":
             latest_enriched["elapsed_seconds"] = max(0, int((datetime.now(timezone.utc) - started_dt).total_seconds()))
             latest_enriched["runtime_seconds"] = None
+    cooldown = _cooldown_status(jobs, int(_load_adaptation_config("configs").min_seconds_between_training_runs))
     return {
         "job_counts": counts,
         "latest_job": latest_enriched,
@@ -569,10 +579,44 @@ def _adaptation_training_status() -> dict[str, object]:
         "result_run_dir": run_dir,
         "best_overall_checkpoint": str(best_checkpoint) if best_checkpoint else None,
         "final_checkpoint": str(final_checkpoint) if final_checkpoint else None,
-        "cooldown_seconds": int(_load_adaptation_config("configs").min_seconds_between_training_runs),
+        **cooldown,
         "error_message": None if latest is None else latest.get("error_message"),
     }
 
+
+
+def _cooldown_status(jobs: list[dict[str, object]], cooldown_seconds: int) -> dict[str, object]:
+    terminal_times = [
+        _parse_iso(job.get("finished_at"))
+        for job in jobs
+        if str(job.get("status", "")).lower() in {"succeeded", "failed", "cancelled"}
+    ]
+    terminal_times = [value for value in terminal_times if value is not None]
+    if not terminal_times or cooldown_seconds <= 0:
+        return {
+            "cooldown_seconds": cooldown_seconds,
+            "cooldown_remaining_seconds": 0,
+            "next_automatic_training_eligible_at": None,
+            "cooldown_source": "min_seconds_between_training_runs",
+        }
+    last_finished = max(terminal_times)
+    eligible_at = last_finished + timedelta(seconds=cooldown_seconds)
+    remaining = max(0, int((eligible_at - datetime.now(timezone.utc)).total_seconds()))
+    return {
+        "cooldown_seconds": cooldown_seconds,
+        "cooldown_remaining_seconds": remaining,
+        "next_automatic_training_eligible_at": eligible_at.isoformat() if remaining > 0 else None,
+        "cooldown_source": "min_seconds_between_training_runs",
+    }
+
+
+def _trigger_source(job: dict[str, object] | None) -> str:
+    metadata = job.get("metadata") if isinstance(job, dict) and isinstance(job.get("metadata"), dict) else {}
+    if metadata.get("manual_trigger") is True:
+        return "manual"
+    if metadata.get("automatic_trigger") is True:
+        return "automatic"
+    return "unknown"
 
 def _metadata_value(metadata: object, key: str) -> str | None:
     if not isinstance(metadata, dict):

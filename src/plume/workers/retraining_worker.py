@@ -59,7 +59,7 @@ def run_retraining_worker_once(
             }
         except Exception as exc:
             event_log.append(event_type="automatic_retraining_enqueue_error", payload={"error_message": str(exc)})
-            auto_enqueue_info = {"auto_enqueue": {"enqueued": False, "reason": "error", "error_message": str(exc)}}
+            auto_enqueue_info = {"auto_enqueue": {"attempted": True, "enqueued": False, "reason": "error", "job_id": None, "error_message": str(exc)}}
 
     claimed = job_store.claim_next_queued_job(worker_pid=resolved_pid)
     if claimed is None:

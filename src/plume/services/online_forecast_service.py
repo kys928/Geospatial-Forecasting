@@ -161,6 +161,8 @@ class OnlineForecastService:
             "inference_mode": str(forecast_metadata.get("inference_mode") or forecast_metadata.get("prediction_engine") or execution_backend_name),
             "fallback_used": fallback_used,
             "dataset_playback_enabled": False,
+            "active_registry_model_id": None if fallback_used else active_model_id,
+            "generated_at": now.isoformat(),
         }
         result = ForecastRunResult(
             forecast_id=request.session_id,

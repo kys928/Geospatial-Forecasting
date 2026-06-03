@@ -1543,13 +1543,13 @@ def maybe_enqueue_automatic_adaptation_job(
             event_type="automatic_retraining_skipped_active_job",
             payload={"active_job_ids": [str(job.get("job_id")) for job in active_jobs], "active_statuses": [str(job.get("status")) for job in active_jobs]},
         )
-        return {"enqueued": False, "reason": "active_job", "active_job_count": len(active_jobs)}
+        return {"attempted": True, "enqueued": False, "reason": "active_job", "active_job_count": len(active_jobs), "job_id": None}
 
     adaptation_config_path = _adaptation_config_path(config_dir)
     readiness_config = AdaptationReadinessConfig.from_yaml(adaptation_config_path)
     if readiness_config.max_concurrent_training_jobs <= sum(1 for job in jobs if str(job.get("status", "")).lower() == "running"):
-        event_log.append(event_type="automatic_retraining_skipped_active_job", payload={"reason": "max_concurrent_training_jobs"})
-        return {"enqueued": False, "reason": "max_concurrent_training_jobs"}
+        event_log.append(event_type="automatic_retraining_skipped_concurrency_limit", payload={"reason": "max_concurrent_training_jobs"})
+        return {"attempted": True, "enqueued": False, "reason": "max_concurrent_training_jobs", "job_id": None}
 
     latest_terminal_times = [
         _parse_iso_datetime(job.get("finished_at"))
@@ -1566,7 +1566,7 @@ def maybe_enqueue_automatic_adaptation_job(
                 event_type="automatic_retraining_skipped_cooldown",
                 payload={"cooldown_seconds": cooldown_seconds, "remaining_seconds": remaining, "last_finished_at": last_finished.isoformat()},
             )
-            return {"enqueued": False, "reason": "cooldown", "cooldown_seconds": cooldown_seconds, "remaining_seconds": remaining}
+            return {"attempted": True, "enqueued": False, "reason": "cooldown", "job_id": None, "cooldown_seconds": cooldown_seconds, "cooldown_remaining_seconds": remaining}
 
     registry_payload = registry.load() if registry is not None else {"models": []}
     active_checkpoint_path = _active_checkpoint_path(registry_payload)
@@ -1581,7 +1581,7 @@ def maybe_enqueue_automatic_adaptation_job(
     readiness_payload = readiness.to_dict()
     if not readiness.ready:
         event_log.append(event_type="automatic_retraining_skipped_readiness_not_green", payload={"readiness": readiness_payload})
-        return {"enqueued": False, "reason": "readiness_not_green", "readiness": readiness_payload}
+        return {"attempted": True, "enqueued": False, "reason": "readiness_not_green", "job_id": None, "readiness": readiness_payload}
 
     job = submit_retraining_job(job_store=job_store, dataset_snapshot_ref="adaptation_readiness_green", run_config_ref="automatic_adaptation", output_dir=str(Path("artifacts") / "runs"))
     job = job_store.update_job(
@@ -1589,7 +1589,7 @@ def maybe_enqueue_automatic_adaptation_job(
         metadata={"automatic_trigger": True, "readiness": readiness_payload, "cooldown_seconds": cooldown_seconds},
     )
     event_log.append(event_type="automatic_retraining_job_enqueued", payload={"job_id": str(job.get("job_id")), "cooldown_seconds": cooldown_seconds})
-    return {"enqueued": True, "reason": "ready", "job": job, "readiness": readiness_payload}
+    return {"attempted": True, "enqueued": True, "reason": "ready", "job_id": str(job.get("job_id")), "job": job, "readiness": readiness_payload}
 
 
 def execute_retraining_job(
@@ -1781,6 +1781,7 @@ def run_adaptation_retraining_job(
             print(f"job claimed: {run_id}", flush=True)
             print(f"run directory: {output_dir}", flush=True)
             print(f"selected resume checkpoint: {resume_selection.to_dict()}", flush=True)
+            print(f"dataset counts: {dict(manifest.counts)}", flush=True)
             print(f"stage start: {training_cfg_payload.get('start_stage') or training_cfg_payload.get('start_from_stage') or 'stage1'}", flush=True)
             summary = train_three_stage_adaptation(
                 train_samples=manifest.train_samples,
@@ -1793,6 +1794,9 @@ def run_adaptation_retraining_job(
                 device=str(training_cfg_payload.get("training_device", readiness_config.training_device)),
             )
             print("stage end: adaptation training", flush=True)
+            summary_payload_for_log = summary.to_dict() if isinstance(summary, TrainingRunSummary) else dict(summary)
+            print(f"best checkpoint path: {summary_payload_for_log.get('best_overall_checkpoint')}", flush=True)
+            print(f"final checkpoint path: {summary_payload_for_log.get('final_checkpoint')}", flush=True)
     except Exception:
         with log_path.open("a", encoding="utf-8") as log_handle:
             log_handle.write("failure traceback:\n")

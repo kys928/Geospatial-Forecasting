@@ -116,6 +116,8 @@ class ForecastService:
             "inference_mode",
             "fallback_used",
             "dataset_playback_enabled",
+            "active_registry_model_id",
+            "generated_at",
         )
         provenance = {key: result.execution_metadata.get(key) for key in provenance_keys}
         if any(value is not None for value in provenance.values()):

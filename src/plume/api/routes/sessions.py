@@ -177,7 +177,7 @@ def register_session_routes(
             "frame_indices": indices,
             "default_frame_index": 0,
             "shape": shape,
-            "metadata": {**(result.forecast.metadata if isinstance(result.forecast.metadata, dict) else {}), "provenance": {key: result.execution_metadata.get(key) for key in ("forecast_source", "model_id", "model_family", "model_backend", "checkpoint_path", "inference_mode", "fallback_used", "dataset_playback_enabled")}},
+            "metadata": {**(result.forecast.metadata if isinstance(result.forecast.metadata, dict) else {}), "provenance": {key: result.execution_metadata.get(key) for key in ("forecast_source", "model_id", "model_family", "model_backend", "checkpoint_path", "inference_mode", "fallback_used", "dataset_playback_enabled", "active_registry_model_id", "generated_at")}},
         }
 
     @app.get("/sessions/{session_id}/forecast/latest/frames/{frame_index}/summary")
@@ -224,7 +224,7 @@ def register_session_routes(
                 "model": frame_result.model_name,
                 "model_version": frame_result.model_version,
                 "georeferencing_note": raster_metadata.get("georeferencing_note"),
-                "provenance": {key: frame_result.execution_metadata.get(key) for key in ("forecast_source", "model_id", "model_family", "model_backend", "checkpoint_path", "inference_mode", "fallback_used", "dataset_playback_enabled")},
+                "provenance": {key: frame_result.execution_metadata.get(key) for key in ("forecast_source", "model_id", "model_family", "model_backend", "checkpoint_path", "inference_mode", "fallback_used", "dataset_playback_enabled", "active_registry_model_id", "generated_at")},
             },
         }
 
