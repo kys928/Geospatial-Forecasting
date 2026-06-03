@@ -342,7 +342,8 @@ class DecisionSupportService:
             }
         context = latest.get("forecast_evidence")
         lower_message = str(message or "").lower()
-        if isinstance(context, dict) and ("who" in lower_message and ("predict" in lower_message or "prediction" in lower_message)):
+        asks_prediction_owner = ("predict" in lower_message or "prediction" in lower_message or "forecast" in lower_message) and ("who" in lower_message or "what model" in lower_message or "which model" in lower_message or "doing" in lower_message or "serving" in lower_message)
+        if isinstance(context, dict) and asks_prediction_owner:
             owner_answer = self._answer_prediction_owner_from_provenance(context)
             if owner_answer:
                 return {

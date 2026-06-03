@@ -345,6 +345,8 @@ function supplementalRows(model: DisplayModel): DetailRow[] {
       "Metrics / evidence",
       model.metrics ?? model.checkpoint_metric ?? model.checkpoint_metric_name,
     ),
+    fieldRow("Training log path", model.training_log_path),
+    fieldRow("Training log available", typeof model.training_log_available === "boolean" ? (model.training_log_available ? "Yes" : "No") : undefined),
     structuredRow("Notes", model.notes),
   ];
 }
@@ -693,6 +695,10 @@ export function OpsRegistryTab() {
                 rows={adaptationRows(inspectModel)}
               />
             ) : null}
+            <ModelDetailSection
+              title="Technical details"
+              rows={supplementalRows(inspectModel)}
+            />
             <details className="advanced-section" open>
               <summary>Training Logs</summary>
               {collectTrainingLogLines(inspectModel).length ? (
@@ -700,7 +706,10 @@ export function OpsRegistryTab() {
                   {collectTrainingLogLines(inspectModel).join("\n")}
                 </pre>
               ) : (
-                <p className="muted">Training log unavailable for this model.</p>
+                <p className="muted">
+                  Training log unavailable for this model
+                  {inspectModel.training_log_path ? ` (attempted ${String(inspectModel.training_log_path)})` : ""}.
+                </p>
               )}
             </details>
             <div className="button-row" style={{ justifyContent: "flex-end" }}>

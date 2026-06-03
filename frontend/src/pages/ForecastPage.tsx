@@ -7,7 +7,7 @@ import { buildDatasetOverlayIdentity, countGeojsonKinds } from "../features/map/
 import { sessionClient } from "../features/sessions/api/sessionClient";
 import { useSessionForecastView } from "../features/sessions/context/SessionForecastViewContext";
 import { useSessionForecastFrames } from "../features/sessions/hooks/useSessionForecastFrames";
-import { httpGet } from "../services/api/http";
+import { httpGet, httpPost } from "../services/api/http";
 import { buildPlumeGridRasterOverlay } from "../features/map/utils/plumeGridRaster";
 import type { ForecastFrameRasterPayload } from "../features/sessions/types/session.types";
 
@@ -17,7 +17,7 @@ interface ActiveDatasetScenarioResponse {
   active_scenario_id?: string | null;
   selected_scenario_id?: string | null;
 }
-interface DatasetPlaybackState { enabled: boolean }
+interface DatasetPlaybackState { enabled: boolean; active_scenario_id?: string | null; playback_running?: boolean }
 interface DatasetRasterPayload extends Omit<ForecastFrameRasterPayload, "session_id" | "frame_index"> {
   scenario_id: string;
   positive_count?: number;
@@ -71,6 +71,10 @@ export function ForecastPage() {
   const getActiveDatasetFrames = () => httpGet<DatasetFramesMetadata>("/forecast-context/dataset-scenarios/active/frames");
   const getActiveDatasetFrameRaster = (frameIndex: number) => httpGet<DatasetRasterPayload>(`/forecast-context/dataset-scenarios/active/frames/${frameIndex}/raster`);
   const getActiveDatasetFrameOverlay = (frameIndex: number) => httpGet<GeoJsonFeatureCollection>(`/forecast-context/dataset-scenarios/active/frames/${frameIndex}/overlay`);
+  const setPlaybackState = (enabled: boolean) => httpPost<DatasetPlaybackState, { enabled: boolean; active_scenario_id?: string | null; playback_running?: boolean }>(
+    "/forecast-context/dataset-playback/state",
+    { enabled, active_scenario_id: activeDataset?.selected_scenario_id ?? activeDataset?.active_scenario_id ?? datasetPlaybackState?.active_scenario_id ?? undefined, playback_running: false }
+  );
 
   const refreshDatasetOverlay = async () => {
     try {
@@ -163,6 +167,39 @@ export function ForecastPage() {
     };
   }, []);
 
+  const runActiveForecast = async () => {
+    if (inFlightRef.current) return;
+    inFlightRef.current = true;
+    try {
+      setMapPipelineStatus("predicting");
+      const runResult = await sessionClient.runSessionForecast({ metadata: { requested_forecast_mode: "active_model" } });
+      setMapPipelineStatus("loading_bundle");
+      const bundle = await sessionClient.getLatestForecastBundle(runResult.sessionId, { includeExplanation: false });
+      setActiveSessionId(runResult.sessionId);
+      setLatestForecastBundle(runResult.sessionId, bundle);
+      setMapPipelineStatus("loading_frames");
+      await refreshFramesForSession(runResult.sessionId);
+      setMapPipelineStatus("ready");
+      hasAutoBootstrappedRef.current = true;
+    } catch {
+      setMapPipelineStatus("error");
+    } finally {
+      inFlightRef.current = false;
+    }
+  };
+
+  const useActiveForecastMode = async () => {
+    hasAutoBootstrappedRef.current = false;
+    await setPlaybackState(false);
+    await refreshDatasetOverlay();
+    await runActiveForecast();
+  };
+
+  const useDatasetPlaybackMode = async () => {
+    await setPlaybackState(true);
+    await refreshDatasetOverlay();
+  };
+
   useEffect(() => {
     if (!datasetStateResolved || datasetActive || inFlightRef.current || hasAutoBootstrappedRef.current) {
       console.debug("[forecast-map] session bootstrap skipped", {
@@ -181,7 +218,7 @@ export function ForecastPage() {
       }
       setMapPipelineStatus("creating_session");
       setMapPipelineStatus("predicting");
-      const runResult = await sessionClient.runSessionForecast({});
+      const runResult = await sessionClient.runSessionForecast({ metadata: { requested_forecast_mode: "active_model" } });
       setMapPipelineStatus("loading_bundle");
       const bundle = await sessionClient.getLatestForecastBundle(runResult.sessionId, { includeExplanation: false });
       setActiveSessionId(runResult.sessionId);
@@ -322,21 +359,30 @@ export function ForecastPage() {
   const sessionProvenance = (sessionFrameMetadata.provenance as Record<string, unknown> | undefined) ?? sessionFrameMetadata;
   const provenanceLabel = sourceMode === "dataset"
     ? "Dataset playback demo"
-    : sessionProvenance.forecast_source === "active_model_inference" && sessionProvenance.model_family === "ConvLSTM"
+    : sessionProvenance.forecast_source === "active_model_inference" && sessionProvenance.model_family === "ConvLSTM" && sessionProvenance.fallback_used !== true
       ? `Active model forecast: ${String(sessionProvenance.model_id ?? sessionRasterMetadata.model ?? "unknown")}`
       : sessionProvenance.fallback_used === true || sessionProvenance.forecast_source === "fallback"
-        ? `Fallback forecast: ${String(sessionProvenance.model_family ?? sessionProvenance.model_backend ?? "unknown")}`
+        ? "Active model unavailable; showing fallback forecast."
         : sourceMode === "session-frame" || sourceMode === "session-bundle"
           ? `Session forecast: ${String(sessionProvenance.model_family ?? sessionProvenance.model_backend ?? sessionRasterMetadata.model ?? "unknown")}`
           : "No forecast provenance available";
+  const forecastModeLabel = datasetActive ? "Dataset playback demo" : "Live / active model forecast";
 
 
   return (
     <AppShell title="Map / Forecast" subtitle="Current forecast map and plume overlay.">
       <main className="map-column">
-        <div className="panel" style={{ padding: "8px 12px" }}>
-          <strong>{provenanceLabel}</strong>
-          {sourceMode === "dataset" ? <span className="muted"> · demo/playback mode</span> : null}
+        <div className="panel" style={{ padding: "8px 12px", display: "flex", gap: 12, alignItems: "center", justifyContent: "space-between", flexWrap: "wrap" }}>
+          <div>
+            <div className="muted">Forecast mode: {forecastModeLabel}</div>
+            <strong>{provenanceLabel}</strong>
+            {sourceMode === "dataset" ? <span className="muted"> · demo/playback mode</span> : null}
+          </div>
+          {datasetActive ? (
+            <button className="primary-button" onClick={() => void useActiveForecastMode()}>Use active ConvLSTM forecast</button>
+          ) : (
+            <button className="secondary-button" onClick={() => void useDatasetPlaybackMode()}>Use dataset playback demo</button>
+          )}
         </div>
         <ForecastMap
           geojson={mapGeojson}

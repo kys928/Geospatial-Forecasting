@@ -287,3 +287,68 @@ def test_input_unavailable_returns_truthful_fallback_reason(monkeypatch):
     assert result.execution_metadata["model_family"] == "GaussianFallback"
     assert result.execution_metadata["fallback_used"] is True
     assert result.execution_metadata["fallback_reason"] == "ConvLSTM input unavailable"
+
+
+def test_active_mode_session_route_loads_registry_checkpoint_and_runs_convlstm(monkeypatch, tmp_path: Path):
+    pytest = __import__("pytest")
+    torch = pytest.importorskip("torch")
+    from plume.models.torch_multistep_convlstm import TorchMultiStepConvLSTM
+
+    checkpoint = tmp_path / "artifacts" / "runs" / "retrain-job-000001" / "best_overall_full_checkpoint.pt"
+    checkpoint.parent.mkdir(parents=True)
+    torch_model = TorchMultiStepConvLSTM(future_steps=4)
+    torch.save({
+        "model_state_dict": torch_model.state_dict(),
+        "global_epoch": 1,
+        "stage_name": "test_stage",
+        "config": {"future_steps": 4},
+        "model_contract": {"future_steps": 4},
+    }, checkpoint)
+    registry_path = tmp_path / "ops" / "model_registry.json"
+    ModelRegistry(registry_path).save({
+        "active_model_id": "active-convlstm",
+        "previous_active_model_id": None,
+        "models": [{"model_id": "active-convlstm", "status": "active", "approval_status": "approved_for_activation", "path": str(checkpoint), "contract_version": CONVLSTM_CONTRACT_VERSION, "target_policy": "plume_only"}],
+        "events": [],
+        "approval_audit": [],
+    })
+    (tmp_path / "backend.yaml").write_text(f"""
+default_backend: convlstm_online
+fallback_backend: gaussian_fallback
+state_store: in_memory
+convlstm_sequence_length: 3
+convlstm_input_channels: 10
+convlstm_input_mode: degraded
+use_model_registry: true
+model_registry_path: {registry_path}
+convlstm_prediction_engine: torch_multistep
+convlstm_checkpoint_strict: false
+convlstm_device: cpu
+""", encoding="utf-8")
+
+    class InputOnlyDatasetService:
+        def is_enabled(self):
+            return True
+        def active_input_window(self):
+            return np.zeros((3, 10, 64, 64), dtype=np.float32), {"forecast": {"forecast_source": "dataset_input_only"}}
+
+    monkeypatch.setattr("plume.backends.convlstm_backend.DatasetScenarioService.from_env", lambda: InputOnlyDatasetService())
+    service = OnlineForecastService(config=Config(config_dir=tmp_path), state_store=InMemoryStateStore())
+    session = service.create_session("convlstm_online", model_name="convlstm")
+    service.predict(PredictionRequest(session_id=session.session_id, scenario=_scenario(), grid_spec=Config().load_grid(), metadata={}))
+
+    app = FastAPI()
+    register_session_routes(app, runtime_client=service, forecast_service=_ForecastService(), export_service=_ExportService(), explain_service=None)
+    response = TestClient(app).get(f"/sessions/{session.session_id}/forecast/latest/frames/0/raster")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["grid"] and body["shape"] == [64, 64]
+    provenance = body["metadata"]["provenance"]
+    assert provenance["forecast_source"] == "active_model_inference"
+    assert provenance["model_family"] == "ConvLSTM"
+    assert provenance["fallback_used"] is False
+    assert provenance["dataset_playback_enabled"] is False
+    assert provenance["input_source"] == "dataset_window"
+    assert provenance["model_id"] == "active-convlstm"
+    assert provenance["checkpoint_path"] == str(checkpoint)

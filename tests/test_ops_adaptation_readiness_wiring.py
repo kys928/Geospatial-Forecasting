@@ -81,12 +81,13 @@ def test_latest_adaptation_training_timestamp_uses_newest_terminal_adaptation_jo
     assert ops_routes._latest_adaptation_training_timestamp(jobs) == new
 
 
-def test_latest_adaptation_training_timestamp_ignores_running_jobs() -> None:
+def test_latest_adaptation_training_timestamp_includes_active_training_attempts() -> None:
     old = "2026-01-01T00:00:00Z"
-    running = _adaptation_job("running", "2026-01-01T01:00:00Z", started_at="2026-01-01T01:00:00Z")
+    running_at = "2026-01-01T01:00:00Z"
+    running = _adaptation_job("running", running_at, started_at=running_at)
     jobs = [_adaptation_job("succeeded", old), running]
 
-    assert ops_routes._latest_adaptation_training_timestamp(jobs) == old
+    assert ops_routes._latest_adaptation_training_timestamp(jobs) == running_at
 
 
 def test_latest_adaptation_training_timestamp_ignores_non_adaptation_jobs() -> None:

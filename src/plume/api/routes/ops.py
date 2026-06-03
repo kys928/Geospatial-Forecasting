@@ -368,12 +368,17 @@ def _latest_jsonl_timestamp(path: Path) -> str | None:
 def _adaptation_readiness(config: AdaptationReadinessConfig) -> dict[str, object]:
     paths = _ops_paths()
     registry_payload = ModelRegistry(paths["registry"]).load()
-    jobs = RetrainingJobStore(paths["jobs"]).list_jobs()
+    jobs = _annotate_stale_jobs(RetrainingJobStore(paths["jobs"]).list_jobs())
     active = _record_by_id(registry_payload.get("models", []), registry_payload.get("active_model_id"))
     active_checkpoint = active.get("path") if active else None
     latest_best = _latest_checkpoint_from_jobs(jobs)
     latest_adaptation_training_at = _latest_adaptation_training_timestamp(jobs)
-    active_job_statuses = [str(job.get("status")) for job in jobs if str(job.get("status")) in {"queued", "running", "starting"}]
+    active_job_statuses = [
+        str(job.get("effective_status") or job.get("status"))
+        for job in jobs
+        if str(job.get("effective_status") or job.get("status") or "").lower() in {"queued", "running", "starting", "claimed"}
+        and not bool(job.get("is_stale"))
+    ]
     return AdaptationReadinessService(config).evaluate(
         active_checkpoint_path=str(active_checkpoint) if active_checkpoint else None,
         latest_best_checkpoint_path=latest_best,
@@ -423,11 +428,20 @@ def _is_stale_job(job: dict[str, object], *, timeout_seconds: int | None = None)
 def _annotate_stale_jobs(jobs: list[dict[str, object]]) -> list[dict[str, object]]:
     out = []
     timeout = _stale_timeout_seconds()
+    terminal_statuses = {"succeeded", "completed", "failed", "cancelled"}
     for job in jobs:
         enriched = dict(job)
-        if _is_stale_job(enriched, timeout_seconds=timeout):
+        status = str(enriched.get("status") or "").lower()
+        if status in terminal_statuses:
+            enriched["is_stale"] = False
+            enriched["effective_status"] = status
+        elif _is_stale_job(enriched, timeout_seconds=timeout):
             enriched["is_stale"] = True
             enriched["effective_status"] = "stale"
+        else:
+            enriched.setdefault("is_stale", False)
+            if status:
+                enriched.setdefault("effective_status", status)
         out.append(enriched)
     return out
 
@@ -440,35 +454,52 @@ def _record_by_id(models: object, model_id: object) -> dict[str, object] | None:
     return None
 
 
-_TERMINAL_ADAPTATION_JOB_STATUSES = {"succeeded", "completed", "failed", "waiting", "cancelled"}
+_TERMINAL_ADAPTATION_JOB_STATUSES = {"succeeded", "completed", "failed", "cancelled"}
 _ACTIVE_ADAPTATION_JOB_STATUSES = {"queued", "waiting", "running", "starting", "claimed"}
+_RELEVANT_ADAPTATION_JOB_STATUSES = _TERMINAL_ADAPTATION_JOB_STATUSES | _ACTIVE_ADAPTATION_JOB_STATUSES
 _ADAPTATION_JOB_TIMESTAMP_FIELDS = (
-    "completed_at",
     "finished_at",
-    "ended_at",
-    "updated_at",
+    "completed_at",
     "started_at",
+    "claimed_at",
+    "updated_at",
     "created_at",
+    "ended_at",
     "timestamp",
 )
 
 
+def _job_latest_training_attempt_timestamp(job: dict[str, object]) -> tuple[datetime, str] | None:
+    for key in _ADAPTATION_JOB_TIMESTAMP_FIELDS:
+        value = job.get(key)
+        parsed = _parse_iso(value)
+        if isinstance(value, str) and value and parsed is not None:
+            return parsed, value
+    metadata = job.get("metadata") if isinstance(job.get("metadata"), dict) else {}
+    for key in ("finished_at", "completed_at", "started_at", "claimed_at", "updated_at", "created_at", "timestamp"):
+        value = metadata.get(key)
+        parsed = _parse_iso(value)
+        if isinstance(value, str) and value and parsed is not None:
+            return parsed, value
+    return None
+
+
 def _latest_adaptation_training_timestamp(jobs: list[dict[str, object]]) -> str | None:
-    for job in reversed(jobs):
+    latest: tuple[datetime, str] | None = None
+    for job in jobs:
         if not isinstance(job, dict):
             continue
         status = str(job.get("status") or "").lower()
-        if status in _ACTIVE_ADAPTATION_JOB_STATUSES:
-            continue
-        if status not in _TERMINAL_ADAPTATION_JOB_STATUSES:
+        if status not in _RELEVANT_ADAPTATION_JOB_STATUSES:
             continue
         if not _job_has_adaptation_metadata(job):
             continue
-        for key in _ADAPTATION_JOB_TIMESTAMP_FIELDS:
-            value = job.get(key)
-            if isinstance(value, str) and value:
-                return value
-    return None
+        candidate = _job_latest_training_attempt_timestamp(job)
+        if candidate is None:
+            continue
+        if latest is None or candidate[0] >= latest[0]:
+            latest = candidate
+    return None if latest is None else latest[1]
 
 
 def _latest_checkpoint_from_jobs(jobs: list[dict[str, object]]) -> str | None:
@@ -549,21 +580,49 @@ def _is_adaptation_record(record: dict[str, object]) -> bool:
     return isinstance(record.get("adaptation_run"), dict) or record.get("contract_version") == "robust_convlstm_adaptation_v1"
 
 
-def _model_training_log_tail(record: dict[str, object], *, max_lines: int = 100) -> list[str]:
+def _path_derived_training_log_from_checkpoint(path: object) -> str | None:
+    if not isinstance(path, str) or not path.strip():
+        return None
+    checkpoint = Path(path)
+    if checkpoint.name not in {"best_overall_full_checkpoint.pt", "best_full_checkpoint.pt", "final_full_checkpoint.pt"}:
+        return None
+    if checkpoint.parent.name.startswith("retrain-job-") or checkpoint.parent.parent.name == "runs":
+        return str(checkpoint.parent / "training.log")
+    return None
+
+def _model_training_log_candidates(record: dict[str, object]) -> list[str]:
     adaptation_run = record.get("adaptation_run") if isinstance(record.get("adaptation_run"), dict) else {}
     metadata = record.get("metadata") if isinstance(record.get("metadata"), dict) else {}
-    candidates = [
+    raw_candidates = [
         adaptation_run.get("log_file_path"),
-        metadata.get("log_file_path"),
         str(Path(str(adaptation_run.get("result_run_dir"))) / "training.log") if adaptation_run.get("result_run_dir") else None,
-        str(Path(str(adaptation_run.get("output_dir"))) / "training.log") if adaptation_run.get("output_dir") else None,
+        metadata.get("log_file_path"),
+        str(Path(str(metadata.get("result_run_dir"))) / "training.log") if metadata.get("result_run_dir") else None,
         str(Path(str(record.get("created_from_run_dir"))) / "training.log") if record.get("created_from_run_dir") else None,
+        _path_derived_training_log_from_checkpoint(record.get("path")),
     ]
+    candidates: list[str] = []
+    seen: set[str] = set()
+    for candidate in raw_candidates:
+        if not isinstance(candidate, str) or not candidate.strip() or candidate in seen:
+            continue
+        candidates.append(candidate)
+        seen.add(candidate)
+    return candidates
+
+def _model_training_log_details(record: dict[str, object], *, max_lines: int = 100) -> dict[str, object]:
+    candidates = _model_training_log_candidates(record)
+    attempted_path = candidates[0] if candidates else None
     for candidate in candidates:
         lines, available = _tail_training_log(candidate, max_lines=max_lines)
         if available and lines:
-            return lines
-    return []
+            return {"training_log_tail": lines, "training_log_path": candidate, "training_log_available": True}
+        attempted_path = candidate
+    return {"training_log_tail": [], "training_log_path": attempted_path, "training_log_available": False}
+
+def _model_training_log_tail(record: dict[str, object], *, max_lines: int = 100) -> list[str]:
+    details = _model_training_log_details(record, max_lines=max_lines)
+    return [str(line) for line in details.get("training_log_tail", [])]
 
 
 def _candidate_response(record: dict[str, object]) -> dict[str, object]:
@@ -572,6 +631,7 @@ def _candidate_response(record: dict[str, object]) -> dict[str, object]:
     best = record.get("best_overall_checkpoint") or (training_summary or {}).get("best_overall_checkpoint") or (adaptation_run or {}).get("best_overall_checkpoint")
     final = record.get("final_checkpoint") or (training_summary or {}).get("final_checkpoint") or (adaptation_run or {}).get("final_checkpoint")
     path = record.get("path")
+    log_details = _model_training_log_details(record)
     return {
         "model_id": str(record.get("model_id")),
         "status": record.get("status"),
@@ -586,7 +646,9 @@ def _candidate_response(record: dict[str, object]) -> dict[str, object]:
         "best_overall_checkpoint": str(best) if best else None,
         "final_checkpoint": str(final) if final else None,
         "checkpoint_file_exists": bool(isinstance(path, str) and Path(path).exists()),
-        "training_log_tail": _model_training_log_tail(record),
+        "training_log_tail": log_details["training_log_tail"],
+        "training_log_path": log_details["training_log_path"],
+        "training_log_available": log_details["training_log_available"],
     }
 
 
@@ -644,9 +706,13 @@ def _adaptation_training_status() -> dict[str, object]:
         finished_at = latest_enriched.get("finished_at")
         started_dt = _parse_iso(started_at)
         finished_dt = _parse_iso(finished_at)
+        raw_latest_status = str(latest_enriched.get("status", "")).lower()
         if stale:
             latest_enriched["is_stale"] = True
             latest_enriched["effective_status"] = "stale"
+        elif raw_latest_status in {"succeeded", "completed", "failed", "cancelled"}:
+            latest_enriched["is_stale"] = False
+            latest_enriched["effective_status"] = raw_latest_status
         latest_enriched.update({
             "best_checkpoint": str(best_checkpoint) if best_checkpoint else None,
             "final_checkpoint": str(final_checkpoint) if final_checkpoint else None,
@@ -1079,7 +1145,7 @@ def register_ops_routes(app: FastAPI, *, forecast_service, dispatch_worker=dispa
         store = RetrainingJobStore(paths["jobs"])
         event_log = OperationalEventLog(paths["events"])
         active_statuses = {"queued", "waiting", "claimed", "starting", "running"}
-        jobs = [job for job in store.list_jobs() if str(job.get("status") or "").lower() in active_statuses]
+        jobs = [job for job in _annotate_stale_jobs(store.list_jobs()) if str(job.get("status") or "").lower() in active_statuses]
         if not jobs:
             return {"stopped": False, "job_id": None, "previous_status": None, "new_status": None, "message": "No active training job to stop.", "graceful": True}
         job = max(jobs, key=lambda item: int(item.get("created_sequence", -1)))
@@ -1089,10 +1155,27 @@ def register_ops_routes(app: FastAPI, *, forecast_service, dispatch_worker=dispa
         now = datetime.now(timezone.utc).isoformat()
         if previous.lower() in {"queued", "waiting"} and not metadata.get("worker_claimed"):
             existing_tail = metadata.get("log_tail") if isinstance(metadata.get("log_tail"), list) else []
-            metadata = {**metadata, "cancel_requested": True, "stop_requested_at": now, "log_tail": [*existing_tail[-20:], "Training cancelled by operator."]}
+            metadata = {**metadata, "cancel_requested": True, "cancelled_at": now, "stop_requested_at": now, "log_tail": [*existing_tail[-20:], "Training cancelled by operator."]}
             updated = store.update_job(job_id=job_id, status="cancelled", finished_at=now, error_message="Cancelled by operator", metadata=metadata)
-            event_log.append(event_type="retraining_stop_requested", payload={"job_id": job_id, "previous_status": previous, "new_status": "cancelled"})
+            event_log.append(event_type="retraining_job_cancelled", payload={"job_id": job_id, "previous_status": previous, "new_status": "cancelled", "reason": "operator_stop_queued"})
             return {"stopped": True, "job_id": job_id, "previous_status": previous, "new_status": str(updated.get("status")), "message": "Queued training job cancelled.", "graceful": True}
+        if previous.lower() in {"running", "claimed", "starting"} and bool(job.get("is_stale")):
+            existing_tail = metadata.get("log_tail") if isinstance(metadata.get("log_tail"), list) else []
+            metadata = {
+                **metadata,
+                "cancel_requested": True,
+                "cancelled_at": now,
+                "stop_requested_at": now,
+                "status_detail": "Cancelled stale training job by operator",
+                "log_tail": [
+                    *existing_tail[-20:],
+                    "Training cancelled by operator.",
+                    "Stale running job cancelled; no active worker heartbeat was reported.",
+                ],
+            }
+            updated = store.update_job(job_id=job_id, status="cancelled", finished_at=now, error_message="Cancelled stale training job by operator", metadata=metadata)
+            event_log.append(event_type="retraining_job_cancelled", payload={"job_id": job_id, "previous_status": previous, "new_status": "cancelled", "reason": "operator_cancelled_stale"})
+            return {"stopped": True, "job_id": job_id, "previous_status": previous, "new_status": str(updated.get("status")), "message": "Stale training job cancelled.", "graceful": True}
         metadata = {**metadata, "cancel_requested": True, "stop_requested_at": now}
         updated = store.update_job(job_id=job_id, metadata=metadata, error_message="Cancelled by operator" if previous.lower() != "running" else job.get("error_message"))
         event_log.append(event_type="retraining_stop_requested", payload={"job_id": job_id, "previous_status": previous, "new_status": updated.get("status")})

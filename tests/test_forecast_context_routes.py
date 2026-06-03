@@ -13,6 +13,7 @@ class StubDatasetScenarioService:
     def __init__(self):
         self.overlay_active_called = False
         self.raster_active_called = False
+        self.playback_enabled = True
 
     def is_enabled(self):
         return True
@@ -66,10 +67,11 @@ class StubDatasetScenarioService:
         return self.frame_overlay_active(frame_index)
 
     def get_playback_state(self):
-        return {"enabled": True, "active_scenario_id": "dataset_a"}
+        return {"enabled": self.playback_enabled, "active_scenario_id": "dataset_a"}
 
     def update_playback_state(self, **kwargs):
-        return {"enabled": True, "active_scenario_id": kwargs.get("active_scenario_id")}
+        self.playback_enabled = bool(kwargs.get("enabled", False))
+        return {"enabled": self.playback_enabled, "active_scenario_id": kwargs.get("active_scenario_id")}
 
     def playback_next(self):
         return {"enabled": True, "active_scenario_id": "dataset_a"}
@@ -158,3 +160,36 @@ def test_active_frames_route_not_captured_as_scenario_id():
     payload = response.json()
     assert payload["frame_count"] == 4
     assert payload["frame_indices"] == [0, 1, 2, 3]
+
+
+def test_dataset_playback_state_can_be_disabled_for_active_forecast_mode():
+    app = FastAPI()
+    dataset = StubDatasetScenarioService()
+    register_forecast_context_routes(app, forecast_context_service=StubForecastContextService(), dataset_scenario_service=dataset)
+    client = TestClient(app)
+
+    response = client.post('/forecast-context/dataset-playback/state', json={"enabled": False, "active_scenario_id": "dataset_a", "playback_running": False})
+
+    assert response.status_code == 200
+    assert response.json()["enabled"] is False
+    assert client.get('/forecast-context/dataset-playback/state').json()["enabled"] is False
+
+
+def test_latest_source_session_uses_non_dataset_context_route():
+    class RecordingContext(StubForecastContextService):
+        def __init__(self):
+            self.sources = []
+        def latest(self, session_id=None, source="auto"):
+            self.sources.append(source)
+            return type("R", (), {"payload": {"source": source}})()
+
+    app = FastAPI()
+    context = RecordingContext()
+    register_forecast_context_routes(app, forecast_context_service=context, dataset_scenario_service=StubDatasetScenarioService())
+    client = TestClient(app)
+
+    response = client.get('/forecast-context/latest?source=session')
+
+    assert response.status_code == 200
+    assert response.json()["source"] == "session"
+    assert context.sources == ["session"]

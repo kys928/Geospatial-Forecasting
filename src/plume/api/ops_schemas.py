@@ -198,6 +198,8 @@ class AdaptationCandidateResponse(BaseModel):
     final_checkpoint: str | None = None
     checkpoint_file_exists: bool
     training_log_tail: list[str] = Field(default_factory=list)
+    training_log_path: str | None = None
+    training_log_available: bool = False
 
 
 class AdaptationCandidateListResponse(BaseModel):
