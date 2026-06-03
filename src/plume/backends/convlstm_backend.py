@@ -127,6 +127,11 @@ class ConvLSTMBackend(BaseBackend):
                 active = None
             if active is not None:
                 checkpoint = active["checkpoint_path"]
+                active_record = active.get("record") if isinstance(active.get("record"), dict) else {}
+                if str(active_record.get("contract_version") or "") == "robust_convlstm_adaptation_v1":
+                    if self.prediction_engine == "ridge_baseline":
+                        raise ValueError("Active robust ConvLSTM registry model cannot be served by ridge_baseline")
+                    self.prediction_engine = "torch_robust_multistep"
                 self.model_source = "registry_active"
                 self.model_version = str(active["model_id"])
                 self.active_model_id = str(active["model_id"])
@@ -407,7 +412,7 @@ class ConvLSTMBackend(BaseBackend):
                 dataset_service = DatasetScenarioService.from_env()
                 if dataset_service.is_enabled():
                     dataset_tensor, dataset_payload = dataset_service.active_input_window()
-                    adapter_result = replace(adapter_result, tensor=dataset_tensor, metadata={**adapter_result.metadata, "input_source": "dataset_window", "dataset_window": dataset_payload.get("forecast", {})})
+                    adapter_result = replace(adapter_result, tensor=dataset_tensor, metadata={**adapter_result.metadata, "input_source": "dataset_window", "input_window_source": "dataset_scenario_service", "dataset_window": dataset_payload.get("forecast", {})})
                     input_source = "dataset_window"
             except Exception as exc:  # noqa: BLE001
                 raise RuntimeError(f"ConvLSTM input unavailable: {exc}") from exc
@@ -458,9 +463,12 @@ class ConvLSTMBackend(BaseBackend):
                     "checkpoint_path": str(self.load_metadata.get("checkpoint_path")) if self.load_metadata.get("checkpoint_path") else None,
                     "inference_mode": self.prediction_engine,
                     "fallback_used": False,
+                    "temporary_model_substitution": False,
                     "dataset_playback_enabled": False,
                     "active_registry_model_id": self.active_model_id,
                     "input_source": input_source,
+                    "input_window_source": "dataset_scenario_service" if input_source == "dataset_window" else None,
+                    "output_source": "convlstm_prediction",
                     "generated_at": datetime.now(timezone.utc).isoformat(),
                     "frame_count": int(sequence.shape[0]),
                     "frame_indices": list(range(sequence.shape[0])),

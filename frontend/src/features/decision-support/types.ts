@@ -33,6 +33,7 @@ export type ForecastContextResponse = {
   source: Record<string, unknown>;
   plume_metrics: Record<string, unknown>;
   runtime: Record<string, unknown>;
+  provenance?: Record<string, unknown>;
   raw: Record<string, unknown>;
 };
 

@@ -17,7 +17,7 @@ class FakeContextService:
         }
 
     def latest(self, session_id=None, source="auto"):
-        assert source == "auto"
+        assert source in {"auto", "session"}
         return type("R", (), {"payload": self.payload})()
 
 
@@ -268,3 +268,37 @@ def test_decision_support_chat_prediction_owner_fallback():
     response = svc.chat("What model is doing predictions?")
     assert "fallback" in response["answer"].lower()
     assert "not active ConvLSTM" in response["answer"]
+
+
+def test_decision_support_active_dataset_window_context_is_not_playback_or_live_claim():
+    payload_context = {
+        "forecast": {"status": "plume detected above threshold", "risk_level": "medium", "input_source": "dataset_window"},
+        "conditions": {"wind_direction_label": "NE", "wind_speed_ms": 4.0},
+        "plume_metrics": {"max_concentration": 1.0},
+        "provenance": {
+            "forecast_source": "active_model_inference",
+            "model_family": "ConvLSTM",
+            "model_id": "active-1",
+            "input_source": "dataset_window",
+            "input_window_source": "dataset_scenario_service",
+            "output_source": "convlstm_prediction",
+            "dataset_playback_enabled": False,
+            "fallback_used": False,
+        },
+        "runtime": {"observations_available": False, "input_source": "dataset_window"},
+    }
+    svc = DecisionSupportService(
+        runtime_client=FakeRuntime(),
+        explain_service=FakeExplain(llm_service=FakeLlmService(success=False)),
+        forecast_context_service=FakeContextService(payload=payload_context),
+    )
+
+    result = svc.latest().payload
+    serialized = json.dumps(result)
+
+    assert result["mode"] == "context"
+    assert "dataset window seed" in result["briefing"]
+    assert "not live sensor confirmation" in result["briefing"]
+    assert "DatasetPlayback" not in serialized
+    assert "ridge_plume_baseline" not in serialized
+    assert result["forecast_evidence"]["provenance"]["forecast_source"] == "active_model_inference"

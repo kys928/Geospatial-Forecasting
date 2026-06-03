@@ -185,9 +185,9 @@ def check_adaptation_checkpoint_compatibility(
         return CompatibilityResult(False, False, str(checkpoint_path), contract_result.reasons, contract=contract_result.contract)
     if require_strict_torch:
         try:
-            from plume.models.torch_robust_multistep_convlstm import RobustMultiStepConvLSTMInference
+            from plume.models.torch_robust_multistep_convlstm import RobustMultiStepConvLSTMCheckpoint
 
-            RobustMultiStepConvLSTMInference(checkpoint_path, device="cpu")
+            RobustMultiStepConvLSTMCheckpoint(checkpoint_path, device="cpu")
         except Exception as exc:  # noqa: BLE001
             return CompatibilityResult(False, False, str(checkpoint_path), [f"strict_robust_loader_failed:{exc}"], contract=contract_result.contract)
     return CompatibilityResult(True, True, str(checkpoint_path), [], bool(require_strict_torch), contract_result.contract)
