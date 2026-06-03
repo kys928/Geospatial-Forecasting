@@ -1,0 +1,64 @@
+{
+  "results": [
+    {
+      "detail": "retry=3600 min_between=3600",
+      "name": "cooldown_config",
+      "status": "PASS"
+    },
+    {
+      "detail": "use_model_registry=True model_registry_path=artifacts/convlstm_ops/model_registry.json checkpoint=artifacts/models/convlstm_multistep_autoreg_two_stage_v1/best_full_checkpoint.pt",
+      "name": "backend_registry_static_settings",
+      "status": "PASS"
+    },
+    {
+      "detail": "latest_job log fields present",
+      "name": "training_status_log_fields",
+      "status": "PASS"
+    },
+    {
+      "detail": "training.log stdout/stderr capture found",
+      "name": "training_log_capture_logic",
+      "status": "PASS"
+    },
+    {
+      "detail": "runtime_seconds and elapsed_seconds present",
+      "name": "runtime_elapsed_status",
+      "status": "PASS"
+    },
+    {
+      "detail": "standard provenance fields found",
+      "name": "forecast_provenance_fields",
+      "status": "PASS"
+    },
+    {
+      "detail": "provenance truthfulness prompt/rules found",
+      "name": "decision_support_truthfulness",
+      "status": "PASS"
+    },
+    {
+      "detail": "no obvious raw object stringification pattern",
+      "name": "ops_registry_raw_object_render",
+      "status": "PASS"
+    },
+    {
+      "detail": "OpsTrainingTab prefers latest_job.log_tail",
+      "name": "frontend_prefers_log_tail",
+      "status": "PASS"
+    },
+    {
+      "detail": "dataset playback provenance explicit",
+      "name": "dataset_playback_provenance",
+      "status": "PASS"
+    },
+    {
+      "detail": "focused behavior tests found",
+      "name": "task_10b_tests",
+      "status": "PASS"
+    }
+  ],
+  "summary": {
+    "FAIL": 0,
+    "PASS": 11,
+    "WARN": 0
+  }
+}

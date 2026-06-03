@@ -232,3 +232,39 @@ def test_decision_support_chat_returns_loading_when_context_not_ready():
     response = svc.chat("Any update?")
     assert response["mode"] == "context_loading"
     assert "loading" in response["answer"].lower()
+
+
+def test_decision_support_chat_prediction_owner_dataset_playback():
+    svc = DecisionSupportService(runtime_client=FakeRuntime(), explain_service=FakeExplain(), forecast_context_service=FakeContextService(payload={
+        "forecast": {"input_source": "dataset_playback", "risk_level": "low"},
+        "plume_metrics": {"max_concentration": 0.0},
+        "provenance": {"forecast_source": "dataset_playback", "model_family": "DatasetPlayback", "fallback_used": False},
+        "runtime": {"dataset_playback_enabled": True},
+    }))
+    response = svc.chat("What model is doing predictions?")
+    assert "dataset playback" in response["answer"].lower()
+    assert response["runtime_metadata"]["answered_from_provenance"] is True
+
+
+def test_decision_support_chat_prediction_owner_active_convlstm():
+    svc = DecisionSupportService(runtime_client=FakeRuntime(), explain_service=FakeExplain(), forecast_context_service=FakeContextService(payload={
+        "forecast": {"input_source": "dataset_window", "risk_level": "medium"},
+        "plume_metrics": {"max_concentration": 1.0},
+        "provenance": {"forecast_source": "active_model_inference", "model_family": "ConvLSTM", "model_id": "active-1", "fallback_used": False},
+        "runtime": {},
+    }))
+    response = svc.chat("What model is doing predictions?")
+    assert "active ConvLSTM model" in response["answer"]
+    assert "active-1" in response["answer"]
+
+
+def test_decision_support_chat_prediction_owner_fallback():
+    svc = DecisionSupportService(runtime_client=FakeRuntime(), explain_service=FakeExplain(), forecast_context_service=FakeContextService(payload={
+        "forecast": {"input_source": "unknown", "risk_level": "unknown"},
+        "plume_metrics": {"max_concentration": 0.0},
+        "provenance": {"forecast_source": "fallback", "model_family": "GaussianFallback", "fallback_used": True},
+        "runtime": {},
+    }))
+    response = svc.chat("What model is doing predictions?")
+    assert "fallback" in response["answer"].lower()
+    assert "not active ConvLSTM" in response["answer"]

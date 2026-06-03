@@ -1561,6 +1561,53 @@ def submit_retraining_job(
     )
 
 
+
+_STALE_ACTIVE_STATUSES = {"running", "starting", "claimed"}
+_TERMINAL_RETRAINING_STATUSES = {"succeeded", "completed", "failed", "cancelled"}
+
+def _metadata_dict(value: object) -> dict[str, object]:
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str):
+        try:
+            decoded = json.loads(value)
+            return decoded if isinstance(decoded, dict) else {}
+        except Exception:
+            return {}
+    return {}
+
+def _job_status_anchor_for_staleness(job: dict[str, object]) -> datetime | None:
+    metadata = _metadata_dict(job.get("metadata"))
+    for key in ("heartbeat_at", "last_heartbeat_at", "updated_at", "claimed_at", "started_at", "created_at"):
+        value = metadata.get(key) if key in {"heartbeat_at", "last_heartbeat_at"} else job.get(key) or metadata.get(key)
+        parsed = _parse_iso_datetime(value)
+        if parsed is not None:
+            return parsed
+    return None
+
+def _retraining_stale_timeout_seconds() -> int:
+    value = os.getenv("PLUME_STALE_RUNNING_JOB_TIMEOUT_SECONDS") or os.getenv("PLUME_RETRAINING_STALE_TIMEOUT_SECONDS")
+    if value:
+        try:
+            return max(60, int(value))
+        except ValueError:
+            pass
+    return 1800
+
+def _is_effectively_active_retraining_job(job: dict[str, object], *, now: datetime | None = None) -> bool:
+    status = str(job.get("status", "")).lower()
+    if status not in {"queued", "running", "starting", "claimed"}:
+        return False
+    if status in _STALE_ACTIVE_STATUSES:
+        anchor = _job_status_anchor_for_staleness(job)
+        if anchor is not None:
+            reference = now or datetime.now(timezone.utc)
+            if anchor.tzinfo is None:
+                anchor = anchor.replace(tzinfo=timezone.utc)
+            if (reference - anchor).total_seconds() > float(_retraining_stale_timeout_seconds()):
+                return False
+    return True
+
 def maybe_enqueue_automatic_adaptation_job(
     *,
     job_store: RetrainingJobStore,
@@ -1572,8 +1619,7 @@ def maybe_enqueue_automatic_adaptation_job(
     """Idempotently enqueue one automatic adaptation job when readiness is green."""
     current_time = now or datetime.now(timezone.utc)
     jobs = job_store.list_jobs()
-    active_statuses = {"queued", "running", "starting", "claimed"}
-    active_jobs = [job for job in jobs if str(job.get("status", "")).lower() in active_statuses]
+    active_jobs = [job for job in jobs if _is_effectively_active_retraining_job(job, now=current_time)]
     if active_jobs:
         event_log.append(
             event_type="automatic_retraining_skipped_active_job",
@@ -1583,7 +1629,7 @@ def maybe_enqueue_automatic_adaptation_job(
 
     adaptation_config_path = _adaptation_config_path(config_dir)
     readiness_config = AdaptationReadinessConfig.from_yaml(adaptation_config_path)
-    if readiness_config.max_concurrent_training_jobs <= sum(1 for job in jobs if str(job.get("status", "")).lower() == "running"):
+    if readiness_config.max_concurrent_training_jobs <= sum(1 for job in jobs if _is_effectively_active_retraining_job(job, now=current_time) and str(job.get("status", "")).lower() == "running"):
         event_log.append(event_type="automatic_retraining_skipped_concurrency_limit", payload={"reason": "max_concurrent_training_jobs"})
         return {"attempted": True, "enqueued": False, "reason": "max_concurrent_training_jobs", "job_id": None}
 
