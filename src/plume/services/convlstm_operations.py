@@ -17,6 +17,8 @@ import uuid
 import numpy as np
 import yaml
 
+from plume.services.metadata_utils import normalize_conditions, normalize_source
+
 from plume.services.adaptation_buffer import AdaptationBuffer, AdaptationBufferConfig
 from plume.services.adaptation_promotion import (
     AdaptationPromotionThresholds,
@@ -104,37 +106,6 @@ def _npz_scalar(data: np.lib.npyio.NpzFile, *keys: str) -> object | None:
     return None
 
 
-def _float_or_none(value: object) -> float | None:
-    if value is None:
-        return None
-    try:
-        number = float(value)
-    except (TypeError, ValueError):
-        return None
-    if not np.isfinite(number):
-        return None
-    return number
-
-
-def _wind_direction_label(degrees: float | None) -> str | None:
-    if degrees is None:
-        return None
-    labels = ("N", "NE", "E", "SE", "S", "SW", "W", "NW")
-    return labels[int((degrees + 22.5) // 45) % 8]
-
-
-def _wind_from_uv(u_value: object, v_value: object) -> tuple[float | None, float | None, str | None]:
-    u = _float_or_none(u_value)
-    v = _float_or_none(v_value)
-    if u is None or v is None:
-        return None, None, None
-    speed = float((u * u + v * v) ** 0.5)
-
-    # Meteorological convention: direction wind comes FROM.
-    degrees = float((270.0 - np.degrees(np.arctan2(v, u))) % 360.0)
-    return speed, degrees, _wind_direction_label(degrees)
-
-
 def load_dataset_window_runtime_context(path: str | Path | None) -> dict[str, object]:
     """Extract operator-facing meteorology/source/provenance from the NPZ window used for ConvLSTM inference.
 
@@ -156,42 +127,50 @@ def load_dataset_window_runtime_context(path: str | Path | None) -> dict[str, ob
         }
 
     with np.load(resolved, allow_pickle=False) as data:
-        u10 = _npz_scalar(data, "u10m_ms", "u10", "u_wind", "u", "u_component_of_wind_10m")
-        v10 = _npz_scalar(data, "v10m_ms", "v10", "v_wind", "v", "v_component_of_wind_10m")
-        wind_speed = _float_or_none(_npz_scalar(data, "wind_speed_ms", "wind_speed", "windspeed"))
-        wind_direction = _float_or_none(_npz_scalar(data, "wind_direction_deg", "wind_direction", "wind_dir_deg"))
-        wind_label = _npz_scalar(data, "wind_direction_label", "wind_label", "wind_dir_label")
+        channel_context: dict[str, object] = {}
+        if "input" in data.files:
+            input_data = np.asarray(data["input"])
+            if input_data.ndim == 4 and input_data.shape[0] > 0 and input_data.shape[1] >= 10:
+                last = input_data[-1]
+                channel_context = {
+                    "u10m_ms": float(np.nanmedian(last[1])),
+                    "v10m_ms": float(np.nanmedian(last[2])),
+                    "wspd10_ms": float(np.nanmedian(last[3])),
+                    "pblh_m": float(np.nanmedian(last[6])),
+                    "sfcp_hpa": float(np.nanmedian(last[7])),
+                    "rh2m_pct": float(np.nanmedian(last[8])),
+                    "t02m_k": float(np.nanmedian(last[9])),
+                }
+                sin_v = float(np.nanmedian(last[4]))
+                cos_v = float(np.nanmedian(last[5]))
+                if np.isfinite(sin_v) and np.isfinite(cos_v):
+                    channel_context["wind_direction_deg"] = float((np.degrees(np.arctan2(sin_v, cos_v)) + 360.0) % 360.0)
 
-        if wind_speed is None or wind_direction is None:
-            derived_speed, derived_direction, derived_label = _wind_from_uv(u10, v10)
-            wind_speed = wind_speed if wind_speed is not None else derived_speed
-            wind_direction = wind_direction if wind_direction is not None else derived_direction
-            wind_label = wind_label if wind_label is not None else derived_label
-
-        meteorology = {
-            "u10m_ms": _float_or_none(u10),
-            "v10m_ms": _float_or_none(v10),
-            "wind_speed_ms": wind_speed,
-            "wind_direction_deg": wind_direction,
-            "wind_direction_label": str(wind_label) if wind_label is not None else _wind_direction_label(wind_direction),
-            "temperature_c": _float_or_none(_npz_scalar(data, "temperature_c", "temp_c", "temperature", "t2m", "temperature_2m")),
-            "humidity_pct": _float_or_none(_npz_scalar(data, "humidity_pct", "relative_humidity", "rh", "humidity")),
-            "surface_pressure_hpa": _float_or_none(_npz_scalar(data, "surface_pressure_hpa", "pressure_hpa", "surface_pressure", "sp")),
-            "pbl_height_m": _float_or_none(_npz_scalar(data, "pbl_height_m", "pblh", "boundary_layer_height", "planetary_boundary_layer_height")),
-            "source": str(_npz_scalar(data, "meteorology_source", "met_source", "source_kind") or "dataset_window_npz"),
+        explicit_meteorology = {
+            "u10m_ms": _npz_scalar(data, "u10m_ms", "u10", "u_wind", "u", "u_component_of_wind_10m"),
+            "v10m_ms": _npz_scalar(data, "v10m_ms", "v10", "v_wind", "v", "v_component_of_wind_10m"),
+            "wind_speed_ms": _npz_scalar(data, "wind_speed_ms", "wind_speed", "windspeed", "wspd10_ms"),
+            "wind_direction_deg": _npz_scalar(data, "wind_direction_deg", "wind_direction", "wind_dir_deg"),
+            "wind_direction_label": _npz_scalar(data, "wind_direction_label", "wind_label", "wind_dir_label"),
+            "temperature_c": _npz_scalar(data, "temperature_c", "temp_c", "temperature", "t2m", "temperature_2m", "t02m_k"),
+            "humidity_pct": _npz_scalar(data, "humidity_pct", "relative_humidity", "rh", "humidity", "rh2m_pct"),
+            "surface_pressure_hpa": _npz_scalar(data, "surface_pressure_hpa", "pressure_hpa", "surface_pressure", "sfcp_hpa", "sp"),
+            "pbl_height_m": _npz_scalar(data, "pbl_height_m", "pbl_height", "pblh", "pblh_m", "boundary_layer_height", "planetary_boundary_layer_height"),
+            "source": _npz_scalar(data, "meteorology_source", "met_source", "source_kind"),
             "timestamp": _npz_scalar(data, "meteorology_timestamp", "timestamp", "time", "window_start"),
         }
+        meteorology = normalize_conditions(explicit_meteorology, channel_context, {"source": "dataset_window_npz"})
 
-        source = {
-            "latitude": _float_or_none(_npz_scalar(data, "latitude", "lat", "source_latitude", "source_lat")),
-            "longitude": _float_or_none(_npz_scalar(data, "longitude", "lon", "lng", "source_longitude", "source_lon")),
+        source = normalize_source({
+            "latitude": _npz_scalar(data, "latitude", "lat", "source_latitude", "source_lat"),
+            "longitude": _npz_scalar(data, "longitude", "lon", "lng", "source_longitude", "source_lon"),
             "pollutant": _npz_scalar(data, "pollutant", "pollutant_name"),
-            "emission_rate": _float_or_none(_npz_scalar(data, "emission_rate", "emissions_rate")),
-            "release_height_m": _float_or_none(_npz_scalar(data, "release_height_m", "release_height")),
-            "duration_minutes": _float_or_none(_npz_scalar(data, "duration_minutes", "release_duration_minutes")),
+            "emission_rate": _npz_scalar(data, "emission_rate", "emissions_rate"),
+            "release_height_m": _npz_scalar(data, "release_height_m", "release_height"),
+            "duration_minutes": _npz_scalar(data, "duration_minutes", "release_duration_minutes"),
             "start_time": _npz_scalar(data, "start_time", "window_start"),
             "end_time": _npz_scalar(data, "end_time", "window_end"),
-        }
+        })
 
         scenario_id = _npz_scalar(data, "scenario_id", "scenario")
         window_id = _npz_scalar(data, "window_id", "id")
@@ -199,8 +178,8 @@ def load_dataset_window_runtime_context(path: str | Path | None) -> dict[str, ob
         window_end = _npz_scalar(data, "window_end", "end_time")
 
     return {
-        "meteorology": {key: value for key, value in meteorology.items() if value is not None},
-        "source": {key: value for key, value in source.items() if value is not None},
+        "meteorology": meteorology,
+        "source": source,
         "raw_reference": {
             "source_file": str(resolved),
             "scenario_id": str(scenario_id) if scenario_id is not None else None,

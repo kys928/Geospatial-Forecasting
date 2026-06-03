@@ -34,6 +34,7 @@ from plume.services.convlstm_operations import (
     load_dataset_window_runtime_context,
     resolve_active_model_artifact,
 )
+from plume.services.metadata_utils import json_safe, normalize_conditions, normalize_source
 from plume.services.dataset_scenario_service import DatasetScenarioService
 from plume.utils.config import Config
 
@@ -197,7 +198,7 @@ class ConvLSTMBackend(BaseBackend):
                 "active_model_id": self.active_model_id,
                 "output_space": self.output_space,
                 "temporary_model_substitution": False,
-                "checkpoint_metadata": self.torch_model.metadata,
+                "checkpoint_metadata": json_safe(self.torch_model.metadata),
             }
             return
 
@@ -275,7 +276,7 @@ class ConvLSTMBackend(BaseBackend):
                 "model_version": self.model_version,
                 "output_space": self.output_space,
                 "checkpoint_path": str(Path(checkpoint)),
-                "checkpoint_metadata": metadata,
+                "checkpoint_metadata": json_safe(metadata),
             }
 
         else:
@@ -431,6 +432,8 @@ class ConvLSTMBackend(BaseBackend):
                     context_meteorology = dataset_window_context.get("meteorology", {}) if isinstance(dataset_window_context, dict) else {}
                     context_source = dataset_window_context.get("source", {}) if isinstance(dataset_window_context, dict) else {}
                     context_raw_reference = dataset_window_context.get("raw_reference", {}) if isinstance(dataset_window_context, dict) else {}
+                    normalized_conditions = normalize_conditions(payload_conditions, context_meteorology)
+                    normalized_source = normalize_source(payload_source, context_source)
 
                     adapter_result = replace(
                         adapter_result,
@@ -440,15 +443,15 @@ class ConvLSTMBackend(BaseBackend):
                             "input_source": "dataset_window",
                             "input_window_source": "dataset_scenario_service",
                             "dataset_window": payload_forecast,
-                            "meteorology": payload_conditions or context_meteorology,
-                            "conditions": payload_conditions or context_meteorology,
-                            "source": payload_source or context_source,
+                            "meteorology": normalized_conditions,
+                            "conditions": normalized_conditions,
+                            "source": normalized_source,
                             "raw_reference": context_raw_reference or {
                                 "source_file": source_file,
                                 "scenario_id": payload_forecast.get("scenario_id") if isinstance(payload_forecast, dict) else None,
                                 "target_usage": "input_window_for_convlstm_inference",
                             },
-                            "dataset_payload_raw": payload_raw,
+                            "dataset_payload_raw": json_safe(payload_raw),
                         },
                     )
                     input_source = "dataset_window"
@@ -471,6 +474,13 @@ class ConvLSTMBackend(BaseBackend):
                     "fallback_used": False,
                     "dataset_playback_enabled": False,
                     "active_registry_model_id": None,
+                    "input_source": input_source,
+                    "input_window_source": "dataset_scenario_service" if input_source == "dataset_window" else None,
+                    "meteorology": normalize_conditions(adapter_result.metadata.get("meteorology"), adapter_result.metadata.get("conditions")),
+                    "conditions": normalize_conditions(adapter_result.metadata.get("conditions"), adapter_result.metadata.get("meteorology")),
+                    "source": normalize_source(adapter_result.metadata.get("source")),
+                    "raw_reference": json_safe(adapter_result.metadata.get("raw_reference") or {}),
+                    "output_source": "ridge_prediction",
                     "generated_at": generated_at.isoformat(),
                 },
                 timestamp=generated_at,
@@ -506,16 +516,16 @@ class ConvLSTMBackend(BaseBackend):
                     "active_registry_model_id": self.active_model_id,
                     "input_source": input_source,
                     "input_window_source": "dataset_scenario_service" if input_source == "dataset_window" else None,
-                    "meteorology": adapter_result.metadata.get("meteorology") or adapter_result.metadata.get("conditions") or {},
-                    "conditions": adapter_result.metadata.get("conditions") or adapter_result.metadata.get("meteorology") or {},
-                    "source": adapter_result.metadata.get("source") or {},
-                    "raw_reference": adapter_result.metadata.get("raw_reference") or {},
+                    "meteorology": normalize_conditions(adapter_result.metadata.get("meteorology"), adapter_result.metadata.get("conditions")),
+                    "conditions": normalize_conditions(adapter_result.metadata.get("conditions"), adapter_result.metadata.get("meteorology")),
+                    "source": normalize_source(adapter_result.metadata.get("source")),
+                    "raw_reference": json_safe(adapter_result.metadata.get("raw_reference") or {}),
                     "output_source": "convlstm_prediction",
                     "generated_at": datetime.now(timezone.utc).isoformat(),
                     "frame_count": int(sequence.shape[0]),
                     "frame_indices": list(range(sequence.shape[0])),
                     "default_frame_index": 0,
-                    "checkpoint_metadata": self.torch_model.metadata,
+                    "checkpoint_metadata": json_safe(self.torch_model.metadata),
                     "output_shape_order": "(future_steps,H,W)",
                 },
                 timestamp=datetime.now(timezone.utc),

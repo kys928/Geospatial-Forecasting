@@ -12,6 +12,7 @@ from plume.schemas.observation_batch import ObservationBatch
 from plume.schemas.prediction_request import PredictionRequest
 from plume.schemas.update_result import UpdateResult
 from plume.services.forecast_service import ForecastRunResult
+from plume.services.metadata_utils import json_safe, normalize_conditions, normalize_source
 from plume.services.observation_service import ObservationService
 from plume.state.base import BaseStateStore
 from plume.utils.config import Config
@@ -146,7 +147,35 @@ class OnlineForecastService:
         )
 
         summary_statistics = ForecastPostprocessor(self.config.load_inference()).compute_summary_statistics(forecast)
-        forecast_metadata = forecast.metadata if isinstance(forecast.metadata, dict) else {}
+        forecast_metadata = json_safe(forecast.metadata) if isinstance(forecast.metadata, dict) else {}
+        request_forecast_metadata = request.metadata.get("forecast_metadata") if isinstance(request.metadata.get("forecast_metadata"), dict) else {}
+        request_conditions = request.metadata.get("conditions") if isinstance(request.metadata.get("conditions"), dict) else {}
+        request_meteorology = request.metadata.get("meteorology") if isinstance(request.metadata.get("meteorology"), dict) else {}
+        conditions = normalize_conditions(
+            forecast_metadata.get("conditions"),
+            forecast_metadata.get("meteorology"),
+            request_forecast_metadata.get("conditions") if isinstance(request_forecast_metadata, dict) else {},
+            request_forecast_metadata.get("meteorology") if isinstance(request_forecast_metadata, dict) else {},
+            request_conditions,
+            request_meteorology,
+        )
+        source = normalize_source(
+            forecast_metadata.get("source"),
+            request_forecast_metadata.get("source") if isinstance(request_forecast_metadata, dict) else {},
+            request.metadata.get("source") if isinstance(request.metadata.get("source"), dict) else {},
+        )
+        raw_reference = json_safe(
+            forecast_metadata.get("raw_reference")
+            or (request_forecast_metadata.get("raw_reference") if isinstance(request_forecast_metadata, dict) else {})
+            or request.metadata.get("raw_reference")
+            or {}
+        )
+        forecast_metadata = {
+            **forecast_metadata,
+            **({"conditions": conditions, "meteorology": conditions} if conditions else {}),
+            **({"source": source} if source else {}),
+            **({"raw_reference": raw_reference} if raw_reference else {}),
+        }
         fallback_used = bool(fallback_metadata.get("fallback_used", False))
         model_load = session.runtime_metadata.get("model_load") if isinstance(session.runtime_metadata.get("model_load"), dict) else {}
         checkpoint_path = forecast_metadata.get("checkpoint_path") or model_load.get("checkpoint_path")
@@ -175,8 +204,8 @@ class OnlineForecastService:
             issued_at=now,
             model_name=session.model_name or execution_backend_name,
             model_version=None if fallback_used else session.runtime_metadata.get("model_version"),
-            forecast=forecast,
-            summary_statistics=summary_statistics,
+            forecast=replace(forecast, metadata=forecast_metadata),
+            summary_statistics=json_safe(summary_statistics),
             execution_metadata={
                 "path": "online",
                 "session_id": session.session_id,
@@ -185,11 +214,16 @@ class OnlineForecastService:
                 "effective_backend_name": execution_backend_name,
                 "output_space": str(session.runtime_metadata.get("output_space", "unknown")),
                 **provenance,
+                "forecast_metadata": forecast_metadata,
+                "conditions": conditions,
+                "meteorology": conditions,
+                "source": source,
+                "raw_reference": raw_reference,
                 "fallback_backend_name": fallback_metadata.get("fallback_backend_name"),
                 "fallback_reason": fallback_metadata.get("fallback_reason"),
                 "temporary_model_substitution": provenance.get("temporary_model_substitution", False),
                 "prediction_engine": provenance.get("prediction_engine"),
-                "request_metadata": request.metadata,
+                "request_metadata": json_safe(request.metadata),
             },
         )
         self._latest_forecast_by_session[request.session_id] = result
