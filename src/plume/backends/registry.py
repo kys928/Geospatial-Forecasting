@@ -17,6 +17,9 @@ def _normalize_backend_name(name: str | None) -> str:
         "gaussian": "gaussian_fallback",
         "gaussian_fallback": "gaussian_fallback",
         "gaussian_plume": "gaussian_fallback",
+        "mock": "mock_online",
+        "mock_online": "mock_online",
+        "dev_mock": "mock_online",
     }
 
     return aliases.get(raw, raw)
@@ -30,5 +33,8 @@ def build_backend(name: str, config):
 
     if normalized_name == "gaussian_fallback":
         return GaussianFallbackBackend(config=config)
+
+    if normalized_name == "mock_online":
+        return MockOnlineBackend(config=config)
 
     raise ValueError(f"Unsupported backend: {name}")
