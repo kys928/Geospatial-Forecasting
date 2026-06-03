@@ -31,6 +31,10 @@ StageKey = Literal["stage1", "stage2", "stage3"]
 ResumeMode = Literal["none", "model_only"]
 
 
+class TrainingCancelled(RuntimeError):
+    """Raised when cooperative adaptation training cancellation is requested."""
+
+
 MODEL_CONTRACT: dict[str, Any] = {
     "model_name": "RobustMultiStepConvLSTMForecaster",
     "forecast_mode": "direct_plus_autoregressive_multistep",
@@ -343,6 +347,7 @@ class ThreeStageAdaptationTrainer:
         resume_mode: ResumeMode = "none",
         start_stage: StageKey = "stage1",
         device: str = "auto",
+        cancel_callback: Callable[[], bool] | None = None,
     ) -> None:
         require_torch()
         if resume_mode not in {"none", "model_only"}:
@@ -493,7 +498,7 @@ class ThreeStageAdaptationTrainer:
 
     def _raise_if_cancelled(self) -> None:
         if self.cancel_callback is not None and self.cancel_callback():
-            raise RuntimeError("Training cancelled by operator")
+            raise TrainingCancelled("Training cancelled by operator.")
 
     def _existing_path(self, name: str) -> str | None:
         path = self.output_dir / name
@@ -791,6 +796,7 @@ __all__ = [
     "ThreeStageAdaptationTrainer",
     "ThreeStageTrainerConfig",
     "TrainingRunSummary",
+    "TrainingCancelled",
     "apply_stage3_noise",
     "reduce_batch_size_after_oom",
     "selection_score",

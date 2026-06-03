@@ -30,6 +30,7 @@ from plume.services.adaptation_readiness import (
 from plume.training.adaptation_dataset import AdaptationDatasetConfig, build_adaptation_dataset_manifest
 from plume.training.three_stage_adaptation_trainer import (
     ThreeStageTrainerConfig,
+    TrainingCancelled,
     TrainingRunSummary,
     train_three_stage_adaptation,
 )
@@ -65,10 +66,17 @@ def _tail_text_file(path: str | Path, *, max_lines: int = 200) -> list[str]:
     return lines[-max_lines:]
 
 
+def _repo_root() -> Path:
+    override = os.getenv("PLUME_REPO_ROOT")
+    if override:
+        return Path(override).expanduser().resolve(strict=False)
+    return Path(__file__).resolve().parents[3]
+
+
 def _normalize_workspace_path(path: str | Path) -> Path:
-    candidate = Path(path)
+    candidate = Path(path).expanduser()
     if not candidate.is_absolute():
-        candidate = Path.cwd() / candidate
+        candidate = _repo_root() / candidate
     return candidate.resolve(strict=False)
 
 
@@ -1388,6 +1396,7 @@ def rollback_to_previous_model(*, registry: ModelRegistry) -> dict[str, object]:
 
 
 def resolve_active_model_artifact(registry_path: str | Path) -> dict[str, object]:
+    registry_path = _normalize_workspace_path(registry_path)
     registry = ModelRegistry(registry_path)
     payload = registry.load()
     active_model_id = payload.get("active_model_id")
@@ -1401,7 +1410,7 @@ def resolve_active_model_artifact(registry_path: str | Path) -> dict[str, object
     _validate_serving_compatible_record(active_record, context="Active model")
     checkpoint_path = Path(str(active_record.get("path"))).expanduser()
     if not checkpoint_path.is_absolute():
-        checkpoint_path = (Path.cwd() / checkpoint_path).resolve(strict=False)
+        checkpoint_path = (_repo_root() / checkpoint_path).resolve(strict=False)
     _validate_checkpoint_readable(checkpoint_path, context="Active model")
 
     activation_event = next(
@@ -1674,7 +1683,7 @@ def execute_retraining_job(
             error_message=None,
             metadata=metadata,
         )
-    except RetrainingJobCancelled as exc:
+    except (RetrainingJobCancelled, TrainingCancelled) as exc:
         log_path = _job_log_path(running_job)
         try:
             log_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1876,6 +1885,10 @@ def run_adaptation_retraining_job(
             summary_payload_for_log = summary.to_dict() if isinstance(summary, TrainingRunSummary) else dict(summary)
             print(f"best checkpoint path: {summary_payload_for_log.get('best_overall_checkpoint')}", flush=True)
             print(f"final checkpoint path: {summary_payload_for_log.get('final_checkpoint')}", flush=True)
+    except TrainingCancelled as exc:
+        with log_path.open("a", encoding="utf-8") as log_handle:
+            log_handle.write("Training cancelled by operator.\n")
+        raise RetrainingJobCancelled("Training cancelled by operator.") from exc
     except Exception:
         with log_path.open("a", encoding="utf-8") as log_handle:
             log_handle.write("failure traceback:\n")

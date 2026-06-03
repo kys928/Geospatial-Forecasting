@@ -35,6 +35,13 @@ from plume.services.dataset_scenario_service import DatasetScenarioService
 from plume.utils.config import Config
 
 
+def _repo_root() -> Path:
+    override = os.getenv("PLUME_REPO_ROOT")
+    if override:
+        return Path(override).expanduser().resolve(strict=False)
+    return Path(__file__).resolve().parents[3]
+
+
 class ConvLSTMBackend(BaseBackend):
     def __init__(self, config: Config):
         self.config = config
@@ -112,7 +119,7 @@ class ConvLSTMBackend(BaseBackend):
             if self.model_registry_path is None or not str(self.model_registry_path).strip():
                 raise ValueError("use_model_registry=true requires model_registry_path")
             try:
-                active = resolve_active_model_artifact(str(Path(self.model_registry_path)))
+                active = resolve_active_model_artifact(self.model_registry_path)
             except ValueError as exc:
                 if "no active model id" not in str(exc):
                     raise
@@ -146,7 +153,7 @@ class ConvLSTMBackend(BaseBackend):
                 )
             resolved_checkpoint = Path(str(checkpoint)).expanduser()
             if not resolved_checkpoint.is_absolute():
-                resolved_checkpoint = Path.cwd() / resolved_checkpoint
+                resolved_checkpoint = _repo_root() / resolved_checkpoint
             resolved_checkpoint = resolved_checkpoint.resolve()
             if self.prediction_engine == "torch_robust_multistep":
                 from plume.models.torch_robust_multistep_convlstm import RobustMultiStepConvLSTMCheckpoint
@@ -189,7 +196,7 @@ class ConvLSTMBackend(BaseBackend):
         if self.prediction_engine == "ridge_baseline":
             resolved = Path(str(self.ridge_model_path)).expanduser()
             if not resolved.is_absolute():
-                resolved = Path.cwd() / resolved
+                resolved = _repo_root() / resolved
             resolved = resolved.resolve()
             self.ridge_artifact = load_ridge_artifact(resolved)
             self.model_source = "ridge_baseline_temporary"
@@ -217,7 +224,7 @@ class ConvLSTMBackend(BaseBackend):
             if self.model_registry_path is None or not str(self.model_registry_path).strip():
                 raise ValueError("use_model_registry=true requires model_registry_path")
             try:
-                active = resolve_active_model_artifact(str(Path(self.model_registry_path)))
+                active = resolve_active_model_artifact(self.model_registry_path)
             except ValueError as exc:
                 if "no active model id" not in str(exc):
                     raise
