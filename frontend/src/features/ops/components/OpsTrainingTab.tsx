@@ -108,7 +108,7 @@ const TRAINING_JOB_TIMESTAMP_KEYS = [
   "submitted_at",
 ] as const;
 
-const ACTIVE_JOB_STATUSES = ["queued", "running", "starting", "claimed"];
+const ACTIVE_JOB_STATUSES = ["queued", "waiting", "running", "starting", "claimed"];
 
 const hasJobIdentity = (job: unknown): job is OpsJobRecord => {
   const obj = asObj(job);
@@ -152,6 +152,7 @@ export function OpsTrainingTab() {
   const candidateState = useModelCandidateContext();
   const [manualOpen, setManualOpen] = useState(false);
   const [manualSubmitting, setManualSubmitting] = useState(false);
+  const [stopSubmitting, setStopSubmitting] = useState(false);
   const [manualNotice, setManualNotice] = useState<string | null>(null);
   const [followLogs, setFollowLogs] = useState(true);
   const [adaptationTraining, setAdaptationTraining] =
@@ -225,6 +226,7 @@ export function OpsTrainingTab() {
     [statusState.status, latestJob, adaptationTraining, candidateState.context],
   );
   const hasErrorLogs = logs.some((line) => line.startsWith("ERROR:"));
+  const canStopTraining = Boolean(latestJob && ACTIVE_JOB_STATUSES.includes(String(latestJob.status ?? latestJob.effective_status ?? "").toLowerCase()));
 
   useEffect(() => {
     if (followLogs && logRef.current)
@@ -266,6 +268,20 @@ export function OpsTrainingTab() {
       refreshAdaptationTraining(),
     ]);
   }
+  async function handleStopTraining() {
+    setStopSubmitting(true);
+    setManualNotice(null);
+    try {
+      const response = await opsClient.stopRetraining();
+      setManualNotice(response.message || (response.stopped ? "Training stop requested." : "No active training job to stop."));
+      await refreshAll();
+    } catch (e) {
+      setManualNotice(e instanceof Error ? e.message : "Unable to stop training job.");
+    } finally {
+      setStopSubmitting(false);
+    }
+  }
+
   async function handleManualStart(payload: RetrainingTriggerRequest) {
     setManualSubmitting(true);
     setManualNotice(null);
@@ -406,12 +422,22 @@ export function OpsTrainingTab() {
             Manual training is an advanced override. Automatic training is the
             normal workflow.
           </p>
-          <button
-            className="secondary-button"
-            onClick={() => setManualOpen(true)}
-          >
-            Start manual training
-          </button>
+          <div className="button-row">
+            <button
+              className="secondary-button"
+              onClick={() => setManualOpen(true)}
+            >
+              Start manual training
+            </button>
+            <button
+              className="secondary-button"
+              style={{ background: "#dc2626", color: "white", borderColor: "#dc2626" }}
+              onClick={() => void handleStopTraining()}
+              disabled={!canStopTraining || stopSubmitting}
+            >
+              Stop training
+            </button>
+          </div>
           {manualNotice ? <p className="muted">{manualNotice}</p> : null}
         </details>
       </section>
@@ -470,13 +496,16 @@ function deriveTrainingView(
   const mapState: Record<string, string> = {
     queued: "Queued",
     running: "Running",
+    stale: "Stale",
     waiting: "Queued",
     failed: "Failed",
     completed: "Completed",
     succeeded: "Completed",
+    cancelled: "Cancelled",
     idle: "Idle",
   };
   let state = mapState[(stateRaw ?? "").toLowerCase()] ?? "Not reported";
+  if (jobObj.is_stale === true || asStr(jobObj.effective_status) === "stale") state = "Stale";
   if ((state === "Idle" || state === "Completed") && (adaptationTraining?.cooldown_remaining_seconds ?? 0) > 0) state = "Cooling down";
   const started = asStr(pick(jobObj, ["started_at", "start_time"]));
   const completed = asStr(pick(jobObj, ["finished_at", "completed_at", "end_time"]));
@@ -494,6 +523,7 @@ function deriveTrainingView(
   const latestStatus = asStr(pick(jobObj, ["status"])) ?? "Not reported";
   const jobCounts = adaptationTraining?.job_counts ?? {};
   const jobCountSummary = formatJobCountSummary(jobCounts);
+  const logStatus = jobObj.is_stale === true ? "stale" : jobObj.log_available === true ? "available" : jobObj.log_available === false ? "unavailable" : "initializing";
   const rows = [
     { label: "Current state", value: state },
     {
@@ -505,6 +535,7 @@ function deriveTrainingView(
           : "No adaptation training job recorded"),
     },
     { label: "Latest status", value: latestStatus },
+    { label: "Training log", value: `Training log: ${logStatus}` },
     {
       label: "Candidate",
       value:
@@ -681,7 +712,9 @@ function collectLogs(
     if (isManual && !jobObj.started_at && !jobObj.worker_pid)
       lines.push("Worker has not claimed this manual job yet.");
   }
-  if (statusValue === "running") {
+  if (jobObj.is_stale === true || asStr(jobObj.effective_status) === "stale") {
+    lines.unshift("Training job appears stale; no recent worker update was reported.");
+  } else if (statusValue === "running") {
     lines.unshift(
       `Training job ${asStr(jobObj.job_id) ?? "latest"} is running.`,
     );
@@ -734,6 +767,8 @@ function buildSummaryText(
   checklist: Array<{ label: string; state: ChecklistState }>,
 ) {
   const notReady = checklist.some((c) => c.state === "not_met");
+  if (state === "Stale")
+    return "Training job appears stale; no recent worker update was reported.";
   if (state === "Running")
     return "Adaptation training is running. Metrics will update as the worker reports progress.";
   if (state === "Queued")

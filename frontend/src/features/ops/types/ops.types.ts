@@ -61,6 +61,15 @@ export interface RetrainingTriggerResponse {
   job: OpsJobRecord | null;
 }
 
+export interface RetrainingStopResponse {
+  stopped: boolean;
+  job_id: string | null;
+  previous_status: string | null;
+  new_status: string | null;
+  message: string;
+  graceful: boolean;
+}
+
 export interface CandidateDecisionRequest {
   actor: string;
   comment?: string;

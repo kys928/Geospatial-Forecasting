@@ -108,7 +108,8 @@ def run_retraining_worker_once(
 
     if completed.get("status") != "succeeded":
         error_message = completed.get("error_message")
-        event_log.append(event_type="retraining_job_failed", payload={"job_id": job_id, "error_message": error_message})
+        completed_status = str(completed.get("status") or "failed")
+        event_log.append(event_type="retraining_job_cancelled" if completed_status == "cancelled" else "retraining_job_failed", payload={"job_id": job_id, "error_message": error_message})
         failed_state = state_store.load()
         state_store.save(
             OperationalState(
@@ -119,7 +120,7 @@ def run_retraining_worker_once(
                 }
             )
         )
-        return {"claimed": True, "status": "failed", "job": completed, **recovery_info}
+        return {"claimed": True, "status": completed_status if completed_status == "cancelled" else "failed", "job": completed, **recovery_info}
 
     metadata = completed.get("metadata") if isinstance(completed.get("metadata"), dict) else {}
     adaptation_metadata = metadata.get("adaptation") if isinstance(metadata, dict) else None

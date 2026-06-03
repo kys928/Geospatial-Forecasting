@@ -457,3 +457,29 @@ def test_worker_failure_message_is_clear_for_unusable_seeded_buffer(monkeypatch,
     assert "need at least four consecutive windows" in message
     assert "default_collate" not in message
     assert "NoneType" not in message
+
+
+def test_worker_cancellation_during_epoch_marks_cancelled_without_candidate(monkeypatch, tmp_path: Path):
+    checkpoint = _checkpoint(tmp_path / "active.pt")
+    config_dir = _seed(tmp_path, active_checkpoint=checkpoint)
+    monkeypatch.setattr("plume.services.convlstm_operations._validate_adaptation_resume_checkpoint", lambda _path: None)
+
+    def fake_train_three_stage_adaptation(**kwargs):
+        store = RetrainingJobStore(tmp_path / "jobs.json")
+        job = store.latest_job()
+        metadata = job.get("metadata") if isinstance(job.get("metadata"), dict) else {}
+        store.update_job(job_id=str(job["job_id"]), metadata={**metadata, "cancel_requested": True})
+        assert kwargs["cancel_callback"]() is True
+        from plume.training.three_stage_adaptation_trainer import TrainingCancelled
+        raise TrainingCancelled("Training cancelled by operator.")
+
+    monkeypatch.setattr("plume.services.convlstm_operations.train_three_stage_adaptation", fake_train_three_stage_adaptation)
+
+    result = _run(tmp_path, config_dir)
+
+    assert result["status"] == "cancelled"
+    job = RetrainingJobStore(tmp_path / "jobs.json").latest_job()
+    assert job["status"] == "cancelled"
+    assert job.get("result_candidate_id") is None
+    registry = ModelRegistry(tmp_path / "registry.json").load()
+    assert [model.get("model_id") for model in registry["models"]] == ["active"]

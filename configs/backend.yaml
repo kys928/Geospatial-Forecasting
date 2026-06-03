@@ -7,8 +7,8 @@ convlstm_sequence_length: 3
 convlstm_input_channels: 10
 convlstm_input_mode: degraded
 
-use_model_registry: false
-model_registry_path: null
+use_model_registry: true
+model_registry_path: artifacts/convlstm_ops/model_registry.json
 
 convlstm_prediction_engine: torch_multistep
 convlstm_checkpoint_path: artifacts/models/convlstm_multistep_autoreg_two_stage_v1/best_full_checkpoint.pt

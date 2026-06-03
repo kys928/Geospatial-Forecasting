@@ -160,8 +160,10 @@ class OnlineForecastService:
             "checkpoint_path": None if fallback_used else checkpoint_path,
             "inference_mode": str(forecast_metadata.get("inference_mode") or forecast_metadata.get("prediction_engine") or execution_backend_name),
             "fallback_used": fallback_used,
+            "fallback_reason": fallback_metadata.get("fallback_reason"),
             "dataset_playback_enabled": False,
             "active_registry_model_id": None if fallback_used else active_model_id,
+            "input_source": forecast_metadata.get("input_source") or request.metadata.get("input_source") or "unknown",
             "generated_at": now.isoformat(),
         }
         result = ForecastRunResult(

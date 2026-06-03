@@ -35,6 +35,7 @@ from plume.api.ops_schemas import (
     RetrainingRecommendationResponse,
     RetrainingTriggerRequest,
     RetrainingTriggerResponse,
+    RetrainingStopResponse,
     RollbackResponse,
     WorkerStatusResponse,
 )
@@ -385,6 +386,51 @@ def _adaptation_readiness(config: AdaptationReadinessConfig) -> dict[str, object
     ).to_dict()
 
 
+
+
+def _stale_timeout_seconds() -> int:
+    value = os.getenv("PLUME_STALE_RUNNING_JOB_TIMEOUT_SECONDS") or os.getenv("PLUME_RETRAINING_STALE_TIMEOUT_SECONDS")
+    if value:
+        try:
+            return max(60, int(value))
+        except ValueError:
+            pass
+    return 1800
+
+
+def _job_status_anchor(job: dict[str, object]) -> datetime | None:
+    metadata = job.get("metadata") if isinstance(job.get("metadata"), dict) else {}
+    for key in ("heartbeat_at", "last_heartbeat_at", "updated_at", "claimed_at", "started_at", "created_at"):
+        value = metadata.get(key) if key in {"heartbeat_at", "last_heartbeat_at"} else job.get(key) or metadata.get(key)
+        parsed = _parse_iso(value)
+        if parsed is not None:
+            return parsed
+    return None
+
+
+def _is_stale_job(job: dict[str, object], *, timeout_seconds: int | None = None) -> bool:
+    status = str(job.get("status") or "").lower()
+    if status not in {"running", "starting", "claimed"}:
+        return False
+    anchor = _job_status_anchor(job)
+    if anchor is None:
+        return False
+    if anchor.tzinfo is None:
+        anchor = anchor.replace(tzinfo=timezone.utc)
+    return (datetime.now(timezone.utc) - anchor).total_seconds() > float(timeout_seconds or _stale_timeout_seconds())
+
+
+def _annotate_stale_jobs(jobs: list[dict[str, object]]) -> list[dict[str, object]]:
+    out = []
+    timeout = _stale_timeout_seconds()
+    for job in jobs:
+        enriched = dict(job)
+        if _is_stale_job(enriched, timeout_seconds=timeout):
+            enriched["is_stale"] = True
+            enriched["effective_status"] = "stale"
+        out.append(enriched)
+    return out
+
 def _record_by_id(models: object, model_id: object) -> dict[str, object] | None:
     if not isinstance(model_id, str) or not isinstance(models, list):
         return None
@@ -395,7 +441,7 @@ def _record_by_id(models: object, model_id: object) -> dict[str, object] | None:
 
 
 _TERMINAL_ADAPTATION_JOB_STATUSES = {"succeeded", "completed", "failed", "waiting", "cancelled"}
-_ACTIVE_ADAPTATION_JOB_STATUSES = {"queued", "running", "starting", "claimed"}
+_ACTIVE_ADAPTATION_JOB_STATUSES = {"queued", "waiting", "running", "starting", "claimed"}
 _ADAPTATION_JOB_TIMESTAMP_FIELDS = (
     "completed_at",
     "finished_at",
@@ -503,6 +549,23 @@ def _is_adaptation_record(record: dict[str, object]) -> bool:
     return isinstance(record.get("adaptation_run"), dict) or record.get("contract_version") == "robust_convlstm_adaptation_v1"
 
 
+def _model_training_log_tail(record: dict[str, object], *, max_lines: int = 100) -> list[str]:
+    adaptation_run = record.get("adaptation_run") if isinstance(record.get("adaptation_run"), dict) else {}
+    metadata = record.get("metadata") if isinstance(record.get("metadata"), dict) else {}
+    candidates = [
+        adaptation_run.get("log_file_path"),
+        metadata.get("log_file_path"),
+        str(Path(str(adaptation_run.get("result_run_dir"))) / "training.log") if adaptation_run.get("result_run_dir") else None,
+        str(Path(str(adaptation_run.get("output_dir"))) / "training.log") if adaptation_run.get("output_dir") else None,
+        str(Path(str(record.get("created_from_run_dir"))) / "training.log") if record.get("created_from_run_dir") else None,
+    ]
+    for candidate in candidates:
+        lines, available = _tail_training_log(candidate, max_lines=max_lines)
+        if available and lines:
+            return lines
+    return []
+
+
 def _candidate_response(record: dict[str, object]) -> dict[str, object]:
     adaptation_run = record.get("adaptation_run") if isinstance(record.get("adaptation_run"), dict) else None
     training_summary = adaptation_run.get("training_summary") if isinstance(adaptation_run, dict) and isinstance(adaptation_run.get("training_summary"), dict) else {}
@@ -523,6 +586,7 @@ def _candidate_response(record: dict[str, object]) -> dict[str, object]:
         "best_overall_checkpoint": str(best) if best else None,
         "final_checkpoint": str(final) if final else None,
         "checkpoint_file_exists": bool(isinstance(path, str) and Path(path).exists()),
+        "training_log_tail": _model_training_log_tail(record),
     }
 
 
@@ -551,8 +615,23 @@ def _adaptation_training_status() -> dict[str, object]:
     if not best_checkpoint and candidate_path:
         best_checkpoint = candidate_path
     log_file_path = _metadata_value(metadata, "log_file_path") or (str(Path(str(run_dir)) / "training.log") if isinstance(run_dir, str) else None)
-    log_tail, log_available = _tail_training_log(log_file_path)
-    if latest is not None and not log_available:
+    log_tail = [str(line) for line in metadata.get("log_tail", []) if isinstance(line, (str, int, float))] if isinstance(metadata, dict) else []
+    log_available = bool(log_tail)
+    stale = bool(latest is not None and _is_stale_job(latest))
+    if not log_tail:
+        log_tail, log_available = _tail_training_log(log_file_path)
+    if latest is not None and not log_available and stale:
+        log_tail = ["Training job appears stale; no recent worker update was reported."]
+    elif latest is not None and not log_available and str(latest.get("status", "")).lower() in {"running", "starting"} and log_file_path:
+        log_path = _normalize_workspace_path(log_file_path)
+        try:
+            log_path.parent.mkdir(parents=True, exist_ok=True)
+            if not log_path.exists() or not log_path.read_text(encoding="utf-8", errors="replace").strip():
+                log_path.write_text(TRAINING_LOG_INITIALIZED_LINE + "\n", encoding="utf-8")
+            log_tail, log_available = _tail_training_log(log_path)
+        except OSError:
+            log_tail = ["Training log unavailable for this job."]
+    elif latest is not None and not log_available:
         fallback_lines = ["Real training log file not available; showing summary."]
         if latest.get("status"):
             fallback_lines.append(f"Latest job status: {latest.get('status')}")
@@ -565,6 +644,9 @@ def _adaptation_training_status() -> dict[str, object]:
         finished_at = latest_enriched.get("finished_at")
         started_dt = _parse_iso(started_at)
         finished_dt = _parse_iso(finished_at)
+        if stale:
+            latest_enriched["is_stale"] = True
+            latest_enriched["effective_status"] = "stale"
         latest_enriched.update({
             "best_checkpoint": str(best_checkpoint) if best_checkpoint else None,
             "final_checkpoint": str(final_checkpoint) if final_checkpoint else None,
@@ -712,7 +794,7 @@ def register_ops_routes(app: FastAPI, *, forecast_service, dispatch_worker=dispa
         try:
             state = _load_operational_state(paths["state"])
             registry_payload = ModelRegistry(paths["registry"]).load()
-            jobs = RetrainingJobStore(paths["jobs"]).list_jobs()
+            jobs = _annotate_stale_jobs(RetrainingJobStore(paths["jobs"]).list_jobs())
             readiness = evaluate_retraining_readiness(state=state, policy=retraining_policy, manual_trigger=False)
             summary = summarize_operational_status(
                 state=state,
@@ -732,7 +814,7 @@ def register_ops_routes(app: FastAPI, *, forecast_service, dispatch_worker=dispa
         paths = _ops_paths()
         status_payload = get_ops_status(_role)
         jobs_store = RetrainingJobStore(paths["jobs"])
-        jobs = jobs_store.list_jobs()
+        jobs = _annotate_stale_jobs(jobs_store.list_jobs())
         events = _load_recent_events(paths["events"], limit=8)
         worker_status = WorkerStatusStore(_worker_status_path()).read_status()
 
@@ -778,8 +860,11 @@ def register_ops_routes(app: FastAPI, *, forecast_service, dispatch_worker=dispa
     def get_ops_jobs(_role: str = Depends(_require_ops_read_access)):
         try:
             store = RetrainingJobStore(_ops_paths()["jobs"])
-            jobs = store.list_jobs()
-            return {"jobs": jobs, "latest_job": store.latest_job()}
+            jobs = _annotate_stale_jobs(store.list_jobs())
+            latest = store.latest_job()
+            if latest is not None:
+                latest = _annotate_stale_jobs([latest])[0]
+            return {"jobs": jobs, "latest_job": latest}
         except Exception as exc:
             raise HTTPException(status_code=400, detail=f"Unable to load retraining jobs: {exc}") from exc
 
@@ -987,6 +1072,32 @@ def register_ops_routes(app: FastAPI, *, forecast_service, dispatch_worker=dispa
             raise
         except Exception as exc:
             raise HTTPException(status_code=400, detail=f"Unable to trigger retraining: {exc}") from exc
+
+    @app.post("/ops/retraining/stop", response_model=RetrainingStopResponse)
+    def stop_retraining(_role: str = Depends(_require_ops_operator_access)):
+        paths = _ops_paths()
+        store = RetrainingJobStore(paths["jobs"])
+        event_log = OperationalEventLog(paths["events"])
+        active_statuses = {"queued", "waiting", "claimed", "starting", "running"}
+        jobs = [job for job in store.list_jobs() if str(job.get("status") or "").lower() in active_statuses]
+        if not jobs:
+            return {"stopped": False, "job_id": None, "previous_status": None, "new_status": None, "message": "No active training job to stop.", "graceful": True}
+        job = max(jobs, key=lambda item: int(item.get("created_sequence", -1)))
+        job_id = str(job.get("job_id"))
+        previous = str(job.get("status") or "")
+        metadata = job.get("metadata") if isinstance(job.get("metadata"), dict) else {}
+        now = datetime.now(timezone.utc).isoformat()
+        if previous.lower() in {"queued", "waiting"} and not metadata.get("worker_claimed"):
+            existing_tail = metadata.get("log_tail") if isinstance(metadata.get("log_tail"), list) else []
+            metadata = {**metadata, "cancel_requested": True, "stop_requested_at": now, "log_tail": [*existing_tail[-20:], "Training cancelled by operator."]}
+            updated = store.update_job(job_id=job_id, status="cancelled", finished_at=now, error_message="Cancelled by operator", metadata=metadata)
+            event_log.append(event_type="retraining_stop_requested", payload={"job_id": job_id, "previous_status": previous, "new_status": "cancelled"})
+            return {"stopped": True, "job_id": job_id, "previous_status": previous, "new_status": str(updated.get("status")), "message": "Queued training job cancelled.", "graceful": True}
+        metadata = {**metadata, "cancel_requested": True, "stop_requested_at": now}
+        updated = store.update_job(job_id=job_id, metadata=metadata, error_message="Cancelled by operator" if previous.lower() != "running" else job.get("error_message"))
+        event_log.append(event_type="retraining_stop_requested", payload={"job_id": job_id, "previous_status": previous, "new_status": updated.get("status")})
+        return {"stopped": True, "job_id": job_id, "previous_status": previous, "new_status": str(updated.get("status")), "message": "Training stop requested.", "graceful": True}
+
 
     @app.post("/ops/candidates/{candidate_id}/approve", response_model=ApprovalActionResponse)
     def approve_ops_candidate(candidate_id: str, payload: CandidateDecisionRequest, _role: str = Depends(_require_ops_operator_access)):

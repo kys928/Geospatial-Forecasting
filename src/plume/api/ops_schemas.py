@@ -88,6 +88,15 @@ class RetrainingTriggerResponse(BaseModel):
     job: dict[str, Any] | None = None
 
 
+class RetrainingStopResponse(BaseModel):
+    stopped: bool
+    job_id: str | None = None
+    previous_status: str | None = None
+    new_status: str | None = None
+    message: str
+    graceful: bool
+
+
 class CandidateDecisionRequest(BaseModel):
     actor: str = Field(default="api_operator")
     comment: str | None = None
@@ -188,6 +197,7 @@ class AdaptationCandidateResponse(BaseModel):
     best_overall_checkpoint: str | None = None
     final_checkpoint: str | None = None
     checkpoint_file_exists: bool
+    training_log_tail: list[str] = Field(default_factory=list)
 
 
 class AdaptationCandidateListResponse(BaseModel):

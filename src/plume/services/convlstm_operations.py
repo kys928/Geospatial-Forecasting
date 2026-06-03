@@ -30,6 +30,7 @@ from plume.services.adaptation_readiness import (
 from plume.training.adaptation_dataset import AdaptationDatasetConfig, build_adaptation_dataset_manifest
 from plume.training.three_stage_adaptation_trainer import (
     ThreeStageTrainerConfig,
+    TrainingCancelled,
     TrainingRunSummary,
     train_three_stage_adaptation,
 )
@@ -65,10 +66,17 @@ def _tail_text_file(path: str | Path, *, max_lines: int = 200) -> list[str]:
     return lines[-max_lines:]
 
 
+def _repo_root() -> Path:
+    override = os.getenv("PLUME_REPO_ROOT")
+    if override:
+        return Path(override).expanduser().resolve(strict=False)
+    return Path(__file__).resolve().parents[3]
+
+
 def _normalize_workspace_path(path: str | Path) -> Path:
-    candidate = Path(path)
+    candidate = Path(path).expanduser()
     if not candidate.is_absolute():
-        candidate = Path.cwd() / candidate
+        candidate = _repo_root() / candidate
     return candidate.resolve(strict=False)
 
 
@@ -236,6 +244,10 @@ class RetrainingJobDeferred(RuntimeError):
     def __init__(self, message: str, *, metadata: dict[str, object] | None = None) -> None:
         super().__init__(message)
         self.metadata = metadata or {}
+
+
+class RetrainingJobCancelled(RuntimeError):
+    """Raised when an operator requested cooperative training cancellation."""
 
 
 class RetrainingJobStore:
@@ -1384,6 +1396,7 @@ def rollback_to_previous_model(*, registry: ModelRegistry) -> dict[str, object]:
 
 
 def resolve_active_model_artifact(registry_path: str | Path) -> dict[str, object]:
+    registry_path = _normalize_workspace_path(registry_path)
     registry = ModelRegistry(registry_path)
     payload = registry.load()
     active_model_id = payload.get("active_model_id")
@@ -1395,7 +1408,9 @@ def resolve_active_model_artifact(registry_path: str | Path) -> dict[str, object
     if active_record.get("status") != "active":
         raise ValueError(f"Registry active model record must have status='active', got {active_record.get('status')}")
     _validate_serving_compatible_record(active_record, context="Active model")
-    checkpoint_path = Path(str(active_record.get("path")))
+    checkpoint_path = Path(str(active_record.get("path"))).expanduser()
+    if not checkpoint_path.is_absolute():
+        checkpoint_path = (_repo_root() / checkpoint_path).resolve(strict=False)
     _validate_checkpoint_readable(checkpoint_path, context="Active model")
 
     activation_event = next(
@@ -1613,6 +1628,12 @@ def maybe_enqueue_automatic_adaptation_job(
     return {"attempted": True, "enqueued": True, "reason": "ready", "job_id": str(job.get("job_id")), "job": job, "readiness": readiness_payload}
 
 
+def _job_cancel_requested(job_store: RetrainingJobStore, job_id: str) -> bool:
+    current = next((item for item in job_store.list_jobs() if item.get("job_id") == job_id), None)
+    metadata = current.get("metadata") if isinstance(current, dict) and isinstance(current.get("metadata"), dict) else {}
+    return bool(metadata.get("cancel_requested"))
+
+
 def execute_retraining_job(
     *,
     job_store: RetrainingJobStore,
@@ -1640,7 +1661,11 @@ def execute_retraining_job(
     else:
         raise ValueError(f"Retraining job must be queued or running to execute, got {current.get('status')}")
     try:
+        if _job_cancel_requested(job_store, job_id):
+            raise RetrainingJobCancelled("Training cancelled by operator.")
         run_payload = train_fn()
+        if _job_cancel_requested(job_store, job_id):
+            raise RetrainingJobCancelled("Training cancelled by operator.")
         run_dir = run_payload.get("run_dir")
         if not isinstance(run_dir, str):
             raise ValueError("train_fn must return payload with string run_dir")
@@ -1656,6 +1681,26 @@ def execute_retraining_job(
             result_run_id=None if run_id is None else str(run_id),
             result_candidate_id=None if run_payload.get("result_candidate_id") is None else str(run_payload.get("result_candidate_id")),
             error_message=None,
+            metadata=metadata,
+        )
+    except (RetrainingJobCancelled, TrainingCancelled) as exc:
+        log_path = _job_log_path(running_job)
+        try:
+            log_path.parent.mkdir(parents=True, exist_ok=True)
+            with log_path.open("a", encoding="utf-8") as handle:
+                handle.write("Training cancelled by operator.\n")
+        except OSError:
+            pass
+        metadata = _with_job_log(running_job.get("metadata"), "Training cancelled by operator.")
+        metadata = _merge_job_metadata(metadata, {"cancel_requested": True, "cancelled_at": _utc_now_iso()})
+        return job_store.update_job(
+            job_id=job_id,
+            status="cancelled",
+            finished_at=_utc_now_iso(),
+            error_message=str(exc),
+            result_run_dir=_optional_str(running_job.get("result_run_dir")),
+            result_run_id=_optional_str(running_job.get("result_run_id")),
+            result_candidate_id=None,
             metadata=metadata,
         )
     except RetrainingJobDeferred as exc:
@@ -1808,6 +1853,12 @@ def run_adaptation_retraining_job(
         job_store.update_job(job_id=str(job["job_id"]), result_run_dir=str(output_dir), metadata=metadata)
 
     trainer_config = _three_stage_trainer_config_from_payload(training_cfg_payload, run_name=run_id)
+
+    def _cancel_requested() -> bool:
+        if job_store is None or not job.get("job_id"):
+            return False
+        return _job_cancel_requested(job_store, str(job["job_id"]))
+
     try:
         with log_path.open("a", encoding="utf-8") as log_handle, redirect_stdout(log_handle), redirect_stderr(log_handle):
             print(f"job claimed: {run_id}", flush=True)
@@ -1815,6 +1866,8 @@ def run_adaptation_retraining_job(
             print(f"selected resume checkpoint: {resume_selection.to_dict()}", flush=True)
             print(f"dataset counts: {dict(manifest.counts)}", flush=True)
             print(f"stage start: {training_cfg_payload.get('start_stage') or training_cfg_payload.get('start_from_stage') or 'stage1'}", flush=True)
+            if _cancel_requested():
+                raise RetrainingJobCancelled("Training cancelled by operator.")
             summary = train_three_stage_adaptation(
                 train_samples=manifest.train_samples,
                 val_samples=manifest.val_samples,
@@ -1824,11 +1877,18 @@ def run_adaptation_retraining_job(
                 resume_mode=resume_selection.resume_mode,  # type: ignore[arg-type]
                 start_stage=str(training_cfg_payload.get("start_stage") or training_cfg_payload.get("start_from_stage") or "stage1"),  # type: ignore[arg-type]
                 device=str(training_cfg_payload.get("training_device", readiness_config.training_device)),
+                cancel_callback=_cancel_requested,
             )
+            if _cancel_requested():
+                raise RetrainingJobCancelled("Training cancelled by operator.")
             print("stage end: adaptation training", flush=True)
             summary_payload_for_log = summary.to_dict() if isinstance(summary, TrainingRunSummary) else dict(summary)
             print(f"best checkpoint path: {summary_payload_for_log.get('best_overall_checkpoint')}", flush=True)
             print(f"final checkpoint path: {summary_payload_for_log.get('final_checkpoint')}", flush=True)
+    except TrainingCancelled as exc:
+        with log_path.open("a", encoding="utf-8") as log_handle:
+            log_handle.write("Training cancelled by operator.\n")
+        raise RetrainingJobCancelled("Training cancelled by operator.") from exc
     except Exception:
         with log_path.open("a", encoding="utf-8") as log_handle:
             log_handle.write("failure traceback:\n")
@@ -2638,13 +2698,19 @@ def _validate_serving_compatible_record(record: dict[str, object], *, context: s
 def _validate_checkpoint_readable(path: Path, *, context: str) -> None:
     if not path.exists():
         raise FileNotFoundError(f"{context} artifact missing: {path}")
-    if path.suffix.lower() != ".npz":
-        raise ValueError(f"{context} checkpoint must be .npz, got: {path.suffix}")
-    try:
-        with np.load(path, allow_pickle=False):
-            pass
-    except Exception as exc:  # noqa: BLE001
-        raise ValueError(f"{context} checkpoint is not readable: {path}") from exc
+    suffix = path.suffix.lower()
+    if suffix == ".npz":
+        try:
+            with np.load(path, allow_pickle=False):
+                pass
+        except Exception as exc:  # noqa: BLE001
+            raise ValueError(f"{context} checkpoint is not readable: {path}") from exc
+        return
+    if suffix in {".pt", ".pth"}:
+        if path.stat().st_size <= 0:
+            raise ValueError(f"{context} checkpoint is empty: {path}")
+        return
+    raise ValueError(f"{context} checkpoint must be .npz, .pt, or .pth, got: {path.suffix}")
 
 
 def _is_sqlite_path(path: Path) -> bool:
