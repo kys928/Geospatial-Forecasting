@@ -1346,7 +1346,7 @@ def activate_approved_model(*, registry: ModelRegistry, model_id: str) -> dict[s
             raise ValueError("Approved adaptation model failed final compatibility check: " + ",".join(compatibility.reasons))
     else:
         _validate_serving_compatible_record(record, context="Approved model")
-        _validate_checkpoint_readable(Path(str(record.get("path"))), context="Approved model")
+        _validate_legacy_checkpoint_readable(Path(str(record.get("path"))), context="Approved model")
 
     previous_active_id = payload.get("active_model_id")
     for item in models:
@@ -1383,7 +1383,7 @@ def rollback_to_previous_model(*, registry: ModelRegistry) -> dict[str, object]:
             raise ValueError("Rollback adaptation model failed final compatibility check: " + ",".join(compatibility.reasons))
     else:
         _validate_serving_compatible_record(target, context="Rollback target model")
-        _validate_checkpoint_readable(Path(str(target.get("path"))), context="Rollback target model")
+        _validate_legacy_checkpoint_readable(Path(str(target.get("path"))), context="Rollback target model")
 
     for item in models:
         if item.get("status") == "active":
@@ -2739,6 +2739,18 @@ def _validate_serving_compatible_record(record: dict[str, object], *, context: s
     approval_status = record.get("approval_status")
     if approval_status in {"pending_manual_approval", "rejected_by_operator"}:
         raise ValueError(f"{context} approval_status is not deployable: {approval_status}")
+
+
+def _validate_legacy_checkpoint_readable(path: Path, *, context: str) -> None:
+    if not path.exists():
+        raise FileNotFoundError(f"{context} artifact missing: {path}")
+    if path.suffix.lower() != ".npz":
+        raise ValueError(f"{context} checkpoint must be .npz, got: {path.suffix}")
+    try:
+        with np.load(path, allow_pickle=False):
+            pass
+    except Exception as exc:  # noqa: BLE001
+        raise ValueError(f"{context} checkpoint is not readable: {path}") from exc
 
 
 def _validate_checkpoint_readable(path: Path, *, context: str) -> None:

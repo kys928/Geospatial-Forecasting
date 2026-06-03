@@ -454,35 +454,52 @@ def _record_by_id(models: object, model_id: object) -> dict[str, object] | None:
     return None
 
 
-_TERMINAL_ADAPTATION_JOB_STATUSES = {"succeeded", "completed", "failed", "waiting", "cancelled"}
+_TERMINAL_ADAPTATION_JOB_STATUSES = {"succeeded", "completed", "failed", "cancelled"}
 _ACTIVE_ADAPTATION_JOB_STATUSES = {"queued", "waiting", "running", "starting", "claimed"}
+_RELEVANT_ADAPTATION_JOB_STATUSES = _TERMINAL_ADAPTATION_JOB_STATUSES | _ACTIVE_ADAPTATION_JOB_STATUSES
 _ADAPTATION_JOB_TIMESTAMP_FIELDS = (
-    "completed_at",
     "finished_at",
-    "ended_at",
-    "updated_at",
+    "completed_at",
     "started_at",
+    "claimed_at",
+    "updated_at",
     "created_at",
+    "ended_at",
     "timestamp",
 )
 
 
+def _job_latest_training_attempt_timestamp(job: dict[str, object]) -> tuple[datetime, str] | None:
+    for key in _ADAPTATION_JOB_TIMESTAMP_FIELDS:
+        value = job.get(key)
+        parsed = _parse_iso(value)
+        if isinstance(value, str) and value and parsed is not None:
+            return parsed, value
+    metadata = job.get("metadata") if isinstance(job.get("metadata"), dict) else {}
+    for key in ("finished_at", "completed_at", "started_at", "claimed_at", "updated_at", "created_at", "timestamp"):
+        value = metadata.get(key)
+        parsed = _parse_iso(value)
+        if isinstance(value, str) and value and parsed is not None:
+            return parsed, value
+    return None
+
+
 def _latest_adaptation_training_timestamp(jobs: list[dict[str, object]]) -> str | None:
-    for job in reversed(jobs):
+    latest: tuple[datetime, str] | None = None
+    for job in jobs:
         if not isinstance(job, dict):
             continue
         status = str(job.get("status") or "").lower()
-        if status in _ACTIVE_ADAPTATION_JOB_STATUSES:
-            continue
-        if status not in _TERMINAL_ADAPTATION_JOB_STATUSES:
+        if status not in _RELEVANT_ADAPTATION_JOB_STATUSES:
             continue
         if not _job_has_adaptation_metadata(job):
             continue
-        for key in _ADAPTATION_JOB_TIMESTAMP_FIELDS:
-            value = job.get(key)
-            if isinstance(value, str) and value:
-                return value
-    return None
+        candidate = _job_latest_training_attempt_timestamp(job)
+        if candidate is None:
+            continue
+        if latest is None or candidate[0] >= latest[0]:
+            latest = candidate
+    return None if latest is None else latest[1]
 
 
 def _latest_checkpoint_from_jobs(jobs: list[dict[str, object]]) -> str | None:
