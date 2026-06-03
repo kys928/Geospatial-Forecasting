@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 import json
 import os
 from pathlib import Path
@@ -452,6 +452,38 @@ def _latest_checkpoint_from_jobs(jobs: list[dict[str, object]]) -> str | None:
     return None
 
 
+
+def _parse_iso(value: object) -> datetime | None:
+    if not isinstance(value, str) or not value.strip():
+        return None
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def _tail_training_log(path: str | Path | None, *, max_lines: int = 200) -> tuple[list[str], bool]:
+    if not path:
+        return [], False
+    log_path = Path(path)
+    if not log_path.exists() or not log_path.is_file():
+        return [], False
+    lines = log_path.read_text(encoding="utf-8", errors="replace").splitlines()
+    return lines[-max_lines:], True
+
+
+def _load_training_summary_from_run_dir(run_dir: object) -> dict[str, object]:
+    if not isinstance(run_dir, str) or not run_dir.strip():
+        return {}
+    path = Path(run_dir) / "training_summary.json"
+    if not path.exists():
+        return {}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        return payload if isinstance(payload, dict) else {}
+    except Exception:
+        return {}
+
 def _is_adaptation_record(record: dict[str, object]) -> bool:
     return isinstance(record.get("adaptation_run"), dict) or record.get("contract_version") == "robust_convlstm_adaptation_v1"
 
@@ -490,22 +522,101 @@ def _adaptation_training_status() -> dict[str, object]:
     manual_jobs = [job for job in adaptation_jobs if isinstance(job.get("metadata"), dict) and job.get("metadata", {}).get("manual_trigger") is True]
     latest_manual = max(manual_jobs, key=lambda item: int(item.get("created_sequence", -1))) if manual_jobs else None
     metadata = latest.get("metadata") if isinstance(latest, dict) and isinstance(latest.get("metadata"), dict) else {}
-    readiness = None
-    if isinstance(metadata, dict):
-        readiness = metadata.get("readiness") or metadata.get("readiness_snapshot") or metadata.get("adaptation_readiness")
+    readiness = metadata.get("readiness") or metadata.get("readiness_snapshot") or metadata.get("adaptation_readiness") if isinstance(metadata, dict) else None
+    run_dir = None if latest is None else latest.get("result_run_dir") or latest.get("output_dir") or _metadata_value(metadata, "output_dir")
+    training_summary = _load_training_summary_from_run_dir(run_dir)
+    best_checkpoint = training_summary.get("best_overall_checkpoint") or _metadata_value(metadata, "best_overall_checkpoint")
+    final_checkpoint = training_summary.get("final_checkpoint") or _metadata_value(metadata, "final_checkpoint")
+    candidate_path = None
+    if latest is not None and latest.get("result_candidate_id"):
+        registry_payload = ModelRegistry(_ops_paths()["registry"]).load()
+        candidate = _record_by_id(registry_payload.get("models", []), latest.get("result_candidate_id"))
+        if candidate:
+            candidate_path = candidate.get("path")
+    if not best_checkpoint and candidate_path:
+        best_checkpoint = candidate_path
+    log_file_path = _metadata_value(metadata, "log_file_path") or (str(Path(str(run_dir)) / "training.log") if isinstance(run_dir, str) else None)
+    log_tail, log_available = _tail_training_log(log_file_path)
+    if latest is not None and not log_available:
+        fallback_lines = ["Real training log file not available; showing summary."]
+        if latest.get("status"):
+            fallback_lines.append(f"Latest job status: {latest.get('status')}")
+        if latest.get("error_message"):
+            fallback_lines.append(f"ERROR: {latest.get('error_message')}")
+        log_tail = fallback_lines
+    latest_enriched = dict(latest) if isinstance(latest, dict) else None
+    if latest_enriched is not None:
+        started_at = latest_enriched.get("started_at")
+        finished_at = latest_enriched.get("finished_at")
+        started_dt = _parse_iso(started_at)
+        finished_dt = _parse_iso(finished_at)
+        latest_enriched.update({
+            "best_checkpoint": str(best_checkpoint) if best_checkpoint else None,
+            "final_checkpoint": str(final_checkpoint) if final_checkpoint else None,
+            "result_run_dir": run_dir,
+            "started_at": started_at,
+            "finished_at": finished_at,
+            "log_tail": log_tail,
+            "log_file_path": log_file_path if log_available else log_file_path,
+            "log_available": log_available,
+            "candidate_model_id": latest_enriched.get("result_candidate_id"),
+            "trigger_source": _trigger_source(latest_enriched),
+        })
+        if started_dt and finished_dt:
+            latest_enriched["runtime_seconds"] = max(0, int((finished_dt - started_dt).total_seconds()))
+            latest_enriched["elapsed_seconds"] = None
+        elif started_dt and str(latest_enriched.get("status", "")).lower() == "running":
+            latest_enriched["elapsed_seconds"] = max(0, int((datetime.now(timezone.utc) - started_dt).total_seconds()))
+            latest_enriched["runtime_seconds"] = None
+    cooldown = _cooldown_status(jobs, int(_load_adaptation_config("configs").min_seconds_between_training_runs))
     return {
         "job_counts": counts,
-        "latest_job": latest,
+        "latest_job": latest_enriched,
         "latest_manual_job": latest_manual,
         "latest_readiness_snapshot": readiness if isinstance(readiness, dict) else None,
         "candidate_model_id": None if latest is None else latest.get("result_candidate_id") or (metadata or {}).get("candidate_model_id"),
         "output_dir": None if latest is None else latest.get("output_dir"),
-        "result_run_dir": None if latest is None else latest.get("result_run_dir"),
-        "best_overall_checkpoint": _metadata_value(metadata, "best_overall_checkpoint"),
-        "final_checkpoint": _metadata_value(metadata, "final_checkpoint"),
+        "result_run_dir": run_dir,
+        "best_overall_checkpoint": str(best_checkpoint) if best_checkpoint else None,
+        "final_checkpoint": str(final_checkpoint) if final_checkpoint else None,
+        **cooldown,
         "error_message": None if latest is None else latest.get("error_message"),
     }
 
+
+
+def _cooldown_status(jobs: list[dict[str, object]], cooldown_seconds: int) -> dict[str, object]:
+    terminal_times = [
+        _parse_iso(job.get("finished_at"))
+        for job in jobs
+        if str(job.get("status", "")).lower() in {"succeeded", "failed", "cancelled"}
+    ]
+    terminal_times = [value for value in terminal_times if value is not None]
+    if not terminal_times or cooldown_seconds <= 0:
+        return {
+            "cooldown_seconds": cooldown_seconds,
+            "cooldown_remaining_seconds": 0,
+            "next_automatic_training_eligible_at": None,
+            "cooldown_source": "min_seconds_between_training_runs",
+        }
+    last_finished = max(terminal_times)
+    eligible_at = last_finished + timedelta(seconds=cooldown_seconds)
+    remaining = max(0, int((eligible_at - datetime.now(timezone.utc)).total_seconds()))
+    return {
+        "cooldown_seconds": cooldown_seconds,
+        "cooldown_remaining_seconds": remaining,
+        "next_automatic_training_eligible_at": eligible_at.isoformat() if remaining > 0 else None,
+        "cooldown_source": "min_seconds_between_training_runs",
+    }
+
+
+def _trigger_source(job: dict[str, object] | None) -> str:
+    metadata = job.get("metadata") if isinstance(job, dict) and isinstance(job.get("metadata"), dict) else {}
+    if metadata.get("manual_trigger") is True:
+        return "manual"
+    if metadata.get("automatic_trigger") is True:
+        return "automatic"
+    return "unknown"
 
 def _metadata_value(metadata: object, key: str) -> str | None:
     if not isinstance(metadata, dict):

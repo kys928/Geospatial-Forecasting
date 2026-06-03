@@ -2,13 +2,14 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timezone
-from contextlib import contextmanager
+from contextlib import contextmanager, redirect_stdout, redirect_stderr
 import sqlite3
 import json
 import os
 from pathlib import Path
 import subprocess
 import sys
+import traceback
 from typing import Callable
 import uuid
 
@@ -45,6 +46,34 @@ from plume.models.convlstm_training import (
     load_run_summary,
     run_training_from_dataset,
 )
+
+
+def _parse_iso_datetime(value: object) -> datetime | None:
+    if not isinstance(value, str) or not value.strip():
+        return None
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def _tail_text_file(path: str | Path, *, max_lines: int = 200) -> list[str]:
+    file_path = Path(path)
+    if not file_path.exists() or not file_path.is_file():
+        return []
+    lines = file_path.read_text(encoding="utf-8", errors="replace").splitlines()
+    return lines[-max_lines:]
+
+
+def _job_log_path(job: dict[str, object]) -> Path:
+    metadata = job.get("metadata") if isinstance(job.get("metadata"), dict) else {}
+    existing = metadata.get("log_file_path") if isinstance(metadata, dict) else None
+    if isinstance(existing, str) and existing.strip():
+        return Path(existing)
+    run_id = str(job.get("job_id") or f"adaptation-{uuid.uuid4().hex[:12]}")
+    output_root = Path(str(job.get("output_dir") or Path("artifacts") / "runs"))
+    output_dir = output_root / run_id if output_root.name != run_id else output_root
+    return output_dir / "training.log"
 
 
 OPERATIONAL_PHASES = {
@@ -1496,6 +1525,73 @@ def submit_retraining_job(
     )
 
 
+def maybe_enqueue_automatic_adaptation_job(
+    *,
+    job_store: RetrainingJobStore,
+    event_log: OperationalEventLog,
+    config_dir: str | Path | None = None,
+    registry: ModelRegistry | None = None,
+    now: datetime | None = None,
+) -> dict[str, object]:
+    """Idempotently enqueue one automatic adaptation job when readiness is green."""
+    current_time = now or datetime.now(timezone.utc)
+    jobs = job_store.list_jobs()
+    active_statuses = {"queued", "running", "starting", "claimed"}
+    active_jobs = [job for job in jobs if str(job.get("status", "")).lower() in active_statuses]
+    if active_jobs:
+        event_log.append(
+            event_type="automatic_retraining_skipped_active_job",
+            payload={"active_job_ids": [str(job.get("job_id")) for job in active_jobs], "active_statuses": [str(job.get("status")) for job in active_jobs]},
+        )
+        return {"attempted": True, "enqueued": False, "reason": "active_job", "active_job_count": len(active_jobs), "job_id": None}
+
+    adaptation_config_path = _adaptation_config_path(config_dir)
+    readiness_config = AdaptationReadinessConfig.from_yaml(adaptation_config_path)
+    if readiness_config.max_concurrent_training_jobs <= sum(1 for job in jobs if str(job.get("status", "")).lower() == "running"):
+        event_log.append(event_type="automatic_retraining_skipped_concurrency_limit", payload={"reason": "max_concurrent_training_jobs"})
+        return {"attempted": True, "enqueued": False, "reason": "max_concurrent_training_jobs", "job_id": None}
+
+    latest_terminal_times = [
+        _parse_iso_datetime(job.get("finished_at"))
+        for job in jobs
+        if str(job.get("status", "")).lower() in {"succeeded", "failed", "cancelled"}
+    ]
+    latest_terminal_times = [value for value in latest_terminal_times if value is not None]
+    last_finished = max(latest_terminal_times) if latest_terminal_times else None
+    cooldown_seconds = int(readiness_config.min_seconds_between_training_runs or readiness_config.retry_cooldown_seconds or 0)
+    if last_finished is not None and cooldown_seconds > 0:
+        remaining = cooldown_seconds - int((current_time - last_finished).total_seconds())
+        if remaining > 0:
+            event_log.append(
+                event_type="automatic_retraining_skipped_cooldown",
+                payload={"cooldown_seconds": cooldown_seconds, "remaining_seconds": remaining, "last_finished_at": last_finished.isoformat()},
+            )
+            return {"attempted": True, "enqueued": False, "reason": "cooldown", "job_id": None, "cooldown_seconds": cooldown_seconds, "cooldown_remaining_seconds": remaining}
+
+    registry_payload = registry.load() if registry is not None else {"models": []}
+    active_checkpoint_path = _active_checkpoint_path(registry_payload)
+    latest_best_checkpoint_path = _latest_best_checkpoint_path(registry_payload=registry_payload, fallback_checkpoint=_load_adaptation_training_payload(adaptation_config_path).get("fallback_checkpoint"))
+    readiness = AdaptationReadinessService(readiness_config).evaluate(
+        active_checkpoint_path=active_checkpoint_path,
+        latest_best_checkpoint_path=latest_best_checkpoint_path,
+        checkpoint_dir=_checkpoint_storage_root(registry_payload, latest_best_checkpoint_path),
+        current_training_jobs=0,
+        current_job_statuses=[str(job.get("status")) for job in jobs],
+    )
+    readiness_payload = readiness.to_dict()
+    if not readiness.ready:
+        event_log.append(event_type="automatic_retraining_skipped_readiness_not_green", payload={"readiness": readiness_payload})
+        return {"attempted": True, "enqueued": False, "reason": "readiness_not_green", "job_id": None, "readiness": readiness_payload}
+
+    job = submit_retraining_job(job_store=job_store, dataset_snapshot_ref="adaptation_readiness_green", run_config_ref="automatic_adaptation", output_dir=str(Path("artifacts") / "runs"))
+    job = job_store.update_job(
+        job_id=str(job["job_id"]),
+        metadata={"automatic_trigger": True, "readiness": readiness_payload, "cooldown_seconds": cooldown_seconds},
+    )
+    event_log.append(event_type="automatic_retraining_job_enqueued", payload={"job_id": str(job.get("job_id")), "cooldown_seconds": cooldown_seconds})
+    return {"attempted": True, "enqueued": True, "reason": "ready", "job_id": str(job.get("job_id")), "job": job, "readiness": readiness_payload}
+
+
 def execute_retraining_job(
     *,
     job_store: RetrainingJobStore,
@@ -1674,18 +1770,38 @@ def run_adaptation_retraining_job(
     output_root = Path(str(job.get("output_dir") or training_cfg_payload.get("output_dir") or Path("artifacts") / "runs"))
     output_dir = output_root / run_id if output_root.name != run_id else output_root
     output_dir.mkdir(parents=True, exist_ok=True)
+    log_path = output_dir / "training.log"
+    if job_store is not None and job.get("job_id"):
+        metadata = _merge_job_metadata(job.get("metadata"), {"log_file_path": str(log_path), "log_available": True})
+        job_store.update_job(job_id=str(job["job_id"]), result_run_dir=str(output_dir), metadata=metadata)
 
     trainer_config = _three_stage_trainer_config_from_payload(training_cfg_payload, run_name=run_id)
-    summary = train_three_stage_adaptation(
-        train_samples=manifest.train_samples,
-        val_samples=manifest.val_samples,
-        output_dir=output_dir,
-        config=trainer_config,
-        resume_checkpoint_path=resume_selection.checkpoint_path,
-        resume_mode=resume_selection.resume_mode,  # type: ignore[arg-type]
-        start_stage=str(training_cfg_payload.get("start_stage") or training_cfg_payload.get("start_from_stage") or "stage1"),  # type: ignore[arg-type]
-        device=str(training_cfg_payload.get("training_device", readiness_config.training_device)),
-    )
+    try:
+        with log_path.open("a", encoding="utf-8") as log_handle, redirect_stdout(log_handle), redirect_stderr(log_handle):
+            print(f"job claimed: {run_id}", flush=True)
+            print(f"run directory: {output_dir}", flush=True)
+            print(f"selected resume checkpoint: {resume_selection.to_dict()}", flush=True)
+            print(f"dataset counts: {dict(manifest.counts)}", flush=True)
+            print(f"stage start: {training_cfg_payload.get('start_stage') or training_cfg_payload.get('start_from_stage') or 'stage1'}", flush=True)
+            summary = train_three_stage_adaptation(
+                train_samples=manifest.train_samples,
+                val_samples=manifest.val_samples,
+                output_dir=output_dir,
+                config=trainer_config,
+                resume_checkpoint_path=resume_selection.checkpoint_path,
+                resume_mode=resume_selection.resume_mode,  # type: ignore[arg-type]
+                start_stage=str(training_cfg_payload.get("start_stage") or training_cfg_payload.get("start_from_stage") or "stage1"),  # type: ignore[arg-type]
+                device=str(training_cfg_payload.get("training_device", readiness_config.training_device)),
+            )
+            print("stage end: adaptation training", flush=True)
+            summary_payload_for_log = summary.to_dict() if isinstance(summary, TrainingRunSummary) else dict(summary)
+            print(f"best checkpoint path: {summary_payload_for_log.get('best_overall_checkpoint')}", flush=True)
+            print(f"final checkpoint path: {summary_payload_for_log.get('final_checkpoint')}", flush=True)
+    except Exception:
+        with log_path.open("a", encoding="utf-8") as log_handle:
+            log_handle.write("failure traceback:\n")
+            traceback.print_exc(file=log_handle)
+        raise
     summary_payload = summary.to_dict() if isinstance(summary, TrainingRunSummary) else dict(summary)  # type: ignore[arg-type]
     return {
         "run_dir": str(output_dir),
@@ -1701,7 +1817,10 @@ def run_adaptation_retraining_job(
                 "dataset_warnings": list(manifest.warnings),
                 "readiness": readiness_payload,
                 "training_summary": summary_payload,
-            }
+                "log_file_path": str(log_path),
+            },
+            "log_file_path": str(log_path),
+            "log_available": log_path.exists(),
         },
     }
 

@@ -167,6 +167,10 @@ class AdaptationTrainingStatusResponse(BaseModel):
     result_run_dir: str | None = None
     best_overall_checkpoint: str | None = None
     final_checkpoint: str | None = None
+    cooldown_seconds: int | None = None
+    cooldown_remaining_seconds: int | None = None
+    next_automatic_training_eligible_at: str | None = None
+    cooldown_source: str | None = None
     error_message: str | None = None
 
 

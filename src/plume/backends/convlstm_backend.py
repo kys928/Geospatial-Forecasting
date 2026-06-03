@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import replace
 from datetime import datetime, timezone
 import importlib.util
+import os
 from pathlib import Path
 from uuid import uuid4
 
@@ -74,8 +75,13 @@ class ConvLSTMBackend(BaseBackend):
         self.init_mode = str(self.backend_config.get("convlstm_init_mode", "random_init"))
         self.checkpoint_path = self.backend_config.get("convlstm_checkpoint_path")
         self.checkpoint_strict = bool(self.backend_config.get("convlstm_checkpoint_strict", True))
-        self.use_model_registry = bool(self.backend_config.get("use_model_registry", False))
-        self.model_registry_path = self.backend_config.get("model_registry_path")
+        registry_env_enabled = str(os.getenv("PLUME_CONVLSTM_USE_MODEL_REGISTRY", "")).strip().lower() in {"1", "true", "yes", "on"}
+        self.use_model_registry = bool(self.backend_config.get("use_model_registry", False)) or registry_env_enabled
+        self.model_registry_path = (
+            self.backend_config.get("model_registry_path")
+            or os.getenv("PLUME_OPS_DB_PATH")
+            or os.getenv("PLUME_OPS_REGISTRY_PATH")
+        )
         self.model_version: str | None = None
         self.model_source = "random_init"
         self.output_space = "unknown"
@@ -88,6 +94,7 @@ class ConvLSTMBackend(BaseBackend):
             "model_registry_path": self.model_registry_path,
             "load_status": "not_attempted",
         }
+        self.active_model_id: str | None = None
         self._initialize_model_weights()
 
     def _require_contract_value(self, key: str, expected: int) -> int:
@@ -98,12 +105,31 @@ class ConvLSTMBackend(BaseBackend):
         return value
 
     def _initialize_model_weights(self) -> None:
+        active: dict[str, object] | None = None
+        checkpoint = self.checkpoint_path
+        if self.use_model_registry:
+            if self.model_registry_path is None or not str(self.model_registry_path).strip():
+                raise ValueError("use_model_registry=true requires model_registry_path")
+            active = resolve_active_model_artifact(str(Path(self.model_registry_path)))
+            checkpoint = active["checkpoint_path"]
+            self.model_source = "registry_active"
+            self.model_version = str(active["model_id"])
+            self.active_model_id = str(active["model_id"])
+            self.load_metadata = {
+                **self.load_metadata,
+                "resolved_active_model": {
+                    "model_id": active["model_id"],
+                    "checkpoint_path": active["checkpoint_path"],
+                    "model_source": "registry_active",
+                    "activation_event": active.get("activation_event"),
+                    "previous_active_model_id": active.get("previous_active_model_id"),
+                },
+            }
         if self.prediction_engine in {"torch_multistep", "torch_robust_multistep"}:
-            checkpoint = self.checkpoint_path
             if checkpoint is None or not str(checkpoint).strip():
                 raise ValueError(
                     "convlstm_prediction_engine=torch_multistep or torch_robust_multistep "
-                    "requires convlstm_checkpoint_path"
+                    "requires convlstm_checkpoint_path or registry active checkpoint"
                 )
             if importlib.util.find_spec("torch") is None:
                 raise ModuleNotFoundError(
@@ -128,7 +154,8 @@ class ConvLSTMBackend(BaseBackend):
                     device=self.device,
                     checkpoint_strict=self.checkpoint_strict,
                 )
-            self.model_source = "checkpoint"
+            if active is None:
+                self.model_source = "checkpoint"
             stage_name = self.torch_model.metadata.get("stage_name")
             global_epoch = self.torch_model.metadata.get("global_epoch")
             if stage_name is not None or global_epoch is not None:
@@ -143,6 +170,7 @@ class ConvLSTMBackend(BaseBackend):
                 "checkpoint_path": str(resolved_checkpoint),
                 "model_source": self.model_source,
                 "model_version": self.model_version,
+                "active_model_id": self.active_model_id,
                 "output_space": self.output_space,
                 "temporary_model_substitution": False,
                 "checkpoint_metadata": self.torch_model.metadata,
@@ -353,9 +381,22 @@ class ConvLSTMBackend(BaseBackend):
         state.internal_state["last_input_adapter_metadata"] = adapter_result.metadata
         if self.prediction_engine == "ridge_baseline":
             concentration_grid = self._predict_with_ridge(adapter_result.tensor)
+            generated_at = datetime.now(timezone.utc)
             return Forecast(
                 concentration_grid=concentration_grid,
-                timestamp=datetime.now(timezone.utc),
+                metadata={
+                    "forecast_source": "session_forecast",
+                    "model_id": None,
+                    "model_family": "Ridge",
+                    "model_backend": "convlstm_online",
+                    "checkpoint_path": None,
+                    "inference_mode": "ridge_baseline",
+                    "fallback_used": False,
+                    "dataset_playback_enabled": False,
+                    "active_registry_model_id": None,
+                    "generated_at": generated_at.isoformat(),
+                },
+                timestamp=generated_at,
                 scenario=scenario,
                 grid_spec=grid_spec,
             )
@@ -376,6 +417,16 @@ class ConvLSTMBackend(BaseBackend):
                 concentration_sequence=sequence,
                 metadata={
                     "prediction_engine": self.prediction_engine,
+                    "forecast_source": "active_model_inference" if self.model_source == "registry_active" and self.active_model_id else "session_forecast",
+                    "model_id": self.active_model_id,
+                    "model_family": "ConvLSTM",
+                    "model_backend": "convlstm_online",
+                    "checkpoint_path": str(self.load_metadata.get("checkpoint_path")) if self.load_metadata.get("checkpoint_path") else None,
+                    "inference_mode": self.prediction_engine,
+                    "fallback_used": False,
+                    "dataset_playback_enabled": False,
+                    "active_registry_model_id": self.active_model_id,
+                    "generated_at": datetime.now(timezone.utc).isoformat(),
                     "frame_count": int(sequence.shape[0]),
                     "frame_indices": list(range(sequence.shape[0])),
                     "default_frame_index": 0,

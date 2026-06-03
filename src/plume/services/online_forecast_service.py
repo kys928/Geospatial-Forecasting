@@ -146,11 +146,29 @@ class OnlineForecastService:
         )
 
         summary_statistics = ForecastPostprocessor(self.config.load_inference()).compute_summary_statistics(forecast)
+        forecast_metadata = forecast.metadata if isinstance(forecast.metadata, dict) else {}
+        fallback_used = bool(fallback_metadata.get("fallback_used", False))
+        model_load = session.runtime_metadata.get("model_load") if isinstance(session.runtime_metadata.get("model_load"), dict) else {}
+        checkpoint_path = forecast_metadata.get("checkpoint_path") or model_load.get("checkpoint_path")
+        active_model_id = forecast_metadata.get("model_id") or model_load.get("active_model_id")
+        model_family = "GaussianFallback" if fallback_used else (forecast_metadata.get("model_family") or ("ConvLSTM" if execution_backend_name == "convlstm_online" and checkpoint_path else "Unknown"))
+        provenance = {
+            "forecast_source": "fallback" if fallback_used else (forecast_metadata.get("forecast_source") or ("active_model_inference" if active_model_id and execution_backend_name == "convlstm_online" else "session_forecast")),
+            "model_id": None if fallback_used else active_model_id,
+            "model_family": model_family,
+            "model_backend": execution_backend_name,
+            "checkpoint_path": None if fallback_used else checkpoint_path,
+            "inference_mode": str(forecast_metadata.get("inference_mode") or forecast_metadata.get("prediction_engine") or execution_backend_name),
+            "fallback_used": fallback_used,
+            "dataset_playback_enabled": False,
+            "active_registry_model_id": None if fallback_used else active_model_id,
+            "generated_at": now.isoformat(),
+        }
         result = ForecastRunResult(
             forecast_id=request.session_id,
             issued_at=now,
             model_name=session.model_name or execution_backend_name,
-            model_version=None,
+            model_version=None if fallback_used else session.runtime_metadata.get("model_version"),
             forecast=forecast,
             summary_statistics=summary_statistics,
             execution_metadata={
@@ -160,7 +178,7 @@ class OnlineForecastService:
                 "primary_backend_name": session.backend_name,
                 "effective_backend_name": execution_backend_name,
                 "output_space": str(session.runtime_metadata.get("output_space", "unknown")),
-                "fallback_used": bool(fallback_metadata.get("fallback_used", False)),
+                **provenance,
                 "fallback_backend_name": fallback_metadata.get("fallback_backend_name"),
                 "fallback_reason": fallback_metadata.get("fallback_reason"),
                 "request_metadata": request.metadata,

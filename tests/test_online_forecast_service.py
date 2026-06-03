@@ -90,11 +90,12 @@ def _seed_session(service: OnlineForecastService, backend_name: str = "convlstm_
     return session.session_id
 
 
-def _forecast(config: Config) -> Forecast:
+def _forecast(config: Config, metadata: dict | None = None) -> Forecast:
     grid = config.load_grid()
     scenario = config.load_scenario()
     return Forecast(
         concentration_grid=np.zeros((grid.number_of_rows, grid.number_of_columns), dtype=float),
+        metadata=metadata,
         timestamp=datetime.now(timezone.utc),
         scenario=scenario,
         grid_spec=grid,
@@ -104,7 +105,14 @@ def _forecast(config: Config) -> Forecast:
 def test_predict_convlstm_success_path_does_not_fallback(monkeypatch):
     service = OnlineForecastService(config=Config(), state_store=InMemoryStateStore())
     session_id = _seed_session(service, backend_name="convlstm_online")
-    result_forecast = _forecast(service.config)
+    result_forecast = _forecast(service.config, metadata={
+        "forecast_source": "active_model_inference",
+        "model_id": "active-1",
+        "model_family": "ConvLSTM",
+        "model_backend": "convlstm_online",
+        "checkpoint_path": "/models/active.pt",
+        "inference_mode": "torch_multistep",
+    })
 
     class SuccessBackend:
         def predict(self, state, request):
@@ -119,6 +127,10 @@ def test_predict_convlstm_success_path_does_not_fallback(monkeypatch):
     assert result.execution_metadata["fallback_used"] is False
     assert result.execution_metadata["fallback_backend_name"] is None
     assert result.execution_metadata["fallback_reason"] is None
+    assert result.execution_metadata["forecast_source"] == "active_model_inference"
+    assert result.execution_metadata["model_family"] == "ConvLSTM"
+    assert result.execution_metadata["model_id"] == "active-1"
+    assert result.execution_metadata["checkpoint_path"] == "/models/active.pt"
 
 
 def test_predict_convlstm_failure_falls_back_to_gaussian(monkeypatch):
@@ -150,6 +162,10 @@ def test_predict_convlstm_failure_falls_back_to_gaussian(monkeypatch):
     assert result.execution_metadata["fallback_used"] is True
     assert result.execution_metadata["fallback_backend_name"] == "gaussian_fallback"
     assert "convlstm failed during predict" in result.execution_metadata["fallback_reason"]
+    assert result.execution_metadata["forecast_source"] == "fallback"
+    assert result.execution_metadata["model_family"] == "GaussianFallback"
+    assert result.execution_metadata["model_id"] is None
+    assert result.execution_metadata["checkpoint_path"] is None
     session = service.get_session(session_id)
     assert session.runtime_metadata["fallback_used"] is True
 

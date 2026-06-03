@@ -317,10 +317,27 @@ export function ForecastPage() {
     });
   }
 
+  const sessionFrameMetadata = (framesMetadata?.metadata as Record<string, unknown> | undefined) ?? {};
+  const sessionRasterMetadata = (selectedFrameRaster?.metadata as Record<string, unknown> | undefined) ?? {};
+  const sessionProvenance = (sessionFrameMetadata.provenance as Record<string, unknown> | undefined) ?? sessionFrameMetadata;
+  const provenanceLabel = sourceMode === "dataset"
+    ? "Dataset playback demo"
+    : sessionProvenance.forecast_source === "active_model_inference" && sessionProvenance.model_family === "ConvLSTM"
+      ? `Active model forecast: ${String(sessionProvenance.model_id ?? sessionRasterMetadata.model ?? "unknown")}`
+      : sessionProvenance.fallback_used === true || sessionProvenance.forecast_source === "fallback"
+        ? `Fallback forecast: ${String(sessionProvenance.model_family ?? sessionProvenance.model_backend ?? "unknown")}`
+        : sourceMode === "session-frame" || sourceMode === "session-bundle"
+          ? `Session forecast: ${String(sessionProvenance.model_family ?? sessionProvenance.model_backend ?? sessionRasterMetadata.model ?? "unknown")}`
+          : "No forecast provenance available";
+
 
   return (
     <AppShell title="Map / Forecast" subtitle="Current forecast map and plume overlay.">
       <main className="map-column">
+        <div className="panel" style={{ padding: "8px 12px" }}>
+          <strong>{provenanceLabel}</strong>
+          {sourceMode === "dataset" ? <span className="muted"> · demo/playback mode</span> : null}
+        </div>
         <ForecastMap
           geojson={mapGeojson}
           selectedFeature={selectedFeature}
