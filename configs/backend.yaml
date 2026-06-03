@@ -1,5 +1,6 @@
 default_backend: convlstm_online
 fallback_backend: gaussian_fallback
+disable_active_model_fallback: true
 state_store: in_memory
 max_recent_observations: 500
 auto_update_on_ingest: true

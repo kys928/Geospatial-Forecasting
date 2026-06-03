@@ -127,6 +127,11 @@ class ConvLSTMBackend(BaseBackend):
                 active = None
             if active is not None:
                 checkpoint = active["checkpoint_path"]
+                active_record = active.get("record") if isinstance(active.get("record"), dict) else {}
+                if str(active_record.get("contract_version") or "") == "robust_convlstm_adaptation_v1":
+                    if self.prediction_engine == "ridge_baseline":
+                        raise ValueError("Active robust ConvLSTM registry model cannot be served by ridge_baseline")
+                    self.prediction_engine = "torch_robust_multistep"
                 self.model_source = "registry_active"
                 self.model_version = str(active["model_id"])
                 self.active_model_id = str(active["model_id"])

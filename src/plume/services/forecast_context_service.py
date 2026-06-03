@@ -48,8 +48,11 @@ class ForecastContextService:
             return ForecastContextResponse(payload=self._empty_context(session_id=session_id))
 
         session_state = self._as_dict(self.runtime_client.get_session_state(session_id))
-        explanation_result = self.explain_service.explain(result, use_llm=True)
-        explanation_payload = self._as_dict(build_explanation_payload(result, explanation_result))
+        try:
+            explanation_result = self.explain_service.explain(result, use_llm=True)
+            explanation_payload = self._as_dict(build_explanation_payload(result, explanation_result))
+        except Exception:  # noqa: BLE001
+            explanation_payload = {}
         summary = self._as_dict(getattr(result, "execution_metadata", {}).get("summary"))
         if not summary:
             summary = self._as_dict(getattr(result, "summary", None))
@@ -61,6 +64,27 @@ class ForecastContextService:
                 "model_version": result.model_version,
                 "summary_statistics": result.summary_statistics,
             }
+        if "provenance" not in summary:
+            execution_metadata = self._as_dict(getattr(result, "execution_metadata", {}))
+            provenance_keys = (
+                "forecast_source",
+                "model_id",
+                "model_family",
+                "model_backend",
+                "checkpoint_path",
+                "inference_mode",
+                "fallback_used",
+                "temporary_model_substitution",
+                "prediction_engine",
+                "dataset_playback_enabled",
+                "active_registry_model_id",
+                "generated_at",
+                "fallback_reason",
+                "input_source",
+            )
+            provenance = {key: execution_metadata.get(key) for key in provenance_keys if execution_metadata.get(key) is not None}
+            if provenance:
+                summary["provenance"] = provenance
 
         decision_support = {
             "risk_level": self._nested(explanation_payload, "explanation.risk_level") or "unknown",

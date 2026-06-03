@@ -4,6 +4,7 @@ from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timezone
 from contextlib import contextmanager, redirect_stdout, redirect_stderr
 import sqlite3
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -2730,15 +2731,23 @@ def _is_adaptation_candidate_record(record: dict[str, object]) -> bool:
 
 
 def _validate_serving_compatible_record(record: dict[str, object], *, context: str) -> None:
+    approval_status = record.get("approval_status")
+    if approval_status in {"pending_manual_approval", "rejected_by_operator"}:
+        raise ValueError(f"{context} approval_status is not deployable: {approval_status}")
+    if _is_adaptation_candidate_record(record):
+        compatibility = check_adaptation_checkpoint_compatibility(record, require_strict_torch=True)
+        if not compatibility.compatible:
+            raise ValueError(
+                f"{context} robust adaptation checkpoint is incompatible with serving contract: "
+                + ",".join(compatibility.reasons)
+            )
+        return
     if record.get("contract_version") != CONVLSTM_CONTRACT_VERSION:
         raise ValueError(f"{context} contract version is incompatible with serving contract")
     if record.get("target_policy") not in {None, "plume_only"}:
         raise ValueError(f"{context} target_policy must be plume_only for serving compatibility")
     if record.get("normalization_mode") not in {None, CONVLSTM_NORMALIZATION_MODE}:
         raise ValueError(f"{context} normalization_mode is incompatible with serving contract")
-    approval_status = record.get("approval_status")
-    if approval_status in {"pending_manual_approval", "rejected_by_operator"}:
-        raise ValueError(f"{context} approval_status is not deployable: {approval_status}")
 
 
 def _validate_legacy_checkpoint_readable(path: Path, *, context: str) -> None:
@@ -2765,11 +2774,34 @@ def _validate_checkpoint_readable(path: Path, *, context: str) -> None:
             raise ValueError(f"{context} checkpoint is not readable: {path}") from exc
         return
     if suffix in {".pt", ".pth"}:
-        if path.stat().st_size <= 0:
-            raise ValueError(f"{context} checkpoint is empty: {path}")
+        _validate_torch_checkpoint_payload(path, context=context)
         return
     raise ValueError(f"{context} checkpoint must be .npz, .pt, or .pth, got: {path.suffix}")
 
+
+
+def _validate_torch_checkpoint_payload(path: Path, *, context: str) -> None:
+    if path.stat().st_size <= 0:
+        raise ValueError(f"{context} checkpoint is empty: {path}")
+    if importlib.util.find_spec("torch") is None:
+        payload = None
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:  # noqa: BLE001
+            pass
+        if isinstance(payload, dict) and isinstance(payload.get("model_state_dict"), dict):
+            return
+        raise ValueError(f"{context} torch checkpoint cannot be inspected because torch is not installed: {path}")
+    try:
+        import torch  # type: ignore
+
+        payload = torch.load(path, map_location="cpu")
+    except Exception as exc:  # noqa: BLE001
+        raise ValueError(f"{context} torch checkpoint is not readable: {path}: {exc}") from exc
+    if not isinstance(payload, dict):
+        raise ValueError(f"{context} torch checkpoint payload must be an object: {path}")
+    if not isinstance(payload.get("model_state_dict"), dict):
+        raise ValueError(f"{context} torch checkpoint missing model_state_dict: {path}")
 
 def _is_sqlite_path(path: Path) -> bool:
     suffixes = {s.lower() for s in path.suffixes}

@@ -161,6 +161,8 @@ class OnlineForecastService:
             "inference_mode": str(forecast_metadata.get("inference_mode") or forecast_metadata.get("prediction_engine") or execution_backend_name),
             "fallback_used": fallback_used,
             "fallback_reason": fallback_metadata.get("fallback_reason"),
+            "temporary_model_substitution": bool(forecast_metadata.get("temporary_model_substitution", False)),
+            "prediction_engine": str(forecast_metadata.get("prediction_engine") or forecast_metadata.get("inference_mode") or execution_backend_name),
             "dataset_playback_enabled": False,
             "active_registry_model_id": None if fallback_used else active_model_id,
             "input_source": forecast_metadata.get("input_source") or request.metadata.get("input_source") or "unknown",
@@ -183,6 +185,8 @@ class OnlineForecastService:
                 **provenance,
                 "fallback_backend_name": fallback_metadata.get("fallback_backend_name"),
                 "fallback_reason": fallback_metadata.get("fallback_reason"),
+                "temporary_model_substitution": provenance.get("temporary_model_substitution", False),
+                "prediction_engine": provenance.get("prediction_engine"),
                 "request_metadata": request.metadata,
             },
         )
@@ -240,6 +244,11 @@ class OnlineForecastService:
             if primary_error is not None:
                 raise primary_error
             raise RuntimeError("Prediction failed without an explicit backend error")
+
+        model_load = session.runtime_metadata.get("model_load") if isinstance(session.runtime_metadata.get("model_load"), dict) else {}
+        active_model_loaded = bool(model_load.get("active_model_id") or model_load.get("resolved_active_model"))
+        if bool(self.config.load_backend().get("disable_active_model_fallback", False)) and active_model_loaded:
+            raise primary_error
 
         try:
             fallback_backend = build_backend(name=fallback_backend_name, config=self.config)

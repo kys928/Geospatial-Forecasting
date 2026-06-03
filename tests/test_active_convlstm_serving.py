@@ -35,7 +35,7 @@ def _grid() -> GridSpec:
 
 def test_active_model_resolver_accepts_pt_checkpoint_and_resolves_absolute_path(tmp_path: Path):
     checkpoint = tmp_path / "active.pt"
-    checkpoint.write_bytes(b"not-empty-test-checkpoint")
+    checkpoint.write_text(json.dumps({"model_state_dict": {"weight": []}}), encoding="utf-8")
     registry_path = tmp_path / "registry.json"
     ModelRegistry(registry_path).save({
         "active_model_id": "active-convlstm",
@@ -87,7 +87,7 @@ def test_active_model_relative_checkpoint_resolves_from_repo_root_when_cwd_diffe
     repo_root = tmp_path / "repo"
     checkpoint = repo_root / "artifacts" / "models" / "active.pt"
     checkpoint.parent.mkdir(parents=True)
-    checkpoint.write_bytes(b"checkpoint")
+    checkpoint.write_text(json.dumps({"model_state_dict": {"weight": []}}), encoding="utf-8")
     registry_path = repo_root / "artifacts" / "convlstm_ops" / "model_registry.json"
     ModelRegistry(registry_path).save({
         "active_model_id": "active-convlstm",
@@ -222,18 +222,51 @@ class _DatasetService:
         return {"enabled": True, "available": True, "selected_scenario_id": "dataset_a"}
 
 
-def test_dataset_playback_on_context_still_returns_dataset_playback_with_active_model_available():
+def test_session_context_prefers_active_forecast_over_dataset_playback():
     from plume.services.forecast_context_service import ForecastContextService
 
+    now = datetime.now(timezone.utc)
+    result = ForecastRunResult(
+        forecast_id="session-1",
+        issued_at=now,
+        model_name="convlstm_online",
+        model_version="active-1",
+        forecast=Forecast(concentration_grid=np.ones((2, 2), dtype=float), timestamp=now, scenario=_scenario(), grid_spec=_grid()),
+        summary_statistics={"max_concentration": 1.0, "mean_concentration": 1.0},
+        execution_metadata={
+            "forecast_source": "active_model_inference",
+            "model_id": "active-1",
+            "model_family": "ConvLSTM",
+            "model_backend": "convlstm_online",
+            "checkpoint_path": "/models/active.pt",
+            "inference_mode": "torch_robust_multistep",
+            "fallback_used": False,
+            "dataset_playback_enabled": False,
+        },
+    )
+
+    class RuntimeWithSession(_RuntimeClient):
+        def list_sessions(self):
+            return [BackendSession(session_id="session-1", backend_name="convlstm_online", model_name="convlstm", status="idle", created_at=now, updated_at=now)]
+
+        def get_session_state(self, session_id: str):
+            return {"session_id": session_id, "backend_name": "convlstm_online"}
+
+    class ExplainService:
+        def explain(self, result, use_llm=True):
+            return type("Explanation", (), {"risk_level": "low", "summary": "Active forecast context."})()
+
     app = FastAPI()
-    service = ForecastContextService(runtime_client=None, explain_service=None, dataset_scenario_service=_DatasetService())
+    service = ForecastContextService(runtime_client=RuntimeWithSession(result), explain_service=ExplainService(), dataset_scenario_service=_DatasetService())
     register_forecast_context_routes(app, forecast_context_service=service, dataset_scenario_service=_DatasetService())
 
-    response = TestClient(app).get("/forecast-context/latest")
+    response = TestClient(app).get("/forecast-context/latest?source=session")
 
     assert response.status_code == 200
-    assert response.json()["provenance"]["forecast_source"] == "dataset_playback"
-    assert response.json()["provenance"]["model_family"] == "DatasetPlayback"
+    body = response.json()
+    assert body["provenance"]["forecast_source"] == "active_model_inference"
+    assert body["provenance"]["model_family"] == "ConvLSTM"
+    assert body["runtime"]["model_name"] != "ridge_plume_baseline"
 
 
 class _Backend:
@@ -352,3 +385,138 @@ convlstm_device: cpu
     assert provenance["input_source"] == "dataset_window"
     assert provenance["model_id"] == "active-convlstm"
     assert provenance["checkpoint_path"] == str(checkpoint)
+
+
+def test_active_registry_robust_adaptation_checkpoint_loads_backend(monkeypatch, tmp_path: Path):
+    pytest = __import__("pytest")
+    torch = pytest.importorskip("torch")
+    from plume.models.torch_robust_multistep_convlstm import RobustMultiStepConvLSTMForecaster
+
+    checkpoint = tmp_path / "best_overall_full_checkpoint.pt"
+    model = RobustMultiStepConvLSTMForecaster(encoder_channels=4, hidden_channels=4, decoder_channels=4, groupnorm_groups=4)
+    torch.save({
+        "model_state_dict": model.state_dict(),
+        "config": {"model": {"encoder_channels": 4, "hidden_channels": 4, "decoder_channels": 4, "groupnorm_groups": 4}},
+        "model_contract": {
+            "model_name": "RobustMultiStepConvLSTMForecaster",
+            "input_shape": [3, 10, 64, 64],
+            "output_shape": [4, 1, 64, 64],
+            "residual_rollout": True,
+        },
+        "stage_name": "stage2_autoregressive_teacher_forcing",
+        "global_epoch": 3,
+    }, checkpoint)
+    registry_path = tmp_path / "registry.json"
+    ModelRegistry(registry_path).save({
+        "active_model_id": "robust-active",
+        "previous_active_model_id": None,
+        "models": [{
+            "model_id": "robust-active",
+            "status": "active",
+            "approval_status": "approved_for_activation",
+            "path": str(checkpoint),
+            "contract_version": "robust_convlstm_adaptation_v1",
+            "target_policy": "plume_only",
+            "normalization_mode": "robust_multistep",
+            "adaptation_run": {"training_summary": {"status": "completed"}},
+        }],
+        "events": [],
+        "approval_audit": [],
+    })
+    (tmp_path / "backend.yaml").write_text(f"""
+default_backend: convlstm_online
+fallback_backend: gaussian_fallback
+state_store: in_memory
+convlstm_sequence_length: 3
+convlstm_input_channels: 10
+convlstm_input_mode: degraded
+use_model_registry: true
+model_registry_path: {registry_path}
+convlstm_prediction_engine: torch_multistep
+convlstm_checkpoint_strict: false
+convlstm_device: cpu
+""", encoding="utf-8")
+
+    backend = ConvLSTMBackend(config=Config(config_dir=tmp_path))
+
+    assert backend.prediction_engine == "torch_robust_multistep"
+    assert backend.active_model_id == "robust-active"
+    assert backend.load_metadata["prediction_engine"] == "torch_robust_multistep"
+    assert backend.load_metadata["checkpoint_path"] == str(checkpoint)
+
+
+def test_active_registry_bad_pt_checkpoint_rejected_not_suffix_only(tmp_path: Path):
+    checkpoint = tmp_path / "bad.pt"
+    checkpoint.write_bytes(b"not a torch checkpoint")
+    registry_path = tmp_path / "registry.json"
+    ModelRegistry(registry_path).save({
+        "active_model_id": "bad-active",
+        "previous_active_model_id": None,
+        "models": [{
+            "model_id": "bad-active",
+            "status": "active",
+            "approval_status": "approved_for_activation",
+            "path": str(checkpoint),
+            "contract_version": CONVLSTM_CONTRACT_VERSION,
+            "target_policy": "plume_only",
+        }],
+        "events": [],
+        "approval_audit": [],
+    })
+
+    try:
+        resolve_active_model_artifact(registry_path)
+    except ValueError as exc:
+        assert "torch checkpoint" in str(exc)
+    else:
+        raise AssertionError("bad .pt checkpoint should be rejected by payload validation")
+
+
+def test_session_active_convlstm_provenance_has_no_substitution(monkeypatch):
+    now = datetime.now(timezone.utc)
+    store = InMemoryStateStore()
+    session = BackendSession(
+        session_id="active-session",
+        backend_name="convlstm_online",
+        model_name="convlstm",
+        status="idle",
+        created_at=now,
+        updated_at=now,
+        runtime_metadata={"model_load": {"active_model_id": "active-1", "checkpoint_path": "/models/active.pt"}, "model_version": "active-1"},
+    )
+    state = BackendState(session_id=session.session_id, last_update_time=now, observation_count=0, state_version=0)
+    store.create_session(session, state)
+    forecast = Forecast(
+        concentration_grid=np.ones((2, 2), dtype=float),
+        concentration_sequence=np.ones((4, 2, 2), dtype=float),
+        timestamp=now,
+        scenario=_scenario(),
+        grid_spec=_grid(),
+        metadata={
+            "forecast_source": "active_model_inference",
+            "model_id": "active-1",
+            "model_family": "ConvLSTM",
+            "model_backend": "convlstm_online",
+            "checkpoint_path": "/models/active.pt",
+            "prediction_engine": "torch_robust_multistep",
+            "fallback_used": False,
+            "temporary_model_substitution": False,
+        },
+    )
+
+    class ActiveBackend:
+        def predict(self, state, request):
+            return forecast
+
+    monkeypatch.setattr("plume.services.online_forecast_service.build_backend", lambda name, config: ActiveBackend())
+    service = OnlineForecastService(config=Config(), state_store=store)
+
+    result = service.predict(PredictionRequest(session_id=session.session_id, scenario=_scenario(), grid_spec=_grid()))
+
+    assert result.execution_metadata["forecast_source"] == "active_model_inference"
+    assert result.execution_metadata["model_family"] == "ConvLSTM"
+    assert result.execution_metadata["fallback_used"] is False
+    assert result.execution_metadata.get("temporary_model_substitution", False) is False
+    assert result.execution_metadata["model_id"] == "active-1"
+    assert result.execution_metadata["checkpoint_path"] == "/models/active.pt"
+    assert result.execution_metadata["inference_mode"] == "torch_robust_multistep"

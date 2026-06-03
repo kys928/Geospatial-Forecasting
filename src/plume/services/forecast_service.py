@@ -115,6 +115,8 @@ class ForecastService:
             "checkpoint_path",
             "inference_mode",
             "fallback_used",
+            "temporary_model_substitution",
+            "prediction_engine",
             "dataset_playback_enabled",
             "active_registry_model_id",
             "generated_at",
