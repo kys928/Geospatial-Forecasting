@@ -35,17 +35,18 @@ def _is_active_convlstm_unavailable_error(exc: Exception) -> bool:
     message = str(exc).lower()
     backend_markers = (
         "convlstm",
+        "active model",
+        "active registry",
         "checkpoint",
         "contract",
         "torch",
         "artifact",
-        "model",
         "tensor",
-        "shape",
         "state_dict",
         "robust",
         "input unavailable",
         "missing active",
+        "shape mismatch",
     )
     return any(marker in message for marker in backend_markers)
 

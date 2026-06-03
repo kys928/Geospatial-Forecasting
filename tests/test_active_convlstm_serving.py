@@ -596,3 +596,19 @@ def test_active_registry_bad_pt_with_model_state_but_no_engine_is_rejected(tmp_p
 
     with pytest.raises(ValueError, match="explicit compatible serving engine metadata"):
         resolve_active_model_artifact(registry_path)
+
+
+def test_predict_route_keeps_plain_payload_value_error_as_400():
+    app = FastAPI()
+    register_session_routes(
+        app,
+        runtime_client=_PredictErrorRuntime(ValueError("Invalid horizon_seconds: expected positive number")),
+        forecast_service=_ForecastService(),
+        export_service=_ExportService(),
+        explain_service=None,
+    )
+
+    response = TestClient(app).post("/sessions/session-1/predict", json={})
+
+    assert response.status_code == 400
+    assert "Invalid prediction payload" in response.json()["detail"]

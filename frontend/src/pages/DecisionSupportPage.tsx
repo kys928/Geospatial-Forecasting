@@ -34,7 +34,7 @@ import type {
 } from "../features/decision-support/types";
 
 export function DecisionSupportPage() {
-  const { activeSessionId, latestForecastBundle } = useSessionForecastView();
+  const { activeSessionId, latestForecastBundle, setActiveSessionId, setLatestForecastBundle } = useSessionForecastView();
   const [data, setData] = useState<DecisionSupportLatest | null>(null);
   const [context, setContext] = useState<ForecastContextResponse | null>(null);
   const [, setSession] = useState<SessionDetail | null>(null);
@@ -66,20 +66,43 @@ export function DecisionSupportPage() {
   });
   const threadRef = useRef<HTMLDivElement>(null);
   const lastBriefingKeyRef = useRef<string | null>(null);
+  const contextBootstrapInFlightRef = useRef(false);
+
+  const disableDatasetPlayback = () => httpPost("/forecast-context/dataset-playback/state", { enabled: false, playback_running: false });
 
   useEffect(() => {
-    const contextUrl = activeSessionId
-      ? `/forecast-context/latest?source=session&session_id=${encodeURIComponent(activeSessionId)}`
-      : "/forecast-context/latest?source=session";
-    void httpGet<ForecastContextResponse>(contextUrl)
-      .then((latestContext) => {
+    if (contextBootstrapInFlightRef.current) return;
+    contextBootstrapInFlightRef.current = true;
+    setIsContextLoading(true);
+    const loadActiveContext = async () => {
+      try {
+        let sessionId = activeSessionId;
+        if (!sessionId || !latestForecastBundle) {
+          await disableDatasetPlayback();
+          const runResult = await sessionClient.runSessionForecast({ metadata: { requested_forecast_mode: "active_model", requested_by: "forecast_overview" } });
+          const bundle = await sessionClient.getLatestForecastBundle(runResult.sessionId, { includeExplanation: false });
+          setActiveSessionId(runResult.sessionId);
+          setLatestForecastBundle(runResult.sessionId, bundle);
+          sessionId = runResult.sessionId;
+        }
+        const contextUrl = sessionId
+          ? `/forecast-context/latest?source=session&session_id=${encodeURIComponent(sessionId)}`
+          : "/forecast-context/latest?source=session";
+        const latestContext = await httpGet<ForecastContextResponse>(contextUrl);
         setContext(latestContext);
         const scenarioId = safeText(latestContext.forecast?.scenario_id, "");
         setActiveScenario(scenarioId);
-      })
-      .catch(() => setContext(null))
-      .finally(() => setIsContextLoading(false));
-  }, [activeSessionId, latestForecastBundle]);
+        setError(null);
+      } catch (error) {
+        setContext(null);
+        setError(`Active ConvLSTM unavailable: ${error instanceof Error ? error.message : "forecast context unavailable"}`);
+      } finally {
+        setIsContextLoading(false);
+        contextBootstrapInFlightRef.current = false;
+      }
+    };
+    void loadActiveContext();
+  }, [activeSessionId, latestForecastBundle, setActiveSessionId, setLatestForecastBundle]);
 
   useEffect(() => {
     if (!activeSessionId) {

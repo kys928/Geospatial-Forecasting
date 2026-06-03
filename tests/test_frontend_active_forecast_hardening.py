@@ -49,3 +49,31 @@ def test_forecast_timeline_uses_frame_count_not_geojson_feature_count() -> None:
     assert "const hasMultiFrameSession = Boolean(framesMetadata && framesMetadata.frame_count > 1);" in contents
     assert "const timelineDisabled = !hasMultiFrameSession;" in contents
     assert "disabled={timelineDisabled}" in contents
+
+
+def test_forecast_page_disables_dataset_playback_before_active_forecast_start() -> None:
+    contents = _read("frontend/src/pages/ForecastPage.tsx")
+
+    disable_index = contents.index("await disableDatasetPlayback();")
+    forecast_index = contents.index("sessionClient.runSessionForecast")
+    assert disable_index < forecast_index
+    assert 'setMapPipelineStatus("disabling_dataset_playback")' in contents
+
+
+def test_forecast_page_active_error_can_be_retried_without_refresh() -> None:
+    contents = _read("frontend/src/pages/ForecastPage.tsx")
+
+    assert "Retry active ConvLSTM forecast" in contents
+    assert "hasAutoBootstrappedRef.current = false; void runActiveForecast();" in contents
+    assert "activeForecastError ?" in contents
+
+
+def test_decision_support_page_bootstraps_active_session_when_opened_first() -> None:
+    contents = _read("frontend/src/pages/DecisionSupportPage.tsx")
+
+    assert "sessionClient.runSessionForecast" in contents
+    assert "forecast_overview" in contents
+    assert "setActiveSessionId(runResult.sessionId)" in contents
+    assert "setLatestForecastBundle(runResult.sessionId, bundle)" in contents
+    assert "Active ConvLSTM unavailable:" in contents
+    assert "/forecast-context/latest?source=session" in contents

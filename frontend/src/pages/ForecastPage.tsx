@@ -55,6 +55,8 @@ export function ForecastPage() {
     inFlightRef.current = true;
     try {
       setActiveForecastError(null);
+      setMapPipelineStatus("disabling_dataset_playback");
+      await disableDatasetPlayback();
       setMapPipelineStatus("predicting");
       const runResult = await sessionClient.runSessionForecast({ metadata: { requested_forecast_mode: "active_model" } });
       setMapPipelineStatus("loading_bundle");
@@ -75,10 +77,6 @@ export function ForecastPage() {
   };
 
   useEffect(() => {
-    void disableDatasetPlayback().catch(() => undefined);
-  }, []);
-
-  useEffect(() => {
     if (inFlightRef.current || hasAutoBootstrappedRef.current) return;
     inFlightRef.current = true;
     const ensureForecast = async () => {
@@ -91,6 +89,8 @@ export function ForecastPage() {
           hasAutoBootstrappedRef.current = true;
           return;
         }
+        setMapPipelineStatus("disabling_dataset_playback");
+        await disableDatasetPlayback();
         setMapPipelineStatus("creating_session");
         const runResult = await sessionClient.runSessionForecast({ metadata: { requested_forecast_mode: "active_model" } });
         setMapPipelineStatus("loading_bundle");
@@ -187,6 +187,9 @@ export function ForecastPage() {
             <strong>{provenanceLabel}</strong>
             {sessionProvenance.input_source ? <div className="muted">Input: {sessionProvenance.input_source === "dataset_window" ? "dataset window" : sessionProvenance.input_source === "degraded_session_state" ? "degraded session state" : String(sessionProvenance.input_source)}</div> : null}
           </div>
+          {activeForecastError ? (
+            <button className="primary-button" onClick={() => { hasAutoBootstrappedRef.current = false; void runActiveForecast(); }}>Retry active ConvLSTM forecast</button>
+          ) : null}
         </div>
         <ForecastMap
           geojson={mapGeojson}
