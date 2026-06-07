@@ -194,9 +194,33 @@ adaptation:
         + "\n",
         encoding="utf-8",
     )
-    store = RetrainingJobStore(tmp_path / "jobs.json")
-    active = store.create_job(dataset_snapshot_ref="snapshot://active", run_config_ref="{}", output_dir=None)
-    store.claim_next_queued_job(worker_pid=1)
+    now = datetime.now(timezone.utc)
+    stale_created = (now - timedelta(seconds=1000)).isoformat()
+    active_created = now.isoformat()
+    payload = {
+        "jobs": [
+            {
+                "job_id": "stale-auto",
+                "status": "queued",
+                "created_sequence": 0,
+                "created_at": stale_created,
+                "dataset_snapshot_ref": "adaptation_readiness_green",
+                "run_config_ref": "automatic_adaptation",
+                "metadata": {"automatic_trigger": True},
+            },
+            {
+                "job_id": "active-job",
+                "status": "running",
+                "created_sequence": 1,
+                "created_at": active_created,
+                "started_at": active_created,
+                "dataset_snapshot_ref": "snapshot://active",
+                "run_config_ref": "{}",
+            },
+        ],
+        "next_sequence": 2,
+    }
+    (tmp_path / "jobs.json").write_text(json.dumps(payload), encoding="utf-8")
     ModelRegistry(tmp_path / "registry.json").save({"models": [], "events": [], "active_model_id": None, "previous_active_model_id": None})
 
     result = run_retraining_worker_once(
@@ -212,7 +236,9 @@ adaptation:
     assert result["status"] == "idle"
     assert result["auto_enqueue"]["reason"] == "active_job"
     assert result["auto_enqueue"]["message"] == "automatic retraining skipped because another training job is active or queued"
-    jobs = RetrainingJobStore(tmp_path / "jobs.json").list_jobs()
-    assert len(jobs) == 1
-    assert jobs[0]["job_id"] == active["job_id"]
-    assert jobs[0]["status"] == "running"
+    assert result["auto_enqueue"]["backlog_cleanup"]["cancelled_count"] == 1
+    assert result["auto_enqueue"]["backlog_cleanup"]["cancelled_job_ids"] == ["stale-auto"]
+    jobs = {job["job_id"]: job for job in RetrainingJobStore(tmp_path / "jobs.json").list_jobs()}
+    assert len(jobs) == 2
+    assert jobs["stale-auto"]["status"] == "cancelled"
+    assert jobs["active-job"]["status"] == "running"

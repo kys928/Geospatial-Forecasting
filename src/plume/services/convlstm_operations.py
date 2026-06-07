@@ -1832,6 +1832,99 @@ def has_blocking_retraining_job(jobs: Iterable[dict[str, object]], *, now: datet
     return any(_is_effectively_active_retraining_job(job, now=now) for job in jobs if isinstance(job, dict))
 
 
+def _automatic_backlog_stale_seconds() -> int:
+    value = os.getenv("PLUME_AUTOMATIC_RETRAINING_BACKLOG_STALE_SECONDS")
+    if value:
+        try:
+            return max(60, int(value))
+        except ValueError:
+            pass
+    return 900
+
+
+def _is_automatic_adaptation_retraining_job(job: dict[str, object]) -> bool:
+    if _is_manual_retraining_job(job):
+        return False
+    metadata = _metadata_dict(job.get("metadata"))
+    markers = [
+        metadata.get("automatic_trigger") is True,
+        str(job.get("run_config_ref") or "") == "automatic_adaptation",
+        str(job.get("dataset_snapshot_ref") or "") == "adaptation_readiness_green",
+    ]
+    return any(markers)
+
+
+def _automatic_backlog_anchor(job: dict[str, object]) -> datetime | None:
+    for key in ("updated_at", "finished_at", "created_at", "started_at"):
+        parsed = _parse_iso_datetime(job.get(key))
+        if parsed is not None:
+            return parsed
+    return _job_status_anchor_for_staleness(job)
+
+
+def cleanup_stale_automatic_retraining_backlog(
+    *,
+    job_store: RetrainingJobStore,
+    event_log: OperationalEventLog | None = None,
+    now: datetime | None = None,
+    stale_after_seconds: int | None = None,
+) -> dict[str, object]:
+    """Cancel stale automatic queued/waiting backlog jobs without deleting records."""
+    reference = now or datetime.now(timezone.utc)
+    threshold = int(stale_after_seconds if stale_after_seconds is not None else _automatic_backlog_stale_seconds())
+    threshold = max(60, threshold)
+    cancelled: list[dict[str, object]] = []
+    message = "auto-cancelled as stale automatic retraining backlog"
+
+    for job in job_store.list_jobs():
+        status = str(job.get("status", "")).lower()
+        if status not in {"queued", "waiting"}:
+            continue
+        if not _is_automatic_adaptation_retraining_job(job):
+            continue
+        anchor = _automatic_backlog_anchor(job)
+        if anchor is None:
+            continue
+        if anchor.tzinfo is None:
+            anchor = anchor.replace(tzinfo=timezone.utc)
+        if (reference - anchor).total_seconds() < threshold:
+            continue
+        job_id = str(job.get("job_id"))
+        finished_at = reference.isoformat()
+        metadata = _with_job_log(
+            job.get("metadata"),
+            f"Automatic retraining job {message}.",
+        )
+        metadata = _merge_job_metadata(
+            metadata,
+            {
+                "auto_cancelled_stale_backlog": True,
+                "auto_cancelled_at": finished_at,
+                "auto_cancel_reason": message,
+                "stale_after_seconds": threshold,
+            },
+        )
+        cancelled.append(
+            job_store.update_job(
+                job_id=job_id,
+                status="cancelled",
+                finished_at=finished_at,
+                error_message=message,
+                metadata=metadata,
+            )
+        )
+
+    result = {
+        "cancelled_count": len(cancelled),
+        "cancelled_job_ids": [str(job.get("job_id")) for job in cancelled],
+        "reason": message,
+        "stale_after_seconds": threshold,
+    }
+    if event_log is not None and cancelled:
+        event_log.append(event_type="automatic_retraining_stale_backlog_cancelled", payload=result)
+    return result
+
+
 def maybe_enqueue_automatic_adaptation_job(
     *,
     job_store: RetrainingJobStore,
@@ -1842,6 +1935,11 @@ def maybe_enqueue_automatic_adaptation_job(
 ) -> dict[str, object]:
     """Idempotently enqueue one automatic adaptation job when readiness is green."""
     current_time = now or datetime.now(timezone.utc)
+    backlog_cleanup = cleanup_stale_automatic_retraining_backlog(
+        job_store=job_store,
+        event_log=event_log,
+        now=current_time,
+    )
     jobs = job_store.list_jobs()
     active_jobs = list_blocking_retraining_jobs(jobs, now=current_time)
     if active_jobs:
@@ -1860,18 +1958,20 @@ def maybe_enqueue_automatic_adaptation_job(
             "message": "automatic retraining skipped because another training job is active or queued",
             "active_job_count": len(active_jobs),
             "job_id": None,
+            "backlog_cleanup": backlog_cleanup,
         }
 
     adaptation_config_path = _adaptation_config_path(config_dir)
     readiness_config = AdaptationReadinessConfig.from_yaml(adaptation_config_path)
     if readiness_config.max_concurrent_training_jobs <= sum(1 for job in jobs if _is_effectively_active_retraining_job(job, now=current_time) and str(job.get("status", "")).lower() == "running"):
         event_log.append(event_type="automatic_retraining_skipped_concurrency_limit", payload={"reason": "max_concurrent_training_jobs"})
-        return {"attempted": True, "enqueued": False, "reason": "max_concurrent_training_jobs", "job_id": None}
+        return {"attempted": True, "enqueued": False, "reason": "max_concurrent_training_jobs", "job_id": None, "backlog_cleanup": backlog_cleanup}
 
     latest_terminal_times = [
         _parse_iso_datetime(job.get("finished_at"))
         for job in jobs
-        if str(job.get("status", "")).lower() in {"succeeded", "failed", "cancelled"}
+        if str(job.get("status", "")).lower() in _TERMINAL_RETRAINING_STATUSES
+        and not _metadata_dict(job.get("metadata")).get("auto_cancelled_stale_backlog")
     ]
     latest_terminal_times = [value for value in latest_terminal_times if value is not None]
     last_finished = max(latest_terminal_times) if latest_terminal_times else None
@@ -1883,7 +1983,7 @@ def maybe_enqueue_automatic_adaptation_job(
                 event_type="automatic_retraining_skipped_cooldown",
                 payload={"cooldown_seconds": cooldown_seconds, "remaining_seconds": remaining, "last_finished_at": last_finished.isoformat()},
             )
-            return {"attempted": True, "enqueued": False, "reason": "cooldown", "job_id": None, "cooldown_seconds": cooldown_seconds, "cooldown_remaining_seconds": remaining}
+            return {"attempted": True, "enqueued": False, "reason": "cooldown", "job_id": None, "cooldown_seconds": cooldown_seconds, "cooldown_remaining_seconds": remaining, "backlog_cleanup": backlog_cleanup}
 
     registry_payload = registry.load() if registry is not None else {"models": []}
     active_checkpoint_path = _active_checkpoint_path(registry_payload)
@@ -1898,7 +1998,7 @@ def maybe_enqueue_automatic_adaptation_job(
     readiness_payload = readiness.to_dict()
     if not readiness.ready:
         event_log.append(event_type="automatic_retraining_skipped_readiness_not_green", payload={"readiness": readiness_payload})
-        return {"attempted": True, "enqueued": False, "reason": "readiness_not_green", "job_id": None, "readiness": readiness_payload}
+        return {"attempted": True, "enqueued": False, "reason": "readiness_not_green", "job_id": None, "readiness": readiness_payload, "backlog_cleanup": backlog_cleanup}
 
     job = submit_retraining_job(job_store=job_store, dataset_snapshot_ref="adaptation_readiness_green", run_config_ref="automatic_adaptation", output_dir=str(Path("artifacts") / "runs"))
     job = job_store.update_job(
@@ -1906,7 +2006,7 @@ def maybe_enqueue_automatic_adaptation_job(
         metadata={"automatic_trigger": True, "readiness": readiness_payload, "cooldown_seconds": cooldown_seconds},
     )
     event_log.append(event_type="automatic_retraining_job_enqueued", payload={"job_id": str(job.get("job_id")), "cooldown_seconds": cooldown_seconds})
-    return {"attempted": True, "enqueued": True, "reason": "ready", "job_id": str(job.get("job_id")), "job": job, "readiness": readiness_payload}
+    return {"attempted": True, "enqueued": True, "reason": "ready", "job_id": str(job.get("job_id")), "job": job, "readiness": readiness_payload, "backlog_cleanup": backlog_cleanup}
 
 
 def _job_cancel_requested(job_store: RetrainingJobStore, job_id: str) -> bool:
