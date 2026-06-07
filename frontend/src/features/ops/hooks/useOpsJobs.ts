@@ -1,10 +1,11 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { opsClient } from "../api/opsClient";
 import type { OpsJobsResponse } from "../types/ops.types";
 
 export function useOpsJobs(enabled = true) {
   const cachedJobs = enabled ? opsClient.peekJobs() : null;
   const [jobs, setJobs] = useState<OpsJobsResponse | null>(cachedJobs);
+  const hasDataRef = useRef(Boolean(cachedJobs));
   const [loading, setLoading] = useState(enabled && !cachedJobs);
   const [error, setError] = useState<string | null>(null);
 
@@ -15,16 +16,18 @@ export function useOpsJobs(enabled = true) {
       return;
     }
 
-    setLoading((current) => current || !jobs);
+    setLoading((current) => current || !hasDataRef.current);
     setError(null);
     try {
-      setJobs(await opsClient.getJobs({ force }));
+      const nextJobs = await opsClient.getJobs({ force });
+      hasDataRef.current = true;
+      setJobs(nextJobs);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unable to load ops jobs");
     } finally {
       setLoading(false);
     }
-  }, [enabled, jobs]);
+  }, [enabled]);
 
   useEffect(() => {
     if (!enabled) {

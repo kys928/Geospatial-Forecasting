@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { opsClient } from "../api/opsClient";
 import type { ModelCandidateContext } from "../types/ops.types";
 
@@ -12,6 +12,7 @@ interface ModelCandidateContextState {
 export function useModelCandidateContext(enabled = true): ModelCandidateContextState {
   const cachedContext = enabled ? opsClient.peekModelCandidateContext() : null;
   const [context, setContext] = useState<ModelCandidateContext | null>(cachedContext);
+  const hasDataRef = useRef(Boolean(cachedContext));
   const [loading, setLoading] = useState(enabled && !cachedContext);
   const [error, setError] = useState<string | null>(null);
 
@@ -22,16 +23,18 @@ export function useModelCandidateContext(enabled = true): ModelCandidateContextS
       return;
     }
 
-    setLoading((current) => current || !context);
+    setLoading((current) => current || !hasDataRef.current);
     setError(null);
     try {
-      setContext(await opsClient.getModelCandidateContext({ force }));
+      const nextContext = await opsClient.getModelCandidateContext({ force });
+      hasDataRef.current = true;
+      setContext(nextContext);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unable to load model candidate context");
     } finally {
       setLoading(false);
     }
-  }, [context, enabled]);
+  }, [enabled]);
 
   useEffect(() => {
     if (!enabled) {

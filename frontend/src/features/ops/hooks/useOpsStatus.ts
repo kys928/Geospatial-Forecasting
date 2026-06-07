@@ -1,10 +1,11 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { opsClient } from "../api/opsClient";
 import type { OpsStatusResponse } from "../types/ops.types";
 
 export function useOpsStatus(enabled = true) {
   const cachedStatus = enabled ? opsClient.peekStatus() : null;
   const [status, setStatus] = useState<OpsStatusResponse | null>(cachedStatus);
+  const hasDataRef = useRef(Boolean(cachedStatus));
   const [loading, setLoading] = useState(enabled && !cachedStatus);
   const [error, setError] = useState<string | null>(null);
 
@@ -15,16 +16,18 @@ export function useOpsStatus(enabled = true) {
       return;
     }
 
-    setLoading((current) => current || !status);
+    setLoading((current) => current || !hasDataRef.current);
     setError(null);
     try {
-      setStatus(await opsClient.getStatus({ force }));
+      const nextStatus = await opsClient.getStatus({ force });
+      hasDataRef.current = true;
+      setStatus(nextStatus);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unable to load ops status");
     } finally {
       setLoading(false);
     }
-  }, [enabled, status]);
+  }, [enabled]);
 
   useEffect(() => {
     if (!enabled) {

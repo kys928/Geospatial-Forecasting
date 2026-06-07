@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { opsClient } from "../api/opsClient";
 import type { RetrainingExplanationContext, RetrainingRecommendation } from "../types/ops.types";
 
@@ -15,6 +15,7 @@ export function useRetrainingRecommendation(enabled = true): RetrainingRecommend
   const cachedContext = enabled ? opsClient.peekRetrainingRecommendationContext() : null;
   const [recommendation, setRecommendation] = useState<RetrainingRecommendation | null>(cachedRecommendation);
   const [context, setContext] = useState<RetrainingExplanationContext | null>(cachedContext);
+  const hasDataRef = useRef(Boolean(cachedRecommendation));
   const [loading, setLoading] = useState(enabled && !cachedRecommendation);
   const [error, setError] = useState<string | null>(null);
 
@@ -25,7 +26,7 @@ export function useRetrainingRecommendation(enabled = true): RetrainingRecommend
       return;
     }
 
-    setLoading((current) => current || !recommendation);
+    setLoading((current) => current || !hasDataRef.current);
     setError(null);
     try {
       const [recommendationResult, contextResult] = await Promise.allSettled([
@@ -34,6 +35,7 @@ export function useRetrainingRecommendation(enabled = true): RetrainingRecommend
       ]);
 
       if (recommendationResult.status === "fulfilled") {
+        hasDataRef.current = true;
         setRecommendation(recommendationResult.value);
       }
 
@@ -53,7 +55,7 @@ export function useRetrainingRecommendation(enabled = true): RetrainingRecommend
     } finally {
       setLoading(false);
     }
-  }, [enabled, recommendation]);
+  }, [enabled]);
 
   useEffect(() => {
     if (!enabled) {

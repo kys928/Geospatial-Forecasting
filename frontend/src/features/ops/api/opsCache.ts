@@ -35,11 +35,13 @@ export async function cachedOpsRequest<T>({
     return entry.value;
   }
 
-  if (entry?.inFlight) {
+  if (!force && entry?.inFlight) {
     return entry.inFlight;
   }
 
-  const nextEntry: OpsCacheEntry<T> = entry ?? { timestamp: 0 };
+  const nextEntry: OpsCacheEntry<T> = force
+    ? { value: entry?.value, timestamp: entry?.timestamp ?? 0 }
+    : entry ?? { timestamp: 0 };
   const inFlight = request()
     .then((value) => {
       nextEntry.value = value;
@@ -47,7 +49,10 @@ export async function cachedOpsRequest<T>({
       return value;
     })
     .finally(() => {
-      delete nextEntry.inFlight;
+      const currentEntry = cache.get(key);
+      if (currentEntry === nextEntry && nextEntry.inFlight === inFlight) {
+        delete nextEntry.inFlight;
+      }
     });
 
   nextEntry.inFlight = inFlight;
