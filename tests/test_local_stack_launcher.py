@@ -177,3 +177,143 @@ def test_main_returns_1_and_prints_on_child_exit(monkeypatch, capsys):
     out = capsys.readouterr().out
     assert rc == 1
     assert "[stack] api exited with code 7; shutting down stack." in out
+
+
+def _runpod_process_name(cmd):
+    if cmd[0] == "npm":
+        return "frontend"
+    if any("run_execution_worker.py" in part for part in cmd):
+        return "worker"
+    return "api"
+
+
+def test_runpod_worker_exit_warns_once_and_keeps_stack_until_interrupt(monkeypatch, tmp_path, capsys):
+    module = _load_module("run_runpod_stack.py")
+    module.RUNTIME_ENV_PATH = tmp_path / "missing_runtime_env.sh"
+
+    class _Proc:
+        def __init__(self, name: str):
+            self.name = name
+            self.stdout = iter([])
+            self.terminated = False
+            self.killed = False
+
+        def poll(self):
+            return 1 if self.name == "worker" else None
+
+        def terminate(self):
+            self.terminated = True
+
+        def wait(self, timeout=None):
+            return 1 if self.name == "worker" else 0
+
+        def kill(self):
+            self.killed = True
+
+    started = []
+
+    def _fake_popen(cmd, **_kwargs):
+        name = _runpod_process_name(cmd)
+        proc = _Proc(name)
+        started.append(proc)
+        return proc
+
+    sleep_calls = {"count": 0}
+
+    def _interrupt_after_second_monitor_loop(_seconds):
+        sleep_calls["count"] += 1
+        if sleep_calls["count"] >= 2:
+            raise KeyboardInterrupt
+
+    monkeypatch.setattr(module.subprocess, "Popen", _fake_popen)
+    monkeypatch.setattr(module.time, "sleep", _interrupt_after_second_monitor_loop)
+
+    rc = module.main([])
+
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert out.count("[stack] warning: optional worker exited unexpectedly with code 1") == 1
+    assert "keeping remaining stack processes running" in out
+    assert "worker exited unexpectedly with code 1; shutting down stack" not in out
+    assert [proc.name for proc in started] == ["api", "worker", "frontend"]
+    assert [proc.terminated for proc in started] == [True, False, True]
+
+
+def test_runpod_api_exit_remains_fatal(monkeypatch, tmp_path, capsys):
+    module = _load_module("run_runpod_stack.py")
+    module.RUNTIME_ENV_PATH = tmp_path / "missing_runtime_env.sh"
+
+    class _Proc:
+        def __init__(self, name: str):
+            self.name = name
+            self.stdout = iter([])
+            self.terminated = False
+
+        def poll(self):
+            return 7 if self.name == "api" else None
+
+        def terminate(self):
+            self.terminated = True
+
+        def wait(self, timeout=None):
+            return 7 if self.name == "api" else 0
+
+        def kill(self):
+            return None
+
+    started = []
+
+    def _fake_popen(cmd, **_kwargs):
+        name = _runpod_process_name(cmd)
+        proc = _Proc(name)
+        started.append(proc)
+        return proc
+
+    monkeypatch.setattr(module.subprocess, "Popen", _fake_popen)
+
+    rc = module.main([])
+
+    out = capsys.readouterr().out
+    assert rc == 1
+    assert "[stack] api exited unexpectedly with code 7; shutting down stack." in out
+    assert [proc.terminated for proc in started] == [False, True, True]
+
+
+def test_runpod_frontend_exit_remains_fatal(monkeypatch, tmp_path, capsys):
+    module = _load_module("run_runpod_stack.py")
+    module.RUNTIME_ENV_PATH = tmp_path / "missing_runtime_env.sh"
+
+    class _Proc:
+        def __init__(self, name: str):
+            self.name = name
+            self.stdout = iter([])
+            self.terminated = False
+
+        def poll(self):
+            return 9 if self.name == "frontend" else None
+
+        def terminate(self):
+            self.terminated = True
+
+        def wait(self, timeout=None):
+            return 9 if self.name == "frontend" else 0
+
+        def kill(self):
+            return None
+
+    started = []
+
+    def _fake_popen(cmd, **_kwargs):
+        name = _runpod_process_name(cmd)
+        proc = _Proc(name)
+        started.append(proc)
+        return proc
+
+    monkeypatch.setattr(module.subprocess, "Popen", _fake_popen)
+
+    rc = module.main([])
+
+    out = capsys.readouterr().out
+    assert rc == 1
+    assert "[stack] frontend exited unexpectedly with code 9; shutting down stack." in out
+    assert [proc.terminated for proc in started] == [True, True, False]

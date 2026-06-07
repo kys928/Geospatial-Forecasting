@@ -220,13 +220,24 @@ def main(argv: list[str] | None = None) -> int:
             processes.append(proc)
             threading.Thread(target=_stream_output, args=(spec.name, proc), daemon=True).start()
 
+        exited_optional_processes: set[int] = set()
         while True:
-            for spec, proc in zip(specs, processes):
+            for index, (spec, proc) in enumerate(zip(specs, processes)):
                 code = proc.poll()
-                if code is not None:
-                    print(f"[stack] {spec.name} exited unexpectedly with code {code}; shutting down stack.")
-                    _shutdown_processes(processes)
-                    return 1
+                if code is None:
+                    continue
+                if spec.name == "worker":
+                    if index not in exited_optional_processes:
+                        print(
+                            f"[stack] warning: optional worker exited unexpectedly with code {code}; "
+                            "keeping remaining stack processes running."
+                        )
+                        exited_optional_processes.add(index)
+                    continue
+
+                print(f"[stack] {spec.name} exited unexpectedly with code {code}; shutting down stack.")
+                _shutdown_processes(processes)
+                return 1
             time.sleep(0.2)
     except KeyboardInterrupt:
         print("[stack] Ctrl+C received. Shutting down child processes...")
