@@ -12,7 +12,7 @@ import subprocess
 import sys
 import time
 import traceback
-from typing import Callable
+from typing import Callable, Iterable
 import uuid
 
 import numpy as np
@@ -311,7 +311,7 @@ OPERATIONAL_PHASES = {
 }
 MODEL_STATUSES = {"candidate", "approved", "active", "rejected", "archived"}
 APPROVAL_STATUSES = {"not_required", "pending_manual_approval", "approved_for_activation", "rejected_by_operator"}
-RETRAINING_JOB_STATUSES = {"queued", "running", "waiting", "succeeded", "failed", "cancelled"}
+RETRAINING_JOB_STATUSES = {"queued", "claimed", "starting", "running", "waiting", "succeeded", "completed", "failed", "cancelled"}
 
 
 @dataclass(frozen=True)
@@ -1774,7 +1774,9 @@ def submit_retraining_job(
 
 
 _STALE_ACTIVE_STATUSES = {"running", "starting", "claimed"}
+AUTOMATIC_RETRAINING_BLOCKING_STATUSES = {"running", "claimed", "starting", "queued", "waiting"}
 _TERMINAL_RETRAINING_STATUSES = {"succeeded", "completed", "failed", "cancelled"}
+
 
 def _metadata_dict(value: object) -> dict[str, object]:
     if isinstance(value, dict):
@@ -1807,7 +1809,7 @@ def _retraining_stale_timeout_seconds() -> int:
 
 def _is_effectively_active_retraining_job(job: dict[str, object], *, now: datetime | None = None) -> bool:
     status = str(job.get("status", "")).lower()
-    if status not in {"queued", "running", "starting", "claimed"}:
+    if status not in AUTOMATIC_RETRAINING_BLOCKING_STATUSES:
         return False
     if status in _STALE_ACTIVE_STATUSES:
         anchor = _job_status_anchor_for_staleness(job)
@@ -1818,6 +1820,17 @@ def _is_effectively_active_retraining_job(job: dict[str, object], *, now: dateti
             if (reference - anchor).total_seconds() > float(_retraining_stale_timeout_seconds()):
                 return False
     return True
+
+
+def list_blocking_retraining_jobs(jobs: Iterable[dict[str, object]], *, now: datetime | None = None) -> list[dict[str, object]]:
+    """Return retraining jobs that block automatic retraining enqueue."""
+    return [dict(job) for job in jobs if isinstance(job, dict) and _is_effectively_active_retraining_job(job, now=now)]
+
+
+def has_blocking_retraining_job(jobs: Iterable[dict[str, object]], *, now: datetime | None = None) -> bool:
+    """Return whether any existing retraining job should defer automatic enqueue."""
+    return any(_is_effectively_active_retraining_job(job, now=now) for job in jobs if isinstance(job, dict))
+
 
 def maybe_enqueue_automatic_adaptation_job(
     *,
@@ -1830,13 +1843,24 @@ def maybe_enqueue_automatic_adaptation_job(
     """Idempotently enqueue one automatic adaptation job when readiness is green."""
     current_time = now or datetime.now(timezone.utc)
     jobs = job_store.list_jobs()
-    active_jobs = [job for job in jobs if _is_effectively_active_retraining_job(job, now=current_time)]
+    active_jobs = list_blocking_retraining_jobs(jobs, now=current_time)
     if active_jobs:
         event_log.append(
             event_type="automatic_retraining_skipped_active_job",
-            payload={"active_job_ids": [str(job.get("job_id")) for job in active_jobs], "active_statuses": [str(job.get("status")) for job in active_jobs]},
+            payload={
+                "reason": "automatic retraining skipped because another training job is active or queued",
+                "active_job_ids": [str(job.get("job_id")) for job in active_jobs],
+                "active_statuses": [str(job.get("status")) for job in active_jobs],
+            },
         )
-        return {"attempted": True, "enqueued": False, "reason": "active_job", "active_job_count": len(active_jobs), "job_id": None}
+        return {
+            "attempted": True,
+            "enqueued": False,
+            "reason": "active_job",
+            "message": "automatic retraining skipped because another training job is active or queued",
+            "active_job_count": len(active_jobs),
+            "job_id": None,
+        }
 
     adaptation_config_path = _adaptation_config_path(config_dir)
     readiness_config = AdaptationReadinessConfig.from_yaml(adaptation_config_path)
@@ -2922,10 +2946,13 @@ def _validate_job_transition(*, current_status: str, next_status: str) -> None:
     if current_status == next_status:
         return
     allowed = {
-        "queued": {"running", "cancelled"},
-        "running": {"waiting", "succeeded", "failed", "cancelled"},
+        "queued": {"claimed", "starting", "running", "cancelled"},
+        "claimed": {"starting", "running", "waiting", "failed", "cancelled"},
+        "starting": {"running", "waiting", "failed", "cancelled"},
+        "running": {"waiting", "succeeded", "completed", "failed", "cancelled"},
         "waiting": {"queued", "running", "cancelled"},
         "succeeded": set(),
+        "completed": set(),
         "failed": set(),
         "cancelled": set(),
     }

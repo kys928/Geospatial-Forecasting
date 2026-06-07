@@ -26,7 +26,7 @@ _GREEN = "green"
 _YELLOW = "yellow"
 _RED = "red"
 _BLOCKING_STATUSES = {_YELLOW, _RED}
-_RUNNING_JOB_STATUSES = {"queued", "running", "starting"}
+_RUNNING_JOB_STATUSES = {"queued", "running", "starting", "claimed", "waiting"}
 _CHECKPOINT_SUFFIXES = {".ckpt", ".pth", ".pt", ".bin"}
 
 

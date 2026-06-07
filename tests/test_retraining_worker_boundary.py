@@ -170,3 +170,49 @@ def test_worker_idle_includes_recovery_metadata_when_enabled(monkeypatch, tmp_pa
     )
     assert result["claimed"] is False
     assert result["stale_recovery"]["enabled"] is True
+
+
+def test_worker_auto_enqueue_skips_with_active_job_reason(tmp_path: Path):
+    config_dir = tmp_path / "configs"
+    config_dir.mkdir()
+    (config_dir / "adaptation.yaml").write_text(
+        f"""
+adaptation:
+  enabled: true
+  default_buffer_root: {tmp_path / 'buffer'}
+  reference_dataset:
+    default_path: {tmp_path / 'reference'}
+  training:
+    retry_cooldown_seconds: 0
+    min_seconds_between_training_runs: 0
+    max_concurrent_training_jobs: 1
+    training_device: cpu
+    allow_cpu_training_fallback: true
+    min_free_vram_gib_for_training: 0.0
+    allow_fresh_start: true
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+    store = RetrainingJobStore(tmp_path / "jobs.json")
+    active = store.create_job(dataset_snapshot_ref="snapshot://active", run_config_ref="{}", output_dir=None)
+    store.claim_next_queued_job(worker_pid=1)
+    ModelRegistry(tmp_path / "registry.json").save({"models": [], "events": [], "active_model_id": None, "previous_active_model_id": None})
+
+    result = run_retraining_worker_once(
+        jobs_path=tmp_path / "jobs.json",
+        registry_path=tmp_path / "registry.json",
+        state_path=tmp_path / "state.json",
+        events_path=tmp_path / "events.jsonl",
+        config_dir=config_dir,
+        worker_pid=1234,
+    )
+
+    assert result["claimed"] is False
+    assert result["status"] == "idle"
+    assert result["auto_enqueue"]["reason"] == "active_job"
+    assert result["auto_enqueue"]["message"] == "automatic retraining skipped because another training job is active or queued"
+    jobs = RetrainingJobStore(tmp_path / "jobs.json").list_jobs()
+    assert len(jobs) == 1
+    assert jobs[0]["job_id"] == active["job_id"]
+    assert jobs[0]["status"] == "running"

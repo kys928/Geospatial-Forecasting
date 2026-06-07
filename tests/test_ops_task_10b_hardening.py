@@ -58,15 +58,14 @@ def _registry(path: Path) -> ModelRegistry:
     return registry
 
 
-def test_auto_enqueue_green_is_idempotent_and_waiting_is_not_active(monkeypatch, tmp_path: Path):
+def test_auto_enqueue_green_is_idempotent_and_terminal_jobs_are_not_active(monkeypatch, tmp_path: Path):
     config_dir = tmp_path / "configs"
-    _write_adaptation_config(config_dir)
+    _write_adaptation_config(config_dir, cooldown=0)
     monkeypatch.setattr("plume.services.convlstm_operations.AdaptationReadinessService.evaluate", lambda *_a, **_k: Ready())
     store = RetrainingJobStore(tmp_path / "jobs.json")
-    # Stale non-manual waiting jobs are not active blockers for auto enqueue.
-    waiting = store.create_job(dataset_snapshot_ref=None, run_config_ref=None, output_dir=str(tmp_path / "runs"))
-    store.update_job(job_id=waiting["job_id"], status="running", started_at=datetime.now(UTC).isoformat())
-    store.update_job(job_id=waiting["job_id"], status="waiting", finished_at=datetime.now(UTC).isoformat())
+    terminal = store.create_job(dataset_snapshot_ref=None, run_config_ref=None, output_dir=str(tmp_path / "runs"))
+    store.update_job(job_id=terminal["job_id"], status="running", started_at=datetime.now(UTC).isoformat())
+    store.update_job(job_id=terminal["job_id"], status="failed", finished_at=datetime.now(UTC).isoformat())
     events = OperationalEventLog(tmp_path / "events.jsonl")
 
     first = maybe_enqueue_automatic_adaptation_job(job_store=store, event_log=events, config_dir=config_dir, registry=_registry(tmp_path / "registry.json"))
@@ -81,7 +80,7 @@ def test_auto_enqueue_green_is_idempotent_and_waiting_is_not_active(monkeypatch,
     assert [job["status"] for job in jobs].count("queued") == 1
 
 
-@pytest.mark.parametrize("status", ["queued", "starting", "claimed", "running"])
+@pytest.mark.parametrize("status", ["queued", "starting", "claimed", "running", "waiting"])
 def test_auto_enqueue_active_statuses_block_duplicates(monkeypatch, tmp_path: Path, status: str):
     config_dir = tmp_path / "configs"
     _write_adaptation_config(config_dir)
@@ -94,6 +93,48 @@ def test_auto_enqueue_active_statuses_block_duplicates(monkeypatch, tmp_path: Pa
 
     assert result["enqueued"] is False
     assert result["reason"] == "active_job"
+    assert result["message"] == "automatic retraining skipped because another training job is active or queued"
+    assert len(store.list_jobs()) == 1
+
+
+def test_auto_enqueue_repeated_iterations_do_not_increase_job_count(monkeypatch, tmp_path: Path):
+    config_dir = tmp_path / "configs"
+    _write_adaptation_config(config_dir)
+    monkeypatch.setattr("plume.services.convlstm_operations.AdaptationReadinessService.evaluate", lambda *_a, **_k: Ready())
+    store = RetrainingJobStore(tmp_path / "jobs.json")
+    store.create_job(dataset_snapshot_ref=None, run_config_ref=None, output_dir=str(tmp_path / "runs"))
+    events = OperationalEventLog(tmp_path / "events.jsonl")
+
+    first = maybe_enqueue_automatic_adaptation_job(job_store=store, event_log=events, config_dir=config_dir, registry=_registry(tmp_path / "registry.json"))
+    second = maybe_enqueue_automatic_adaptation_job(job_store=store, event_log=events, config_dir=config_dir, registry=_registry(tmp_path / "registry.json"))
+
+    assert first["enqueued"] is False
+    assert first["reason"] == "active_job"
+    assert second["enqueued"] is False
+    assert second["reason"] == "active_job"
+    assert len(store.list_jobs()) == 1
+    event_payloads = [json.loads(line)["payload"] for line in (tmp_path / "events.jsonl").read_text(encoding="utf-8").splitlines()]
+    assert event_payloads[-1]["reason"] == "automatic retraining skipped because another training job is active or queued"
+
+
+def test_auto_enqueue_terminal_statuses_do_not_block(monkeypatch, tmp_path: Path):
+    config_dir = tmp_path / "configs"
+    _write_adaptation_config(config_dir, cooldown=0)
+    monkeypatch.setattr("plume.services.convlstm_operations.AdaptationReadinessService.evaluate", lambda *_a, **_k: Ready())
+    store = RetrainingJobStore(tmp_path / "jobs.json")
+    payload = {
+        "jobs": [
+            {"job_id": status, "status": status, "created_sequence": idx, "created_at": datetime.now(UTC).isoformat(), "finished_at": datetime.now(UTC).isoformat()}
+            for idx, status in enumerate(["succeeded", "completed", "failed", "cancelled"])
+        ],
+        "next_sequence": 4,
+    }
+    (tmp_path / "jobs.json").write_text(json.dumps(payload), encoding="utf-8")
+
+    result = maybe_enqueue_automatic_adaptation_job(job_store=store, event_log=OperationalEventLog(tmp_path / "events.jsonl"), config_dir=config_dir, registry=_registry(tmp_path / "registry.json"))
+
+    assert result["enqueued"] is True
+    assert result["job_id"] == "retrain-job-000004"
 
 
 def test_auto_enqueue_cooldown_and_readiness_block(monkeypatch, tmp_path: Path):
