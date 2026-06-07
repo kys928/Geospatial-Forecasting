@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { opsClient } from "../api/opsClient";
 import type { RetrainingExplanationContext, RetrainingRecommendation } from "../types/ops.types";
 
@@ -7,40 +7,40 @@ interface RetrainingRecommendationState {
   context: RetrainingExplanationContext | null;
   loading: boolean;
   error: string | null;
-  refresh: () => Promise<void>;
+  refresh: (force?: boolean) => Promise<void>;
 }
 
 export function useRetrainingRecommendation(enabled = true): RetrainingRecommendationState {
-  const [recommendation, setRecommendation] = useState<RetrainingRecommendation | null>(null);
-  const [context, setContext] = useState<RetrainingExplanationContext | null>(null);
-  const [loading, setLoading] = useState(enabled);
+  const cachedRecommendation = enabled ? opsClient.peekRetrainingRecommendation() : null;
+  const cachedContext = enabled ? opsClient.peekRetrainingRecommendationContext() : null;
+  const [recommendation, setRecommendation] = useState<RetrainingRecommendation | null>(cachedRecommendation);
+  const [context, setContext] = useState<RetrainingExplanationContext | null>(cachedContext);
+  const hasDataRef = useRef(Boolean(cachedRecommendation));
+  const [loading, setLoading] = useState(enabled && !cachedRecommendation);
   const [error, setError] = useState<string | null>(null);
 
-  const refresh = useCallback(async () => {
+  const refresh = useCallback(async (force = true) => {
     if (!enabled) {
       setLoading(false);
       setError(null);
       return;
     }
 
-    setLoading(true);
+    setLoading((current) => current || !hasDataRef.current);
     setError(null);
     try {
       const [recommendationResult, contextResult] = await Promise.allSettled([
-        opsClient.getRetrainingRecommendation(),
-        opsClient.getRetrainingRecommendationContext()
+        opsClient.getRetrainingRecommendation({ force }),
+        opsClient.getRetrainingRecommendationContext({ force })
       ]);
 
       if (recommendationResult.status === "fulfilled") {
+        hasDataRef.current = true;
         setRecommendation(recommendationResult.value);
-      } else {
-        setRecommendation(null);
       }
 
       if (contextResult.status === "fulfilled") {
         setContext(contextResult.value);
-      } else {
-        setContext(null);
       }
 
       if (recommendationResult.status === "rejected") {
@@ -59,14 +59,12 @@ export function useRetrainingRecommendation(enabled = true): RetrainingRecommend
 
   useEffect(() => {
     if (!enabled) {
-      setRecommendation(null);
-      setContext(null);
       setLoading(false);
       setError(null);
       return;
     }
 
-    void refresh();
+    void refresh(false);
   }, [enabled, refresh]);
 
   return { recommendation, context, loading, error, refresh };

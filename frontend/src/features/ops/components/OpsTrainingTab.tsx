@@ -175,11 +175,11 @@ export function OpsTrainingTab() {
   const [manualNotice, setManualNotice] = useState<string | null>(null);
   const [followLogs, setFollowLogs] = useState(true);
   const [adaptationTraining, setAdaptationTraining] =
-    useState<AdaptationTrainingStatus | null>(null);
+    useState<AdaptationTrainingStatus | null>(() => opsClient.peekAdaptationTrainingStatus());
   const [adaptationReadiness, setAdaptationReadiness] =
-    useState<AdaptationReadiness | null>(null);
+    useState<AdaptationReadiness | null>(() => opsClient.peekAdaptationReadiness());
   const [adaptationBuffer, setAdaptationBuffer] =
-    useState<AdaptationBufferStatus | null>(null);
+    useState<AdaptationBufferStatus | null>(() => opsClient.peekAdaptationBufferStatus());
   const [adaptationTrainingError, setAdaptationTrainingError] = useState<
     string | null
   >(null);
@@ -280,19 +280,20 @@ export function OpsTrainingTab() {
       logRef.current.scrollTop = logRef.current.scrollHeight;
   }, [logs, followLogs]);
   useEffect(() => {
-    void refreshAdaptationTraining();
+    void refreshAdaptationTraining(false);
     const timer = window.setInterval(() => {
-      void refreshAll();
+      if (document.visibilityState === "hidden") return;
+      void refreshAll(false);
     }, 10000);
     return () => window.clearInterval(timer);
   }, []);
 
-  async function refreshAdaptationTraining() {
+  async function refreshAdaptationTraining(force = true) {
     try {
       const [training, readiness, buffer] = await Promise.all([
-        opsClient.getAdaptationTrainingStatus(),
-        opsClient.getAdaptationReadiness(),
-        opsClient.getAdaptationBufferStatus(),
+        opsClient.getAdaptationTrainingStatus({ force }),
+        opsClient.getAdaptationReadiness({ force }),
+        opsClient.getAdaptationBufferStatus({ force }),
       ]);
       setAdaptationTraining(training);
       setAdaptationReadiness(readiness);
@@ -306,13 +307,13 @@ export function OpsTrainingTab() {
       );
     }
   }
-  async function refreshAll() {
+  async function refreshAll(force = true) {
     await Promise.all([
-      jobsState.refresh(),
-      statusState.refresh(),
-      recommendationState.refresh(),
-      candidateState.refresh(),
-      refreshAdaptationTraining(),
+      jobsState.refresh(force),
+      statusState.refresh(force),
+      recommendationState.refresh(force),
+      candidateState.refresh(force),
+      refreshAdaptationTraining(force),
     ]);
   }
   async function handleStopTraining() {
