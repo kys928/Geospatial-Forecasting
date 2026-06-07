@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 import importlib.util
 import json
 from pathlib import Path
@@ -70,6 +70,10 @@ def _manifest(buffer_root: Path) -> dict:
     return json.loads((buffer_root / "manifest.json").read_text(encoding="utf-8"))
 
 
+def _parse_iso(value: str) -> datetime:
+    return datetime.fromisoformat(value.replace("Z", "+00:00"))
+
+
 def _check(result, name: str):
     return next(check for check in result.checks if check.name == name)
 
@@ -95,6 +99,91 @@ def test_seed_script_execute_writes_accepted_train_val_samples(tmp_path):
     assert summary["accepted_val"] > 0
     assert summary["fresh_accepted_total"] == 64
     assert report.written_count == 64
+
+
+def test_seed_script_explicit_start_time_behavior_is_unchanged(tmp_path):
+    source = _source(tmp_path, 3)
+    opts = _options(tmp_path, source, count=3, execute=False)
+    opts.frame_interval_minutes = 30
+
+    code, report = seed_script.run_seed(opts)
+
+    assert code == 0
+    assert report.timestamp_mode == "explicit_start_time"
+    assert report.first_timestamp == "2026-06-01T00:00:00Z"
+    assert report.last_timestamp == "2026-06-01T01:00:00Z"
+    assert report.time_span_minutes == 60
+    assert report.written_count == 3
+
+
+def test_seed_script_fresh_window_ending_now_writes_recent_ascending_timestamps(tmp_path):
+    source = _source(tmp_path, 4)
+    opts = _options(tmp_path, source, count=4, execute=True)
+    opts.start_time = None
+    opts.fresh_window_ending_now = True
+    opts.frame_interval_minutes = 15
+    before = datetime.now(UTC).replace(microsecond=0)
+
+    code, report = seed_script.run_seed(opts)
+    after = datetime.now(UTC).replace(microsecond=0) + timedelta(seconds=1)
+
+    assert code == 0
+    assert report.timestamp_mode == "fresh_window_ending_now"
+    manifest = _manifest(tmp_path / "buffer")
+    samples = manifest["samples"]
+    assert len(samples) == 4
+    starts = [_parse_iso(item["window_start"]) for item in samples]
+    ends = [_parse_iso(item["window_end"]) for item in samples]
+    assert starts == sorted(starts)
+    assert [(starts[index + 1] - starts[index]).total_seconds() / 60 for index in range(3)] == [15, 15, 15]
+    assert before <= ends[-1] <= after
+    assert all((end - start).total_seconds() / 60 == 15 for start, end in zip(starts, ends, strict=True))
+    assert _parse_iso(report.first_timestamp) == starts[0]
+    assert _parse_iso(report.last_timestamp) == starts[-1]
+
+
+def test_seed_script_start_time_conflicts_with_fresh_window_mode(tmp_path):
+    source = _source(tmp_path, 1)
+    opts = _options(tmp_path, source, count=1, execute=False)
+    opts.fresh_window_ending_now = True
+
+    code, report = seed_script.run_seed(opts)
+
+    assert code != 0
+    assert "--fresh-window-ending-now conflicts with --start-time" in report.errors
+
+
+def test_seed_script_cli_rejects_start_time_with_fresh_window_mode(tmp_path):
+    source = _source(tmp_path, 1)
+
+    try:
+        seed_script.parse_args([
+            "--repo-root",
+            str(REPO_ROOT),
+            "--source-dataset-dir",
+            str(source),
+            "--start-time",
+            "2026-06-01T00:00:00Z",
+            "--fresh-window-ending-now",
+        ])
+    except SystemExit as exc:
+        assert exc.code != 0
+    else:
+        raise AssertionError("expected argparse conflict")
+
+
+def test_seed_script_fresh_window_dry_run_does_not_write_buffer(tmp_path):
+    source = _source(tmp_path, 4)
+    opts = _options(tmp_path, source, count=4, execute=False)
+    opts.start_time = None
+    opts.fresh_window_ending_now = True
+
+    code, report = seed_script.run_seed(opts)
+
+    assert code == 0
+    assert report.timestamp_mode == "fresh_window_ending_now"
+    assert report.written_count == 4
+    assert not (tmp_path / "buffer" / "manifest.json").exists()
 
 
 def test_seed_script_generates_fresh_spanning_timestamps(tmp_path):

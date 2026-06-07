@@ -122,9 +122,11 @@ python scripts/seed_adaptation_buffer_from_windows.py \
   --buffer-root /workspace/Geospatial-Forecasting/artifacts/adaptation/buffer \
   --count 64 \
   --frame-interval-minutes 60 \
-  --start-time 2026-06-01T00:00:00Z \
+  --fresh-window-ending-now \
   --dry-run
 ```
+
+Use `--fresh-window-ending-now` to simulate live inflow by spacing selected windows backward so the final seeded `window_end` is near current UTC time. Use `--start-time 2026-06-01T00:00:00Z` instead when you need a fixed historical window; `--start-time` and `--fresh-window-ending-now` are mutually exclusive.
 
 The adaptation smoke script can include this seed step with `--seed-buffer-from-reference`; it remains non-mutating unless `--execute-seed` is supplied.
 
