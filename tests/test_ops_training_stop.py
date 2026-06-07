@@ -123,3 +123,23 @@ checkpoint_min_free_percent: 0
     result = maybe_enqueue_automatic_adaptation_job(job_store=store, event_log=OperationalEventLog(tmp_path / "events.jsonl"), config_dir=config_dir, registry=registry, now=datetime.now(timezone.utc) + timedelta(minutes=10))
 
     assert result["reason"] != "active_job"
+
+
+
+def test_stop_returns_conflict_when_job_store_lock_busy(monkeypatch, tmp_path: Path):
+    now = datetime.now(timezone.utc).isoformat()
+    _seed(monkeypatch, tmp_path, [{"job_id": "job-1", "status": "running", "created_sequence": 1, "created_at": now, "started_at": now, "metadata": {"heartbeat_at": now}}])
+
+    original_update = RetrainingJobStore.update_job
+
+    def _busy_update(self, *args, **kwargs):
+        raise RuntimeError(f"Could not acquire retraining job lock: {self.lock_path}")
+
+    monkeypatch.setattr(RetrainingJobStore, "update_job", _busy_update)
+    client = TestClient(create_app())
+
+    resp = client.post("/ops/retraining/stop", headers=_auth_header("operator-token"))
+
+    assert resp.status_code == 409
+    assert resp.json()["detail"] == "Retraining job store is busy; retry stop request shortly."
+    monkeypatch.setattr(RetrainingJobStore, "update_job", original_update)
