@@ -40,6 +40,7 @@ class SeedOptions:
     json_report: Path | None = None
     seed_id: str = "demo-seed-001"
     start_time: datetime | None = None
+    fresh_window_ending_now: bool = False
     frame_interval_minutes: int | None = None
     max_scan_files: int | None = None
     dry_run: bool = True
@@ -78,6 +79,7 @@ class SeedReport:
     last_timestamp: str | None = None
     time_span_minutes: float = 0.0
     frame_interval_minutes: int = 60
+    timestamp_mode: str = "default_start_time"
     readiness_thresholds_detected: dict[str, Any] = field(default_factory=dict)
     warnings: list[str] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
@@ -104,6 +106,7 @@ class SeedReport:
             "last_timestamp": self.last_timestamp,
             "time_span_minutes": self.time_span_minutes,
             "frame_interval_minutes": self.frame_interval_minutes,
+            "timestamp_mode": self.timestamp_mode,
             "readiness_thresholds_detected": dict(self.readiness_thresholds_detected),
             "warnings": list(self.warnings),
             "errors": list(self.errors),
@@ -125,7 +128,16 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--clear-existing", action="store_true")
     parser.add_argument("--json-report", type=Path, default=None)
     parser.add_argument("--seed-id", default="demo-seed-001")
-    parser.add_argument("--start-time", default=None, help="ISO timestamp such as 2026-06-01T00:00:00Z")
+    timestamp = parser.add_mutually_exclusive_group()
+    timestamp.add_argument("--start-time", default=None, help="ISO timestamp such as 2026-06-01T00:00:00Z")
+    timestamp.add_argument(
+        "--fresh-window-ending-now",
+        action="store_true",
+        help=(
+            "Simulate live inflow by spacing selected windows backward so the final "
+            "window_end is near current UTC time. Conflicts with --start-time."
+        ),
+    )
     parser.add_argument("--frame-interval-minutes", type=int, default=None)
     parser.add_argument("--max-scan-files", type=int, default=None)
     parser.add_argument("--allow-partial", action="store_true")
@@ -164,6 +176,7 @@ def options_from_args(args: argparse.Namespace) -> SeedOptions:
         json_report=args.json_report,
         seed_id=args.seed_id,
         start_time=_parse_time(args.start_time),
+        fresh_window_ending_now=args.fresh_window_ending_now,
         frame_interval_minutes=args.frame_interval_minutes,
         max_scan_files=args.max_scan_files,
         dry_run=args.dry_run,
@@ -307,11 +320,28 @@ def _iso(value: datetime) -> str:
     return value.astimezone(UTC).isoformat(timespec="seconds").replace("+00:00", "Z")
 
 
-def _timestamps(count: int, frame_interval_minutes: int, start_time: datetime | None) -> list[datetime]:
+def _timestamp_mode(options: SeedOptions) -> str:
+    if options.fresh_window_ending_now:
+        return "fresh_window_ending_now"
+    if options.start_time is not None:
+        return "explicit_start_time"
+    return "default_start_time"
+
+
+def _timestamps(
+    count: int,
+    frame_interval_minutes: int,
+    start_time: datetime | None,
+    *,
+    fresh_window_ending_now: bool = False,
+) -> list[datetime]:
     if count <= 0:
         return []
     interval = timedelta(minutes=frame_interval_minutes)
-    if start_time is None:
+    if fresh_window_ending_now:
+        end = datetime.now(UTC).replace(microsecond=0)
+        start_time = end - interval * count
+    elif start_time is None:
         end = datetime.now(UTC).replace(microsecond=0)
         start_time = end - interval * (count - 1)
     return [start_time + interval * idx for idx in range(count)]
@@ -376,6 +406,7 @@ def run_seed(options: SeedOptions) -> tuple[int, SeedReport]:
         clear_existing=options.clear_existing,
         requested_count=options.count,
         frame_interval_minutes=frame_interval,
+        timestamp_mode=_timestamp_mode(options),
         readiness_thresholds_detected={
             "min_good_fresh_samples": readiness_cfg.min_good_fresh_samples,
             "min_observation_span_minutes": readiness_cfg.min_observation_span_minutes,
@@ -387,6 +418,9 @@ def run_seed(options: SeedOptions) -> tuple[int, SeedReport]:
         return 1, report
     if options.count <= 0:
         report.errors.append("--count must be positive")
+        return 1, report
+    if options.start_time is not None and options.fresh_window_ending_now:
+        report.errors.append("--fresh-window-ending-now conflicts with --start-time")
         return 1, report
     if options.clear_existing and not options.execute:
         report.errors.append("--clear-existing requires --execute")
@@ -415,7 +449,12 @@ def run_seed(options: SeedOptions) -> tuple[int, SeedReport]:
         report.errors.append("no compatible samples selected")
         return 1, report
 
-    times = _timestamps(len(selected), frame_interval, options.start_time)
+    times = _timestamps(
+        len(selected),
+        frame_interval,
+        options.start_time,
+        fresh_window_ending_now=options.fresh_window_ending_now,
+    )
     report.first_timestamp = _iso(times[0])
     report.last_timestamp = _iso(times[-1])
     report.time_span_minutes = (times[-1] - times[0]).total_seconds() / 60.0 if len(times) > 1 else 0.0
@@ -512,6 +551,8 @@ def print_report(report: SeedReport) -> None:
         "last_timestamp",
         "time_span_minutes",
         "frame_interval_minutes",
+        "timestamp_mode",
+        "readiness_thresholds_detected",
     ):
         print(f"- {key}: {payload[key]}")
     if report.warnings:
