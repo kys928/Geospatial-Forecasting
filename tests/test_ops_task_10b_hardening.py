@@ -58,15 +58,14 @@ def _registry(path: Path) -> ModelRegistry:
     return registry
 
 
-def test_auto_enqueue_green_is_idempotent_and_waiting_is_not_active(monkeypatch, tmp_path: Path):
+def test_auto_enqueue_green_is_idempotent_and_terminal_jobs_are_not_active(monkeypatch, tmp_path: Path):
     config_dir = tmp_path / "configs"
-    _write_adaptation_config(config_dir)
+    _write_adaptation_config(config_dir, cooldown=0)
     monkeypatch.setattr("plume.services.convlstm_operations.AdaptationReadinessService.evaluate", lambda *_a, **_k: Ready())
     store = RetrainingJobStore(tmp_path / "jobs.json")
-    # Stale non-manual waiting jobs are not active blockers for auto enqueue.
-    waiting = store.create_job(dataset_snapshot_ref=None, run_config_ref=None, output_dir=str(tmp_path / "runs"))
-    store.update_job(job_id=waiting["job_id"], status="running", started_at=datetime.now(UTC).isoformat())
-    store.update_job(job_id=waiting["job_id"], status="waiting", finished_at=datetime.now(UTC).isoformat())
+    terminal = store.create_job(dataset_snapshot_ref=None, run_config_ref=None, output_dir=str(tmp_path / "runs"))
+    store.update_job(job_id=terminal["job_id"], status="running", started_at=datetime.now(UTC).isoformat())
+    store.update_job(job_id=terminal["job_id"], status="failed", finished_at=datetime.now(UTC).isoformat())
     events = OperationalEventLog(tmp_path / "events.jsonl")
 
     first = maybe_enqueue_automatic_adaptation_job(job_store=store, event_log=events, config_dir=config_dir, registry=_registry(tmp_path / "registry.json"))
@@ -81,7 +80,7 @@ def test_auto_enqueue_green_is_idempotent_and_waiting_is_not_active(monkeypatch,
     assert [job["status"] for job in jobs].count("queued") == 1
 
 
-@pytest.mark.parametrize("status", ["queued", "starting", "claimed", "running"])
+@pytest.mark.parametrize("status", ["queued", "starting", "claimed", "running", "waiting"])
 def test_auto_enqueue_active_statuses_block_duplicates(monkeypatch, tmp_path: Path, status: str):
     config_dir = tmp_path / "configs"
     _write_adaptation_config(config_dir)
@@ -94,6 +93,184 @@ def test_auto_enqueue_active_statuses_block_duplicates(monkeypatch, tmp_path: Pa
 
     assert result["enqueued"] is False
     assert result["reason"] == "active_job"
+    assert result["message"] == "automatic retraining skipped because another training job is active or queued"
+    assert len(store.list_jobs()) == 1
+
+
+def test_auto_enqueue_repeated_iterations_do_not_increase_job_count(monkeypatch, tmp_path: Path):
+    config_dir = tmp_path / "configs"
+    _write_adaptation_config(config_dir)
+    monkeypatch.setattr("plume.services.convlstm_operations.AdaptationReadinessService.evaluate", lambda *_a, **_k: Ready())
+    store = RetrainingJobStore(tmp_path / "jobs.json")
+    store.create_job(dataset_snapshot_ref=None, run_config_ref=None, output_dir=str(tmp_path / "runs"))
+    events = OperationalEventLog(tmp_path / "events.jsonl")
+
+    first = maybe_enqueue_automatic_adaptation_job(job_store=store, event_log=events, config_dir=config_dir, registry=_registry(tmp_path / "registry.json"))
+    second = maybe_enqueue_automatic_adaptation_job(job_store=store, event_log=events, config_dir=config_dir, registry=_registry(tmp_path / "registry.json"))
+
+    assert first["enqueued"] is False
+    assert first["reason"] == "active_job"
+    assert second["enqueued"] is False
+    assert second["reason"] == "active_job"
+    assert len(store.list_jobs()) == 1
+    event_payloads = [json.loads(line)["payload"] for line in (tmp_path / "events.jsonl").read_text(encoding="utf-8").splitlines()]
+    assert event_payloads[-1]["reason"] == "automatic retraining skipped because another training job is active or queued"
+
+
+def test_auto_enqueue_terminal_statuses_do_not_block(monkeypatch, tmp_path: Path):
+    config_dir = tmp_path / "configs"
+    _write_adaptation_config(config_dir, cooldown=0)
+    monkeypatch.setattr("plume.services.convlstm_operations.AdaptationReadinessService.evaluate", lambda *_a, **_k: Ready())
+    store = RetrainingJobStore(tmp_path / "jobs.json")
+    payload = {
+        "jobs": [
+            {"job_id": status, "status": status, "created_sequence": idx, "created_at": datetime.now(UTC).isoformat(), "finished_at": datetime.now(UTC).isoformat()}
+            for idx, status in enumerate(["succeeded", "completed", "failed", "cancelled"])
+        ],
+        "next_sequence": 4,
+    }
+    (tmp_path / "jobs.json").write_text(json.dumps(payload), encoding="utf-8")
+
+    result = maybe_enqueue_automatic_adaptation_job(job_store=store, event_log=OperationalEventLog(tmp_path / "events.jsonl"), config_dir=config_dir, registry=_registry(tmp_path / "registry.json"))
+
+    assert result["enqueued"] is True
+    assert result["job_id"] == "retrain-job-000004"
+    assert result["backlog_cleanup"]["cancelled_count"] == 0
+    jobs = {job["job_id"]: job["status"] for job in store.list_jobs()}
+    assert jobs["succeeded"] == "succeeded"
+    assert jobs["completed"] == "completed"
+    assert jobs["failed"] == "failed"
+    assert jobs["cancelled"] == "cancelled"
+
+
+def _automatic_job_payload(*, job_id: str, status: str, sequence: int, created_at: datetime, automatic: bool = True, manual: bool = False) -> dict[str, object]:
+    metadata: dict[str, object] = {}
+    if automatic:
+        metadata["automatic_trigger"] = True
+    if manual:
+        metadata["manual_trigger"] = True
+    return {
+        "job_id": job_id,
+        "status": status,
+        "created_sequence": sequence,
+        "created_at": created_at.isoformat(),
+        "dataset_snapshot_ref": "adaptation_readiness_green" if automatic else "manual-dataset",
+        "run_config_ref": "automatic_adaptation" if automatic else '{}',
+        "metadata": metadata,
+    }
+
+
+@pytest.mark.parametrize("status", ["waiting", "queued"])
+def test_auto_enqueue_cancels_stale_automatic_backlog_before_guard(monkeypatch, tmp_path: Path, status: str):
+    config_dir = tmp_path / "configs"
+    _write_adaptation_config(config_dir, cooldown=0)
+    now = datetime.now(UTC)
+    monkeypatch.setattr("plume.services.convlstm_operations.AdaptationReadinessService.evaluate", lambda *_a, **_k: Ready())
+    store = RetrainingJobStore(tmp_path / "jobs.json")
+    payload = {
+        "jobs": [_automatic_job_payload(job_id="old-auto", status=status, sequence=0, created_at=now - timedelta(seconds=1000))],
+        "next_sequence": 1,
+    }
+    (tmp_path / "jobs.json").write_text(json.dumps(payload), encoding="utf-8")
+    events = OperationalEventLog(tmp_path / "events.jsonl")
+
+    result = maybe_enqueue_automatic_adaptation_job(job_store=store, event_log=events, config_dir=config_dir, registry=_registry(tmp_path / "registry.json"), now=now)
+
+    assert result["enqueued"] is True
+    assert result["backlog_cleanup"]["cancelled_count"] == 1
+    assert result["backlog_cleanup"]["cancelled_job_ids"] == ["old-auto"]
+    jobs = {job["job_id"]: job for job in store.list_jobs()}
+    assert jobs["old-auto"]["status"] == "cancelled"
+    assert jobs["old-auto"]["error_message"] == "auto-cancelled as stale automatic retraining backlog"
+    assert jobs["old-auto"]["metadata"]["auto_cancelled_stale_backlog"] is True
+    assert result["job_id"] in jobs
+    event_payloads = [json.loads(line)["payload"] for line in (tmp_path / "events.jsonl").read_text(encoding="utf-8").splitlines()]
+    cleanup_payload = next(payload for payload in event_payloads if payload.get("cancelled_count") == 1)
+    assert cleanup_payload["cancelled_job_ids"] == ["old-auto"]
+
+
+@pytest.mark.parametrize("status", ["waiting", "queued"])
+def test_auto_enqueue_fresh_automatic_backlog_is_not_cancelled(monkeypatch, tmp_path: Path, status: str):
+    config_dir = tmp_path / "configs"
+    _write_adaptation_config(config_dir, cooldown=0)
+    now = datetime.now(UTC)
+    monkeypatch.setattr("plume.services.convlstm_operations.AdaptationReadinessService.evaluate", lambda *_a, **_k: Ready())
+    store = RetrainingJobStore(tmp_path / "jobs.json")
+    payload = {"jobs": [_automatic_job_payload(job_id="fresh-auto", status=status, sequence=0, created_at=now)], "next_sequence": 1}
+    (tmp_path / "jobs.json").write_text(json.dumps(payload), encoding="utf-8")
+
+    result = maybe_enqueue_automatic_adaptation_job(job_store=store, event_log=OperationalEventLog(tmp_path / "events.jsonl"), config_dir=config_dir, registry=_registry(tmp_path / "registry.json"), now=now)
+
+    assert result["enqueued"] is False
+    assert result["reason"] == "active_job"
+    assert result["backlog_cleanup"]["cancelled_count"] == 0
+    assert store.list_jobs()[0]["status"] == status
+
+
+@pytest.mark.parametrize("status", ["waiting", "queued"])
+def test_auto_enqueue_manual_backlog_is_not_cancelled(monkeypatch, tmp_path: Path, status: str):
+    config_dir = tmp_path / "configs"
+    _write_adaptation_config(config_dir, cooldown=0)
+    now = datetime.now(UTC)
+    monkeypatch.setattr("plume.services.convlstm_operations.AdaptationReadinessService.evaluate", lambda *_a, **_k: Ready())
+    store = RetrainingJobStore(tmp_path / "jobs.json")
+    payload = {
+        "jobs": [_automatic_job_payload(job_id="manual", status=status, sequence=0, created_at=now - timedelta(seconds=1000), automatic=False, manual=True)],
+        "next_sequence": 1,
+    }
+    (tmp_path / "jobs.json").write_text(json.dumps(payload), encoding="utf-8")
+
+    result = maybe_enqueue_automatic_adaptation_job(job_store=store, event_log=OperationalEventLog(tmp_path / "events.jsonl"), config_dir=config_dir, registry=_registry(tmp_path / "registry.json"), now=now)
+
+    assert result["enqueued"] is False
+    assert result["reason"] == "active_job"
+    assert result["backlog_cleanup"]["cancelled_count"] == 0
+    assert store.list_jobs()[0]["status"] == status
+
+
+@pytest.mark.parametrize("status", ["running", "claimed", "starting"])
+def test_auto_enqueue_real_active_jobs_are_not_cancelled_by_backlog_cleanup(monkeypatch, tmp_path: Path, status: str):
+    config_dir = tmp_path / "configs"
+    _write_adaptation_config(config_dir, cooldown=0)
+    now = datetime.now(UTC)
+    monkeypatch.setattr("plume.services.convlstm_operations.AdaptationReadinessService.evaluate", lambda *_a, **_k: Ready())
+    store = RetrainingJobStore(tmp_path / "jobs.json")
+    payload = {"jobs": [_automatic_job_payload(job_id="active", status=status, sequence=0, created_at=now)], "next_sequence": 1}
+    (tmp_path / "jobs.json").write_text(json.dumps(payload), encoding="utf-8")
+
+    result = maybe_enqueue_automatic_adaptation_job(job_store=store, event_log=OperationalEventLog(tmp_path / "events.jsonl"), config_dir=config_dir, registry=_registry(tmp_path / "registry.json"), now=now)
+
+    assert result["enqueued"] is False
+    assert result["reason"] == "active_job"
+    assert result["backlog_cleanup"]["cancelled_count"] == 0
+    assert store.list_jobs()[0]["status"] == status
+
+
+def test_auto_enqueue_repeated_cleanup_is_idempotent(monkeypatch, tmp_path: Path):
+    config_dir = tmp_path / "configs"
+    _write_adaptation_config(config_dir, cooldown=0)
+    now = datetime.now(UTC)
+    monkeypatch.setattr("plume.services.convlstm_operations.AdaptationReadinessService.evaluate", lambda *_a, **_k: Ready())
+    store = RetrainingJobStore(tmp_path / "jobs.json")
+    payload = {
+        "jobs": [_automatic_job_payload(job_id="old-auto", status="queued", sequence=0, created_at=now - timedelta(seconds=1000))],
+        "next_sequence": 1,
+    }
+    (tmp_path / "jobs.json").write_text(json.dumps(payload), encoding="utf-8")
+    events = OperationalEventLog(tmp_path / "events.jsonl")
+
+    first = maybe_enqueue_automatic_adaptation_job(job_store=store, event_log=events, config_dir=config_dir, registry=_registry(tmp_path / "registry.json"), now=now)
+    second = maybe_enqueue_automatic_adaptation_job(job_store=store, event_log=events, config_dir=config_dir, registry=_registry(tmp_path / "registry.json"), now=now + timedelta(seconds=1))
+
+    assert first["enqueued"] is True
+    assert first["backlog_cleanup"]["cancelled_count"] == 1
+    assert second["enqueued"] is False
+    assert second["reason"] == "active_job"
+    assert second["backlog_cleanup"]["cancelled_count"] == 0
+    jobs = store.list_jobs()
+    assert len(jobs) == 2
+    assert [job["status"] for job in jobs].count("cancelled") == 1
+    assert [job["status"] for job in jobs].count("queued") == 1
 
 
 def test_auto_enqueue_cooldown_and_readiness_block(monkeypatch, tmp_path: Path):

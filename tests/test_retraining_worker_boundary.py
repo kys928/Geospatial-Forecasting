@@ -170,3 +170,75 @@ def test_worker_idle_includes_recovery_metadata_when_enabled(monkeypatch, tmp_pa
     )
     assert result["claimed"] is False
     assert result["stale_recovery"]["enabled"] is True
+
+
+def test_worker_auto_enqueue_skips_with_active_job_reason(tmp_path: Path):
+    config_dir = tmp_path / "configs"
+    config_dir.mkdir()
+    (config_dir / "adaptation.yaml").write_text(
+        f"""
+adaptation:
+  enabled: true
+  default_buffer_root: {tmp_path / 'buffer'}
+  reference_dataset:
+    default_path: {tmp_path / 'reference'}
+  training:
+    retry_cooldown_seconds: 0
+    min_seconds_between_training_runs: 0
+    max_concurrent_training_jobs: 1
+    training_device: cpu
+    allow_cpu_training_fallback: true
+    min_free_vram_gib_for_training: 0.0
+    allow_fresh_start: true
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+    now = datetime.now(timezone.utc)
+    stale_created = (now - timedelta(seconds=1000)).isoformat()
+    active_created = now.isoformat()
+    payload = {
+        "jobs": [
+            {
+                "job_id": "stale-auto",
+                "status": "queued",
+                "created_sequence": 0,
+                "created_at": stale_created,
+                "dataset_snapshot_ref": "adaptation_readiness_green",
+                "run_config_ref": "automatic_adaptation",
+                "metadata": {"automatic_trigger": True},
+            },
+            {
+                "job_id": "active-job",
+                "status": "running",
+                "created_sequence": 1,
+                "created_at": active_created,
+                "started_at": active_created,
+                "dataset_snapshot_ref": "snapshot://active",
+                "run_config_ref": "{}",
+            },
+        ],
+        "next_sequence": 2,
+    }
+    (tmp_path / "jobs.json").write_text(json.dumps(payload), encoding="utf-8")
+    ModelRegistry(tmp_path / "registry.json").save({"models": [], "events": [], "active_model_id": None, "previous_active_model_id": None})
+
+    result = run_retraining_worker_once(
+        jobs_path=tmp_path / "jobs.json",
+        registry_path=tmp_path / "registry.json",
+        state_path=tmp_path / "state.json",
+        events_path=tmp_path / "events.jsonl",
+        config_dir=config_dir,
+        worker_pid=1234,
+    )
+
+    assert result["claimed"] is False
+    assert result["status"] == "idle"
+    assert result["auto_enqueue"]["reason"] == "active_job"
+    assert result["auto_enqueue"]["message"] == "automatic retraining skipped because another training job is active or queued"
+    assert result["auto_enqueue"]["backlog_cleanup"]["cancelled_count"] == 1
+    assert result["auto_enqueue"]["backlog_cleanup"]["cancelled_job_ids"] == ["stale-auto"]
+    jobs = {job["job_id"]: job for job in RetrainingJobStore(tmp_path / "jobs.json").list_jobs()}
+    assert len(jobs) == 2
+    assert jobs["stale-auto"]["status"] == "cancelled"
+    assert jobs["active-job"]["status"] == "running"
