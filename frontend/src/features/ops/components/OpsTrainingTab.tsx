@@ -108,7 +108,26 @@ const TRAINING_JOB_TIMESTAMP_KEYS = [
   "submitted_at",
 ] as const;
 
-const ACTIVE_JOB_STATUSES = ["queued", "waiting", "running", "starting", "claimed"];
+const REAL_ACTIVE_JOB_STATUSES = ["running", "claimed", "starting"] as const;
+const TERMINAL_JOB_STATUSES = [
+  "succeeded",
+  "completed",
+  "failed",
+  "cancelled",
+] as const;
+
+const jobStatus = (job: OpsJobRecord | null | undefined): string =>
+  String(job?.status ?? job?.effective_status ?? "").toLowerCase();
+
+const isRealActiveJob = (job: OpsJobRecord | null | undefined): boolean =>
+  REAL_ACTIVE_JOB_STATUSES.includes(
+    jobStatus(job) as (typeof REAL_ACTIVE_JOB_STATUSES)[number],
+  );
+
+const isTerminalJob = (job: OpsJobRecord | null | undefined): boolean =>
+  TERMINAL_JOB_STATUSES.includes(
+    jobStatus(job) as (typeof TERMINAL_JOB_STATUSES)[number],
+  );
 
 const hasJobIdentity = (job: unknown): job is OpsJobRecord => {
   const obj = asObj(job);
@@ -166,9 +185,7 @@ export function OpsTrainingTab() {
   >(null);
   const logRef = useRef<HTMLPreElement | null>(null);
   const jobs = jobsState.jobs?.jobs ?? [];
-  const runningJobs = jobs.filter((j) =>
-    ACTIVE_JOB_STATUSES.includes(String(j.status ?? "").toLowerCase()),
-  );
+  const runningJobs = jobs.filter(isRealActiveJob);
   const latestJob = useMemo(() => {
     const adaptationLatest = adaptationTraining?.latest_job;
     if (hasJobIdentity(adaptationLatest)) return adaptationLatest;
@@ -188,6 +205,25 @@ export function OpsTrainingTab() {
     jobs,
     statusState.status?.latest_retraining_job,
   ]);
+  const activeJobForDisplay = useMemo(() => {
+    const candidates = [
+      ...(Array.isArray(statusState.status?.current_retraining_jobs)
+        ? statusState.status.current_retraining_jobs
+        : []),
+      ...jobs,
+      adaptationTraining?.latest_job,
+      adaptationTraining?.latest_manual_job,
+      statusState.status?.latest_retraining_job,
+    ].filter(hasJobIdentity);
+    return latestByTimestampOrId(candidates.filter(isRealActiveJob));
+  }, [
+    adaptationTraining?.latest_job,
+    adaptationTraining?.latest_manual_job,
+    jobs,
+    statusState.status?.current_retraining_jobs,
+    statusState.status?.latest_retraining_job,
+  ]);
+  const jobForLogs = activeJobForDisplay ?? latestJob;
   const checklist = useMemo(
     () =>
       buildChecklist({
@@ -208,25 +244,36 @@ export function OpsTrainingTab() {
     ],
   );
   const trainingView = useMemo(
-    () => deriveTrainingView(statusState.status, latestJob, adaptationTraining),
-    [statusState.status, latestJob, adaptationTraining],
+    () =>
+      deriveTrainingView(
+        activeJobForDisplay,
+        latestJob,
+        adaptationTraining,
+        adaptationReadiness,
+      ),
+    [
+      activeJobForDisplay,
+      latestJob,
+      adaptationTraining,
+      adaptationReadiness,
+    ],
   );
   const summaryText = useMemo(
-    () => buildSummaryText(trainingView.state, checklist),
-    [trainingView.state, checklist],
+    () => buildSummaryText(trainingView.state, checklist, trainingView.detail),
+    [trainingView.state, checklist, trainingView.detail],
   );
   const logs = useMemo(
     () =>
       collectLogs(
         statusState.status,
-        latestJob,
+        jobForLogs,
         adaptationTraining,
         candidateState.context,
       ),
-    [statusState.status, latestJob, adaptationTraining, candidateState.context],
+    [statusState.status, jobForLogs, adaptationTraining, candidateState.context],
   );
   const hasErrorLogs = logs.some((line) => line.startsWith("ERROR:"));
-  const canStopTraining = Boolean(latestJob && ACTIVE_JOB_STATUSES.includes(String(latestJob.status ?? latestJob.effective_status ?? "").toLowerCase()));
+  const canStopTraining = Boolean(activeJobForDisplay);
 
   useEffect(() => {
     if (followLogs && logRef.current)
@@ -383,14 +430,16 @@ export function OpsTrainingTab() {
             </button>
           </div>
         </div>
-        {adaptationTraining?.latest_job?.log_available === false ? (
+        {jobForLogs?.log_available === false ? (
           <p className="muted" style={{ margin: "8px 0 0" }}>
             Real training log file not available; showing summary.
           </p>
         ) : null}
         {!logs.length ? (
           <p className="muted" style={{ marginBottom: 0 }}>
-            No training logs reported yet.
+            {activeJobForDisplay
+              ? "Active training job has no logs available."
+              : "No active training job is producing logs."}
           </p>
         ) : (
           <pre
@@ -472,15 +521,18 @@ function ReadinessItem({ label, state, detail, warning }: ChecklistRow) {
 }
 
 function deriveTrainingView(
-  status: any,
+  activeJob: OpsJobRecord | null,
   latestJob: OpsJobRecord | null,
   adaptationTraining: AdaptationTrainingStatus | null,
+  adaptationReadiness: AdaptationReadiness | null,
 ) {
-  const jobObj = asObj(latestJob);
+  const displayJob = activeJob ?? latestJob;
+  const jobObj = asObj(displayJob);
+  const latestJobObj = asObj(latestJob);
   const runCfg = asObj(
     (() => {
       try {
-        return JSON.parse(asStr(latestJob?.run_config_ref) ?? "{}");
+        return JSON.parse(asStr(displayJob?.run_config_ref) ?? "{}");
       } catch {
         return {};
       }
@@ -488,25 +540,18 @@ function deriveTrainingView(
   );
   const metricSources = collectTrainingMetricSources(jobObj);
   const metrics = metricSources[0] ?? {};
-  const stateRaw =
-    asStr(pick(jobObj, ["status"])) ??
-    (Array.isArray(status?.retraining_job_statuses)
-      ? asStr(status.retraining_job_statuses[0])
-      : null);
-  const mapState: Record<string, string> = {
-    queued: "Queued",
-    running: "Running",
-    stale: "Stale",
-    waiting: "Queued",
-    failed: "Failed",
-    completed: "Completed",
-    succeeded: "Completed",
-    cancelled: "Cancelled",
-    idle: "Idle",
-  };
-  let state = mapState[(stateRaw ?? "").toLowerCase()] ?? "Not reported";
-  if (jobObj.is_stale === true || asStr(jobObj.effective_status) === "stale") state = "Stale";
-  if ((state === "Idle" || state === "Completed") && (adaptationTraining?.cooldown_remaining_seconds ?? 0) > 0) state = "Cooling down";
+  const activeStatusRaw = activeJob
+    ? asStr(pick(asObj(activeJob), ["status", "effective_status"]))
+    : null;
+  const readinessSnapshot =
+    adaptationReadiness ?? adaptationTraining?.latest_readiness_snapshot ?? null;
+  const readiness = asObj(readinessSnapshot);
+  const readinessDetail = Object.keys(readiness).length
+    ? trainingReadinessDetail(readiness, readinessState(readiness))
+    : null;
+  const state = activeJob
+    ? activeTrainingState(activeStatusRaw)
+    : readinessTrainingState(readiness, adaptationTraining);
   const started = asStr(pick(jobObj, ["started_at", "start_time"]));
   const completed = asStr(pick(jobObj, ["finished_at", "completed_at", "end_time"]));
   const runtimeSeconds = typeof jobObj.runtime_seconds === "number" ? jobObj.runtime_seconds : null;
@@ -520,12 +565,33 @@ function deriveTrainingView(
     typeof progress === "number"
       ? Math.max(0, Math.min(100, progress > 1 ? progress : progress * 100))
       : null;
-  const latestStatus = asStr(pick(jobObj, ["status"])) ?? "Not reported";
+  const latestStatus = asStr(pick(latestJobObj, ["status", "effective_status"])) ?? "Not reported";
+  const activeStatus = activeStatusRaw ?? "Not reported";
   const jobCounts = adaptationTraining?.job_counts ?? {};
   const jobCountSummary = formatJobCountSummary(jobCounts);
-  const logStatus = jobObj.is_stale === true ? "stale" : jobObj.log_available === true ? "available" : jobObj.log_available === false ? "unavailable" : "initializing";
+  const logJobObj = activeJob ? jobObj : latestJobObj;
+  const logStatus = logJobObj.is_stale === true ? "stale" : logJobObj.log_available === true ? "available" : logJobObj.log_available === false ? "unavailable" : "initializing";
+  const readinessStatus =
+    readiness.ready === true
+      ? "ready"
+      : asStr(readiness.status) ?? (Object.keys(readiness).length ? readinessState(readiness) : null);
+  const blockingReason = primaryReadinessReason(readiness);
   const rows = [
     { label: "Current state", value: state },
+    ...(readinessStatus
+      ? [{ label: "Current readiness", value: String(readinessStatus) }]
+      : []),
+    ...(blockingReason
+      ? [{ label: "Readiness blocker", value: blockingReason }]
+      : readinessDetail
+        ? [{ label: "Readiness detail", value: readinessDetail }]
+        : []),
+    ...(activeJob
+      ? [
+          { label: "Active job", value: asStr(activeJob.job_id) ?? "Recorded without job id" },
+          { label: "Active status", value: activeStatus },
+        ]
+      : []),
     {
       label: "Latest job",
       value:
@@ -535,6 +601,9 @@ function deriveTrainingView(
           : "No adaptation training job recorded"),
     },
     { label: "Latest status", value: latestStatus },
+    ...(isTerminalJob(latestJob)
+      ? [{ label: "Latest job role", value: "Historical" }]
+      : []),
     { label: "Training log", value: `Training log: ${logStatus}` },
     {
       label: "Candidate",
@@ -592,6 +661,7 @@ function deriveTrainingView(
       row.value !== "Not reported" ||
       [
         "Current state",
+        "Current readiness",
         "Latest job",
         "Latest status",
         "Retraining cooldown",
@@ -601,11 +671,45 @@ function deriveTrainingView(
   const metricRows = collectTrainingMetricRows(metricSources, progressPct);
   return {
     state,
+    detail: readinessDetail,
     rows,
     metrics: metricRows,
     progressPct,
-    hasActiveJob: state === "Running" || state === "Queued",
+    hasActiveJob: Boolean(activeJob),
   };
+}
+
+function activeTrainingState(statusRaw: string | null): string {
+  const mapState: Record<string, string> = {
+    running: "Running",
+    claimed: "Running",
+    starting: "Starting",
+  };
+  return mapState[(statusRaw ?? "").toLowerCase()] ?? "Running";
+}
+
+function readinessTrainingState(
+  readiness: Record<string, unknown>,
+  adaptationTraining: AdaptationTrainingStatus | null,
+): string {
+  if ((adaptationTraining?.cooldown_remaining_seconds ?? 0) > 0)
+    return "Cooling down";
+  if (!Object.keys(readiness).length) return "Not reported";
+  if (readiness.ready === true || readinessState(readiness) === "met")
+    return "Ready for automatic training";
+  if (primaryReadinessReason(readiness) || readinessState(readiness) === "not_met")
+    return "Readiness blocked";
+  return "Waiting for readiness";
+}
+
+function primaryReadinessReason(readiness: Record<string, unknown>): string | null {
+  const blockingReasons = Array.isArray(readiness.blocking_reasons)
+    ? readiness.blocking_reasons.filter((reason) => typeof reason === "string")
+    : [];
+  const warnings = Array.isArray(readiness.warnings)
+    ? readiness.warnings.filter((warning) => typeof warning === "string")
+    : [];
+  return (blockingReasons[0] as string | undefined) ?? (warnings[0] as string | undefined) ?? null;
 }
 
 function collectTrainingMetricSources(
@@ -693,7 +797,13 @@ function collectLogs(
 ): string[] {
   const jobObj = asObj(latestJob);
   const lines: string[] = [];
-  const latestLogTail = Array.isArray(adaptationTraining?.latest_job?.log_tail) ? adaptationTraining.latest_job.log_tail : [];
+  const adaptationLatestJob = adaptationTraining?.latest_job as OpsJobRecord | null | undefined;
+  const adaptationLatestMatchesSelected =
+    !latestJob?.job_id || adaptationLatestJob?.job_id === latestJob.job_id;
+  const latestLogTail =
+    adaptationLatestMatchesSelected && Array.isArray(adaptationLatestJob?.log_tail)
+      ? adaptationLatestJob.log_tail
+      : [];
   if (latestLogTail.length) return latestLogTail.map((line) => String(line));
   const logs = pick(jobObj, ["logs", "log_lines", "events"]);
   if (Array.isArray(logs))
@@ -765,20 +875,31 @@ function collectLogs(
 function buildSummaryText(
   state: string,
   checklist: Array<{ label: string; state: ChecklistState }>,
+  detail?: string | null,
 ) {
   const notReady = checklist.some((c) => c.state === "not_met");
   if (state === "Stale")
     return "Training job appears stale; no recent worker update was reported.";
   if (state === "Running")
     return "Adaptation training is running. Metrics will update as the worker reports progress.";
+  if (state === "Starting")
+    return "Adaptation training is starting. Logs and metrics will update once the worker reports progress.";
   if (state === "Queued")
     return "An adaptation training job is queued and waiting for a worker.";
+  if (state === "Cooling down")
+    return "Automatic adaptation training is cooling down before another run can start.";
+  if (state === "Readiness blocked")
+    return detail ?? "Automatic adaptation training is blocked by readiness checks.";
+  if (state === "Ready for automatic training")
+    return "Automatic adaptation training is ready to start when new work is selected.";
+  if (state === "Waiting for readiness")
+    return detail ?? "Automatic adaptation training is waiting for readiness conditions or new work.";
   if (state === "Failed")
     return "The latest adaptation training job failed. Review logs and job details before starting another run.";
   if (state === "Completed")
     return "The latest adaptation training job completed. Review the candidate model in Model Versions.";
   if (state === "Not reported")
-    return "No adaptation training job has been recorded yet.";
+    return "No adaptation training readiness has been reported yet.";
   if (notReady)
     return "Automatic adaptation training is not ready yet. Review the readiness rows before starting another run.";
   return "Automatic adaptation training is waiting for readiness conditions or new work.";
@@ -1308,11 +1429,22 @@ function buildTrainingJobStateRow(
 ): ChecklistRow {
   const latest = asObj(latestJob ?? adaptationTraining?.latest_job ?? null);
   const latestStatus = String(latest.status ?? "").toLowerCase();
-  const hasRunningLatest = latestStatus === "running";
+  const hasRunningLatest = ["running", "claimed"].includes(latestStatus);
   const hasQueuedLatest = ["queued", "waiting", "starting"].includes(
     latestStatus,
   );
 
+  if (runningJobs.length > 0) {
+    const activeStatus = jobStatus(runningJobs[0]);
+    return {
+      label: "Training job",
+      state: "checking",
+      detail:
+        activeStatus === "starting"
+          ? "Training job is starting."
+          : "Training job is running.",
+    };
+  }
   if (hasRunningLatest)
     return {
       label: "Training job",
@@ -1325,17 +1457,11 @@ function buildTrainingJobStateRow(
       state: "checking",
       detail: "Training job is queued and waiting for a worker.",
     };
-  if (latestStatus === "failed")
-    return {
-      label: "Training job",
-      state: "not_met",
-      detail: "Latest job failed.",
-    };
-  if (["succeeded", "completed"].includes(latestStatus))
+  if (TERMINAL_JOB_STATUSES.includes(latestStatus as (typeof TERMINAL_JOB_STATUSES)[number]))
     return {
       label: "Training job",
       state: "met",
-      detail: "Latest job completed; no active training job is selected.",
+      detail: `Latest job is ${latestStatus}; no active training job is selected.`,
     };
   if (noTrainingJobCheck) {
     const state = readinessState(noTrainingJobCheck);
@@ -1344,7 +1470,7 @@ function buildTrainingJobStateRow(
       state,
       detail:
         state === "met"
-          ? "No queued/running jobs."
+          ? "No active training jobs."
           : "Training job state is not reported.",
     };
   }
@@ -1352,7 +1478,7 @@ function buildTrainingJobStateRow(
     return {
       label: "Training job",
       state: "met",
-      detail: "No queued/running jobs.",
+      detail: "No active training jobs.",
     };
   return {
     label: "Training job",
