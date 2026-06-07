@@ -10,6 +10,7 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+import time
 import traceback
 from typing import Callable
 import uuid
@@ -82,6 +83,87 @@ def _normalize_workspace_path(path: str | Path) -> Path:
     if not candidate.is_absolute():
         candidate = _repo_root() / candidate
     return candidate.resolve(strict=False)
+
+
+_RETRAINING_JOB_LOCK_STALE_AFTER_SECONDS = 600.0
+_RETRAINING_JOB_LOCK_RETRY_TIMEOUT_SECONDS = 5.0
+_RETRAINING_JOB_LOCK_RETRY_SLEEP_SECONDS = 0.2
+
+
+def _is_pid_running(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def _read_lock_pid(lock_path: Path) -> int | None:
+    raw_pid = lock_path.read_text(encoding="utf-8", errors="replace").strip()
+    if not raw_pid:
+        return None
+    try:
+        pid = int(raw_pid)
+    except ValueError:
+        return None
+    return pid if pid > 0 else None
+
+
+def _lock_snapshot(lock_path: Path) -> os.stat_result | None:
+    try:
+        return lock_path.stat()
+    except FileNotFoundError:
+        return None
+
+
+def _same_lock_snapshot(before: os.stat_result, after: os.stat_result) -> bool:
+    return (
+        before.st_ino == after.st_ino
+        and before.st_dev == after.st_dev
+        and before.st_mtime_ns == after.st_mtime_ns
+        and before.st_size == after.st_size
+    )
+
+
+def _retraining_lock_stale_reason(lock_path: Path, *, stale_after_seconds: float) -> str | None:
+    snapshot = _lock_snapshot(lock_path)
+    if snapshot is None:
+        return "missing"
+    age_seconds = max(0.0, time.time() - snapshot.st_mtime)
+    if age_seconds >= stale_after_seconds:
+        return f"older than {stale_after_seconds:g} seconds"
+    try:
+        pid = _read_lock_pid(lock_path)
+    except OSError:
+        return "unreadable"
+    if pid is None:
+        return "missing or malformed pid"
+    if not _is_pid_running(pid):
+        return f"pid {pid} is not running"
+    return None
+
+
+def _remove_stale_retraining_lock(lock_path: Path, *, stale_after_seconds: float) -> str | None:
+    snapshot = _lock_snapshot(lock_path)
+    if snapshot is None:
+        return "missing"
+    reason = _retraining_lock_stale_reason(lock_path, stale_after_seconds=stale_after_seconds)
+    if reason is None:
+        return None
+    latest = _lock_snapshot(lock_path)
+    if latest is None:
+        return reason
+    if not _same_lock_snapshot(snapshot, latest):
+        return None
+    try:
+        lock_path.unlink()
+    except FileNotFoundError:
+        pass
+    return reason
+
+
 def _npz_scalar(data: np.lib.npyio.NpzFile, *keys: str) -> object | None:
     for key in keys:
         if key not in data.files:
@@ -532,17 +614,36 @@ class RetrainingJobStore:
         return recovered
 
     @contextmanager
-    def acquire_lock(self):
+    def acquire_lock(
+        self,
+        *,
+        stale_after_seconds: float = _RETRAINING_JOB_LOCK_STALE_AFTER_SECONDS,
+        retry_timeout_seconds: float = _RETRAINING_JOB_LOCK_RETRY_TIMEOUT_SECONDS,
+        retry_sleep_seconds: float = _RETRAINING_JOB_LOCK_RETRY_SLEEP_SECONDS,
+    ):
         self.lock_path.parent.mkdir(parents=True, exist_ok=True)
         fd: int | None = None
         created_lock = False
+        deadline = time.monotonic() + retry_timeout_seconds
+        last_error: FileExistsError | None = None
         try:
-            fd = os.open(self.lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-            created_lock = True
-            os.write(fd, str(os.getpid()).encode("utf-8"))
+            while True:
+                try:
+                    fd = os.open(self.lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+                    created_lock = True
+                    os.write(fd, str(os.getpid()).encode("utf-8"))
+                    break
+                except FileExistsError as exc:
+                    last_error = exc
+                    removed_reason = _remove_stale_retraining_lock(
+                        self.lock_path, stale_after_seconds=stale_after_seconds
+                    )
+                    if removed_reason is not None:
+                        continue
+                    if time.monotonic() >= deadline:
+                        raise RuntimeError(f"Could not acquire retraining job lock: {self.lock_path}") from last_error
+                    time.sleep(min(retry_sleep_seconds, max(0.0, deadline - time.monotonic())))
             yield
-        except FileExistsError as exc:
-            raise RuntimeError(f"Could not acquire retraining job lock: {self.lock_path}") from exc
         finally:
             if fd is not None:
                 os.close(fd)
