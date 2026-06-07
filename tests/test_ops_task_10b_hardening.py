@@ -345,6 +345,7 @@ def test_training_status_running_empty_log_returns_initialized_line(monkeypatch,
         status="running",
         started_at="2026-01-01T00:00:00+00:00",
         result_run_dir=str(run_dir),
+        worker_pid=os.getpid(),
         metadata={
             "automatic_trigger": True,
             "log_file_path": str(log_path),
@@ -382,6 +383,7 @@ def test_training_status_running_relative_log_path_is_resolved(monkeypatch, tmp_
         status="running",
         started_at="2026-01-01T00:00:00+00:00",
         result_run_dir=str(run_dir),
+        worker_pid=os.getpid(),
         metadata={
             "automatic_trigger": True,
             "log_file_path": str(relative_log_path),

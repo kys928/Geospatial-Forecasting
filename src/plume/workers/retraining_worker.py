@@ -35,14 +35,17 @@ def run_retraining_worker_once(
     recovery_enabled = _env_flag("PLUME_RETRAINING_JOB_STALE_RECOVERY_ENABLED", default=False)
     recovery_info: dict[str, object] = {}
     if recovery_enabled:
-        stale_after_seconds = float(os.getenv("PLUME_RETRAINING_JOB_STALE_AFTER_SECONDS", "7200"))
-        recovered_jobs = job_store.mark_stale_running_failed(stale_after_seconds=stale_after_seconds)
+        stale_after_seconds = float(
+            os.getenv("PLUME_RETRAINING_ACTIVE_STALE_SECONDS")
+            or os.getenv("PLUME_RETRAINING_JOB_STALE_AFTER_SECONDS", "7200")
+        )
+        recovery_result = job_store.recover_stale_active_jobs(stale_after_seconds=stale_after_seconds)
         recovery_info = {
             "stale_recovery": {
                 "enabled": True,
                 "threshold": stale_after_seconds,
-                "recovered_count": len(recovered_jobs),
-                "recovered_job_ids": [str(job.get("job_id")) for job in recovered_jobs],
+                "recovered_count": int(recovery_result.get("recovered_count", 0)),
+                "recovered_job_ids": list(recovery_result.get("recovered_job_ids", [])),
             }
         }
 

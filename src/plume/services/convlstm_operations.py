@@ -89,6 +89,104 @@ _RETRAINING_JOB_LOCK_STALE_AFTER_SECONDS = 600.0
 _RETRAINING_JOB_LOCK_RETRY_TIMEOUT_SECONDS = 5.0
 _RETRAINING_JOB_LOCK_RETRY_SLEEP_SECONDS = 0.2
 
+_RETRAINING_ACTIVE_STALE_DEFAULT_SECONDS = 1800
+_ACTIVE_RETRAINING_STATUSES = {"running", "claimed", "starting"}
+
+
+def _retraining_active_stale_seconds(value: float | None = None) -> float:
+    if value is not None:
+        threshold = float(value)
+    else:
+        raw = os.getenv("PLUME_RETRAINING_ACTIVE_STALE_SECONDS")
+        if raw is None:
+            threshold = float(_RETRAINING_ACTIVE_STALE_DEFAULT_SECONDS)
+        else:
+            try:
+                threshold = float(raw)
+            except ValueError:
+                threshold = float(_RETRAINING_ACTIVE_STALE_DEFAULT_SECONDS)
+    if threshold <= 0:
+        raise ValueError("stale_after_seconds must be > 0")
+    return threshold
+
+
+def _job_activity_timestamp(job: dict[str, object]) -> datetime | None:
+    metadata = _metadata_dict(job.get("metadata"))
+    for source, key in (
+        (job, "last_heartbeat_at"),
+        (job, "updated_at"),
+        (metadata, "last_heartbeat_at"),
+        (metadata, "heartbeat_at"),
+        (metadata, "updated_at"),
+        (job, "started_at"),
+        (job, "created_at"),
+    ):
+        parsed = _parse_utc_datetime(source.get(key) if isinstance(source, dict) else None)
+        if parsed is not None:
+            return parsed
+    return None
+
+
+def _pid_appears_alive(pid_value: object) -> bool:
+    try:
+        pid = int(pid_value)
+    except (TypeError, ValueError):
+        return False
+    if pid <= 0:
+        return False
+    return _is_pid_running(pid)
+
+
+def _stale_active_recovery_update(
+    job: dict[str, object],
+    *,
+    now: datetime,
+    stale_after_seconds: float,
+) -> dict[str, object] | None:
+    previous_status = str(job.get("status", "")).lower()
+    if previous_status not in _ACTIVE_RETRAINING_STATUSES:
+        return None
+    activity_at = _job_activity_timestamp(job)
+    if activity_at is None or (now - activity_at).total_seconds() <= stale_after_seconds:
+        return None
+    if _pid_appears_alive(job.get("worker_pid")):
+        return None
+
+    metadata = _metadata_dict(job.get("metadata"))
+    cancel_requested = bool(metadata.get("cancel_requested"))
+    recovered_at = now.isoformat()
+    target_status = "cancelled" if cancel_requested else "failed"
+    reason = (
+        "Marked cancelled because cancelled active retraining job became stale and worker is no longer alive"
+        if cancel_requested
+        else "Marked failed because active retraining job became stale and worker is no longer alive"
+    )
+    metadata = _with_job_log(metadata, reason)
+    metadata = _merge_job_metadata(
+        metadata,
+        {
+            "stale_active_recovered": True,
+            "stale_recovery_reason": reason,
+            "stale_recovered_at": recovered_at,
+            "stale_recovery_previous_status": previous_status,
+            "stale_recovery_worker_pid": job.get("worker_pid"),
+            "stale_after_seconds": stale_after_seconds,
+            "cancel_requested": cancel_requested if cancel_requested else metadata.get("cancel_requested"),
+        },
+    )
+    updated = dict(job)
+    updated.update(
+        {
+            "status": target_status,
+            "finished_at": recovered_at,
+            "updated_at": recovered_at,
+            "error_message": reason,
+            "metadata": metadata,
+        }
+    )
+    _validate_job_transition(current_status=previous_status, next_status=target_status)
+    return updated
+
 
 def _is_pid_running(pid: int) -> bool:
     try:
@@ -388,6 +486,8 @@ class RetrainingJobRecord:
     result_run_id: str | None = None
     result_candidate_id: str | None = None
     worker_pid: int | None = None
+    updated_at: str | None = None
+    last_heartbeat_at: str | None = None
     metadata: dict[str, object] | None = None
 
     def __post_init__(self) -> None:
@@ -416,6 +516,8 @@ class RetrainingJobRecord:
             result_run_id=_optional_str(payload.get("result_run_id")),
             result_candidate_id=_optional_str(payload.get("result_candidate_id")),
             worker_pid=_optional_int(payload.get("worker_pid")),
+            updated_at=_optional_str(payload.get("updated_at")),
+            last_heartbeat_at=_optional_str(payload.get("last_heartbeat_at")),
             metadata=_optional_dict(payload.get("metadata")),
         )
 
@@ -576,42 +678,44 @@ class RetrainingJobStore:
         stale_after_seconds: float,
         now: datetime | None = None,
     ) -> list[dict[str, object]]:
-        if stale_after_seconds <= 0:
-            raise ValueError("stale_after_seconds must be > 0")
-        if self._sqlite:
-            return self._mark_stale_running_failed_sqlite(stale_after_seconds=stale_after_seconds, now=now)
+        result = self.recover_stale_active_jobs(stale_after_seconds=stale_after_seconds, now=now)
+        return list(result.get("recovered_jobs", []))
 
+    def recover_stale_active_jobs(
+        self,
+        *,
+        stale_after_seconds: float | None = None,
+        now: datetime | None = None,
+    ) -> dict[str, object]:
+        threshold = _retraining_active_stale_seconds(stale_after_seconds)
         reference = now or datetime.now(timezone.utc)
-        recovered: list[dict[str, object]] = []
-        with self.acquire_lock():
-            payload = self.load()
-            jobs = payload["jobs"]
-            changed = False
-            for idx, item in enumerate(jobs):
-                if not isinstance(item, dict) or item.get("status") != "running":
-                    continue
-                anchor = item.get("started_at") if item.get("started_at") is not None else item.get("updated_at")
-                started = _parse_utc_datetime(anchor)
-                if started is None or (reference - started).total_seconds() <= stale_after_seconds:
-                    continue
-                updated = dict(item)
-                updated["status"] = "failed"
-                updated["finished_at"] = reference.isoformat()
-                updated["updated_at"] = reference.isoformat()
-                updated["error_message"] = "Retraining job marked failed by stale running recovery"
-                metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
-                updated["metadata"] = {
-                    **metadata,
-                    "stale_recovery": True,
-                    "stale_after_seconds": stale_after_seconds,
-                }
-                validated = RetrainingJobRecord.from_dict(updated).to_dict()
-                jobs[idx] = validated
-                recovered.append(validated)
-                changed = True
-            if changed:
-                self._atomic_write(payload)
-        return recovered
+        if self._sqlite:
+            recovered = self._recover_stale_active_jobs_sqlite(stale_after_seconds=threshold, now=reference)
+        else:
+            recovered = []
+            with self.acquire_lock():
+                payload = self.load()
+                jobs = payload["jobs"]
+                changed = False
+                for idx, item in enumerate(jobs):
+                    if not isinstance(item, dict):
+                        continue
+                    updated = _stale_active_recovery_update(item, now=reference, stale_after_seconds=threshold)
+                    if updated is None:
+                        continue
+                    validated = RetrainingJobRecord.from_dict(updated).to_dict()
+                    jobs[idx] = validated
+                    recovered.append(validated)
+                    changed = True
+                if changed:
+                    self._atomic_write(payload)
+        return {
+            "recovered_count": len(recovered),
+            "recovered_job_ids": [str(job.get("job_id")) for job in recovered],
+            "recovered_jobs": recovered,
+            "reason": "stale active retraining jobs recovered",
+            "stale_after_seconds": threshold,
+        }
 
     @contextmanager
     def acquire_lock(
@@ -900,6 +1004,25 @@ class RetrainingJobStore:
             )
             conn.commit()
             return validated
+
+    def _recover_stale_active_jobs_sqlite(self, *, stale_after_seconds: float, now: datetime) -> list[dict[str, object]]:
+        payload = self.load()
+        jobs = payload["jobs"]
+        recovered: list[dict[str, object]] = []
+        changed = False
+        for idx, item in enumerate(jobs):
+            if not isinstance(item, dict):
+                continue
+            updated = _stale_active_recovery_update(item, now=now, stale_after_seconds=stale_after_seconds)
+            if updated is None:
+                continue
+            validated = RetrainingJobRecord.from_dict(updated).to_dict()
+            jobs[idx] = validated
+            recovered.append(validated)
+            changed = True
+        if changed:
+            self._save_sqlite(payload)
+        return recovered
 
     def _mark_stale_running_failed_sqlite(self, *, stale_after_seconds: float, now: datetime | None) -> list[dict[str, object]]:
         reference = now or datetime.now(timezone.utc)
@@ -1799,25 +1922,29 @@ def _job_status_anchor_for_staleness(job: dict[str, object]) -> datetime | None:
     return None
 
 def _retraining_stale_timeout_seconds() -> int:
-    value = os.getenv("PLUME_STALE_RUNNING_JOB_TIMEOUT_SECONDS") or os.getenv("PLUME_RETRAINING_STALE_TIMEOUT_SECONDS")
+    value = (
+        os.getenv("PLUME_RETRAINING_ACTIVE_STALE_SECONDS")
+        or os.getenv("PLUME_STALE_RUNNING_JOB_TIMEOUT_SECONDS")
+        or os.getenv("PLUME_RETRAINING_STALE_TIMEOUT_SECONDS")
+    )
     if value:
         try:
-            return max(60, int(value))
+            return max(60, int(float(value)))
         except ValueError:
             pass
-    return 1800
+    return int(_RETRAINING_ACTIVE_STALE_DEFAULT_SECONDS)
 
 def _is_effectively_active_retraining_job(job: dict[str, object], *, now: datetime | None = None) -> bool:
     status = str(job.get("status", "")).lower()
     if status not in AUTOMATIC_RETRAINING_BLOCKING_STATUSES:
         return False
     if status in _STALE_ACTIVE_STATUSES:
-        anchor = _job_status_anchor_for_staleness(job)
+        anchor = _job_activity_timestamp(job) or _job_status_anchor_for_staleness(job)
         if anchor is not None:
             reference = now or datetime.now(timezone.utc)
             if anchor.tzinfo is None:
                 anchor = anchor.replace(tzinfo=timezone.utc)
-            if (reference - anchor).total_seconds() > float(_retraining_stale_timeout_seconds()):
+            if (reference - anchor).total_seconds() > float(_retraining_stale_timeout_seconds()) and not _pid_appears_alive(job.get("worker_pid")):
                 return False
     return True
 
@@ -1935,6 +2062,9 @@ def maybe_enqueue_automatic_adaptation_job(
 ) -> dict[str, object]:
     """Idempotently enqueue one automatic adaptation job when readiness is green."""
     current_time = now or datetime.now(timezone.utc)
+    active_recovery = job_store.recover_stale_active_jobs(now=current_time)
+    if int(active_recovery.get("recovered_count", 0)) > 0:
+        event_log.append(event_type="automatic_retraining_stale_active_recovered", payload=active_recovery)
     backlog_cleanup = cleanup_stale_automatic_retraining_backlog(
         job_store=job_store,
         event_log=event_log,

@@ -368,7 +368,9 @@ def _latest_jsonl_timestamp(path: Path) -> str | None:
 def _adaptation_readiness(config: AdaptationReadinessConfig) -> dict[str, object]:
     paths = _ops_paths()
     registry_payload = ModelRegistry(paths["registry"]).load()
-    jobs = _annotate_stale_jobs(RetrainingJobStore(paths["jobs"]).list_jobs())
+    jobs_store = RetrainingJobStore(paths["jobs"])
+    jobs_store.recover_stale_active_jobs()
+    jobs = _annotate_stale_jobs(jobs_store.list_jobs())
     active = _record_by_id(registry_payload.get("models", []), registry_payload.get("active_model_id"))
     active_checkpoint = active.get("path") if active else None
     latest_best = _latest_checkpoint_from_jobs(jobs)
@@ -393,14 +395,43 @@ def _adaptation_readiness(config: AdaptationReadinessConfig) -> dict[str, object
 
 
 
+
+
+def _is_retraining_job_lock_contention(exc: Exception) -> bool:
+    return isinstance(exc, RuntimeError) and "Could not acquire retraining job lock:" in str(exc)
+
+
+def _retraining_lock_http_exception(exc: Exception) -> HTTPException:
+    return HTTPException(status_code=409, detail="Retraining job store is busy; retry stop request shortly.")
+
 def _stale_timeout_seconds() -> int:
-    value = os.getenv("PLUME_STALE_RUNNING_JOB_TIMEOUT_SECONDS") or os.getenv("PLUME_RETRAINING_STALE_TIMEOUT_SECONDS")
+    value = (
+        os.getenv("PLUME_RETRAINING_ACTIVE_STALE_SECONDS")
+        or os.getenv("PLUME_STALE_RUNNING_JOB_TIMEOUT_SECONDS")
+        or os.getenv("PLUME_RETRAINING_STALE_TIMEOUT_SECONDS")
+    )
     if value:
         try:
-            return max(60, int(value))
+            return max(60, int(float(value)))
         except ValueError:
             pass
     return 1800
+
+
+def _worker_pid_appears_alive(pid_value: object) -> bool:
+    try:
+        pid = int(pid_value)
+    except (TypeError, ValueError):
+        return False
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
 
 
 def _job_status_anchor(job: dict[str, object]) -> datetime | None:
@@ -422,7 +453,9 @@ def _is_stale_job(job: dict[str, object], *, timeout_seconds: int | None = None)
         return False
     if anchor.tzinfo is None:
         anchor = anchor.replace(tzinfo=timezone.utc)
-    return (datetime.now(timezone.utc) - anchor).total_seconds() > float(timeout_seconds or _stale_timeout_seconds())
+    if (datetime.now(timezone.utc) - anchor).total_seconds() <= float(timeout_seconds or _stale_timeout_seconds()):
+        return False
+    return not _worker_pid_appears_alive(job.get("worker_pid"))
 
 
 def _annotate_stale_jobs(jobs: list[dict[str, object]]) -> list[dict[str, object]]:
@@ -653,7 +686,9 @@ def _candidate_response(record: dict[str, object]) -> dict[str, object]:
 
 
 def _adaptation_training_status() -> dict[str, object]:
-    jobs = RetrainingJobStore(_ops_paths()["jobs"]).list_jobs()
+    jobs_store = RetrainingJobStore(_ops_paths()["jobs"])
+    jobs_store.recover_stale_active_jobs()
+    jobs = jobs_store.list_jobs()
     counts = {status: 0 for status in ("queued", "running", "waiting", "failed", "succeeded", "cancelled")}
     for job in jobs:
         status = str(job.get("status"))
@@ -1144,42 +1179,47 @@ def register_ops_routes(app: FastAPI, *, forecast_service, dispatch_worker=dispa
         paths = _ops_paths()
         store = RetrainingJobStore(paths["jobs"])
         event_log = OperationalEventLog(paths["events"])
-        active_statuses = {"queued", "waiting", "claimed", "starting", "running"}
-        jobs = [job for job in _annotate_stale_jobs(store.list_jobs()) if str(job.get("status") or "").lower() in active_statuses]
-        if not jobs:
-            return {"stopped": False, "job_id": None, "previous_status": None, "new_status": None, "message": "No active training job to stop.", "graceful": True}
-        job = max(jobs, key=lambda item: int(item.get("created_sequence", -1)))
-        job_id = str(job.get("job_id"))
-        previous = str(job.get("status") or "")
-        metadata = job.get("metadata") if isinstance(job.get("metadata"), dict) else {}
-        now = datetime.now(timezone.utc).isoformat()
-        if previous.lower() in {"queued", "waiting"} and not metadata.get("worker_claimed"):
-            existing_tail = metadata.get("log_tail") if isinstance(metadata.get("log_tail"), list) else []
-            metadata = {**metadata, "cancel_requested": True, "cancelled_at": now, "stop_requested_at": now, "log_tail": [*existing_tail[-20:], "Training cancelled by operator."]}
-            updated = store.update_job(job_id=job_id, status="cancelled", finished_at=now, error_message="Cancelled by operator", metadata=metadata)
-            event_log.append(event_type="retraining_job_cancelled", payload={"job_id": job_id, "previous_status": previous, "new_status": "cancelled", "reason": "operator_stop_queued"})
-            return {"stopped": True, "job_id": job_id, "previous_status": previous, "new_status": str(updated.get("status")), "message": "Queued training job cancelled.", "graceful": True}
-        if previous.lower() in {"running", "claimed", "starting"} and bool(job.get("is_stale")):
-            existing_tail = metadata.get("log_tail") if isinstance(metadata.get("log_tail"), list) else []
-            metadata = {
-                **metadata,
-                "cancel_requested": True,
-                "cancelled_at": now,
-                "stop_requested_at": now,
-                "status_detail": "Cancelled stale training job by operator",
-                "log_tail": [
-                    *existing_tail[-20:],
-                    "Training cancelled by operator.",
-                    "Stale running job cancelled; no active worker heartbeat was reported.",
-                ],
-            }
-            updated = store.update_job(job_id=job_id, status="cancelled", finished_at=now, error_message="Cancelled stale training job by operator", metadata=metadata)
-            event_log.append(event_type="retraining_job_cancelled", payload={"job_id": job_id, "previous_status": previous, "new_status": "cancelled", "reason": "operator_cancelled_stale"})
-            return {"stopped": True, "job_id": job_id, "previous_status": previous, "new_status": str(updated.get("status")), "message": "Stale training job cancelled.", "graceful": True}
-        metadata = {**metadata, "cancel_requested": True, "stop_requested_at": now}
-        updated = store.update_job(job_id=job_id, metadata=metadata, error_message="Cancelled by operator" if previous.lower() != "running" else job.get("error_message"))
-        event_log.append(event_type="retraining_stop_requested", payload={"job_id": job_id, "previous_status": previous, "new_status": updated.get("status")})
-        return {"stopped": True, "job_id": job_id, "previous_status": previous, "new_status": str(updated.get("status")), "message": "Training stop requested.", "graceful": True}
+        try:
+            active_statuses = {"queued", "waiting", "claimed", "starting", "running"}
+            jobs = [job for job in _annotate_stale_jobs(store.list_jobs()) if str(job.get("status") or "").lower() in active_statuses]
+            if not jobs:
+                return {"stopped": False, "job_id": None, "previous_status": None, "new_status": None, "message": "No active training job to stop.", "graceful": True}
+            job = max(jobs, key=lambda item: int(item.get("created_sequence", -1)))
+            job_id = str(job.get("job_id"))
+            previous = str(job.get("status") or "")
+            metadata = job.get("metadata") if isinstance(job.get("metadata"), dict) else {}
+            now = datetime.now(timezone.utc).isoformat()
+            if previous.lower() in {"queued", "waiting"} and not metadata.get("worker_claimed"):
+                existing_tail = metadata.get("log_tail") if isinstance(metadata.get("log_tail"), list) else []
+                metadata = {**metadata, "cancel_requested": True, "cancelled_at": now, "stop_requested_at": now, "log_tail": [*existing_tail[-20:], "Training cancelled by operator."]}
+                updated = store.update_job(job_id=job_id, status="cancelled", finished_at=now, error_message="Cancelled by operator", metadata=metadata)
+                event_log.append(event_type="retraining_job_cancelled", payload={"job_id": job_id, "previous_status": previous, "new_status": "cancelled", "reason": "operator_stop_queued"})
+                return {"stopped": True, "job_id": job_id, "previous_status": previous, "new_status": str(updated.get("status")), "message": "Queued training job cancelled.", "graceful": True}
+            if previous.lower() in {"running", "claimed", "starting"} and bool(job.get("is_stale")):
+                existing_tail = metadata.get("log_tail") if isinstance(metadata.get("log_tail"), list) else []
+                metadata = {
+                    **metadata,
+                    "cancel_requested": True,
+                    "cancelled_at": now,
+                    "stop_requested_at": now,
+                    "status_detail": "Cancelled stale training job by operator",
+                    "log_tail": [
+                        *existing_tail[-20:],
+                        "Training cancelled by operator.",
+                        "Stale running job cancelled; no active worker heartbeat was reported.",
+                    ],
+                }
+                updated = store.update_job(job_id=job_id, status="cancelled", finished_at=now, error_message="Cancelled stale training job by operator", metadata=metadata)
+                event_log.append(event_type="retraining_job_cancelled", payload={"job_id": job_id, "previous_status": previous, "new_status": "cancelled", "reason": "operator_cancelled_stale"})
+                return {"stopped": True, "job_id": job_id, "previous_status": previous, "new_status": str(updated.get("status")), "message": "Stale training job cancelled.", "graceful": True}
+            metadata = {**metadata, "cancel_requested": True, "stop_requested_at": now}
+            updated = store.update_job(job_id=job_id, metadata=metadata, error_message="Cancelled by operator" if previous.lower() != "running" else job.get("error_message"))
+            event_log.append(event_type="retraining_stop_requested", payload={"job_id": job_id, "previous_status": previous, "new_status": updated.get("status")})
+            return {"stopped": True, "job_id": job_id, "previous_status": previous, "new_status": str(updated.get("status")), "message": "Training stop requested.", "graceful": True}
+        except Exception as exc:
+            if _is_retraining_job_lock_contention(exc):
+                raise _retraining_lock_http_exception(exc) from exc
+            raise
 
 
     @app.post("/ops/candidates/{candidate_id}/approve", response_model=ApprovalActionResponse)
