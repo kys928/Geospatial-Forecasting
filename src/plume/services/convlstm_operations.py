@@ -1326,6 +1326,42 @@ def register_candidate_from_run(
     return record
 
 
+def build_selection_gate_outcome(training_summary: dict[str, object]) -> dict[str, object] | None:
+    gate_summary = training_summary.get("selection_gate_summary")
+    if not isinstance(gate_summary, dict):
+        return None
+    best_metrics = training_summary.get("best_metrics") if isinstance(training_summary.get("best_metrics"), dict) else {}
+    promoted_stage_name = _optional_str(best_metrics.get("stage_name") or best_metrics.get("stage"))
+    stage3_rejected = bool(gate_summary.get("stage3_rejected_by_gates"))
+    rejection_reasons = [str(reason) for reason in gate_summary.get("rejection_reasons", []) if isinstance(reason, (str, int, float))]
+    outcome = {
+        "enabled": bool(gate_summary.get("enabled")),
+        "stage3_rejected_by_gates": stage3_rejected,
+        "promoted_stage_name": promoted_stage_name,
+        "promoted_checkpoint_kind": _selection_gate_promoted_checkpoint_kind(training_summary, promoted_stage_name),
+        "rejection_reasons": rejection_reasons,
+    }
+    if stage3_rejected:
+        outcome["operator_message"] = "Stage 3 was rejected by safety gates; promoted the best accepted stage 2 checkpoint."
+    elif outcome["enabled"]:
+        outcome["operator_message"] = "Stage 3 passed safety gates or did not replace the selected checkpoint."
+    else:
+        outcome["operator_message"] = "Selection gates were disabled; promoted the best checkpoint by selection score."
+    return outcome
+
+
+def _selection_gate_promoted_checkpoint_kind(training_summary: dict[str, object], promoted_stage_name: str | None) -> str | None:
+    if training_summary.get("best_overall_checkpoint"):
+        return "best_overall"
+    if promoted_stage_name == "stage1_direct_warmup" and training_summary.get("best_stage1_checkpoint"):
+        return "best_stage1"
+    if promoted_stage_name == "stage2_autoregressive_teacher_forcing" and training_summary.get("best_stage2_checkpoint"):
+        return "best_stage2"
+    if promoted_stage_name == "stage3_robust_finetune" and training_summary.get("best_stage3_checkpoint"):
+        return "best_stage3"
+    return None
+
+
 def register_candidate_from_adaptation_run(
     *,
     registry: ModelRegistry,
@@ -1350,6 +1386,12 @@ def register_candidate_from_adaptation_run(
     if not isinstance(metric_value, (float, int)):
         metric_value = 0.0
 
+    selection_gate_outcome = build_selection_gate_outcome(training_summary)
+    if selection_gate_outcome is not None:
+        training_summary = {**training_summary, "selection_gate_outcome": selection_gate_outcome}
+    else:
+        existing_outcome = (metadata or {}).get("selection_gate_outcome")
+        selection_gate_outcome = dict(existing_outcome) if isinstance(existing_outcome, dict) else None
     parent_active_model_id = _optional_str((metadata or {}).get("parent_active_model_id"))
     parent_active_model_id_reason = _optional_str((metadata or {}).get("parent_active_model_id_reason"))
 
@@ -1373,6 +1415,7 @@ def register_candidate_from_adaptation_run(
             **dict(metadata or {}),
             "parent_active_model_id": parent_active_model_id,
             "parent_active_model_id_reason": parent_active_model_id_reason,
+            "selection_gate_outcome": selection_gate_outcome,
             "training_summary": training_summary,
         },
     }
@@ -2484,6 +2527,13 @@ def run_adaptation_retraining_job(
             traceback.print_exc(file=log_handle)
         raise
     summary_payload = summary.to_dict() if isinstance(summary, TrainingRunSummary) else dict(summary)  # type: ignore[arg-type]
+    selection_gate_outcome = build_selection_gate_outcome(summary_payload)
+    if selection_gate_outcome is not None:
+        summary_payload["selection_gate_outcome"] = selection_gate_outcome
+        try:
+            (output_dir / "training_summary.json").write_text(json.dumps(summary_payload, indent=2, sort_keys=True), encoding="utf-8")
+        except OSError:
+            pass
     return {
         "run_dir": str(output_dir),
         "run_id": run_id,
@@ -2494,6 +2544,7 @@ def run_adaptation_retraining_job(
                 "best_overall_checkpoint": summary_payload.get("best_overall_checkpoint"),
                 "final_checkpoint": summary_payload.get("final_checkpoint"),
                 "selected_resume_checkpoint": resume_selection.to_dict(),
+                "selection_gate_outcome": selection_gate_outcome,
                 "parent_active_model_id": parent_active_model_id,
                 "parent_active_model_id_reason": parent_active_model_id_reason,
                 "dataset_counts": dict(manifest.counts),

@@ -51,6 +51,7 @@ from plume.services.convlstm_operations import (
     apply_adaptation_promotion_policy,
     delete_adaptation_checkpoint_file,
     approve_candidate,
+    build_selection_gate_outcome,
     dispatch_retraining_worker,
     evaluate_adaptation_candidate_for_registry,
     evaluate_retraining_readiness,
@@ -759,6 +760,12 @@ def _adaptation_training_status() -> dict[str, object]:
     readiness = metadata.get("readiness") or metadata.get("readiness_snapshot") or metadata.get("adaptation_readiness") if isinstance(metadata, dict) else None
     run_dir = None if latest is None else latest.get("result_run_dir") or latest.get("output_dir") or _metadata_value(metadata, "output_dir")
     training_summary = _load_training_summary_from_run_dir(run_dir)
+    metadata_training_summary = _metadata_training_summary(metadata)
+    if not training_summary and metadata_training_summary:
+        training_summary = metadata_training_summary
+    selection_gate_outcome = training_summary.get("selection_gate_outcome") if isinstance(training_summary.get("selection_gate_outcome"), dict) else build_selection_gate_outcome(training_summary)
+    if isinstance(selection_gate_outcome, dict):
+        training_summary = {**training_summary, "selection_gate_outcome": selection_gate_outcome}
     latest_metrics = _load_latest_metrics_from_run_dir(run_dir)
     training_metrics = _training_metrics_from_artifacts(training_summary, latest_metrics)
     best_checkpoint = training_summary.get("best_overall_checkpoint") or _metadata_value(metadata, "best_overall_checkpoint")
@@ -821,6 +828,7 @@ def _adaptation_training_status() -> dict[str, object]:
             "trigger_source": _trigger_source(latest_enriched),
             "training_summary": training_summary,
             "training_metrics": training_metrics,
+            "selection_gate_outcome": selection_gate_outcome if isinstance(selection_gate_outcome, dict) else None,
         })
         if started_dt and finished_dt:
             latest_enriched["runtime_seconds"] = max(0, int((finished_dt - started_dt).total_seconds()))
@@ -840,6 +848,7 @@ def _adaptation_training_status() -> dict[str, object]:
         "best_overall_checkpoint": str(best_checkpoint) if best_checkpoint else None,
         "final_checkpoint": str(final_checkpoint) if final_checkpoint else None,
         "training_metrics": training_metrics,
+        "selection_gate_outcome": selection_gate_outcome if isinstance(selection_gate_outcome, dict) else None,
         **cooldown,
         "error_message": None if latest is None else latest.get("error_message"),
         "job_store_busy": bool(recovery_result.get("job_store_busy")),
@@ -880,6 +889,23 @@ def _trigger_source(job: dict[str, object] | None) -> str:
     if metadata.get("automatic_trigger") is True:
         return "automatic"
     return "unknown"
+
+def _metadata_training_summary(metadata: object) -> dict[str, object]:
+    if not isinstance(metadata, dict):
+        return {}
+    sources = [metadata]
+    adaptation = metadata.get("adaptation")
+    adaptation_run = metadata.get("adaptation_run")
+    if isinstance(adaptation, dict):
+        sources.append(adaptation)
+    if isinstance(adaptation_run, dict):
+        sources.append(adaptation_run)
+    for source in sources:
+        summary = source.get("training_summary")
+        if isinstance(summary, dict):
+            return dict(summary)
+    return {}
+
 
 def _metadata_value(metadata: object, key: str) -> str | None:
     if not isinstance(metadata, dict):

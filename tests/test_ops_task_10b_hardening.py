@@ -415,6 +415,12 @@ def test_training_status_log_tail_runtime_cooldown_and_checkpoints(monkeypatch, 
         "best_overall_checkpoint": str(best),
         "final_checkpoint": str(final),
         "best_metrics": {"selection_score": 0.12, "stage_name": "stage2_autoregressive_teacher_forcing", "global_epoch": 3},
+        "selection_gate_summary": {
+            "enabled": True,
+            "reference_stage_name": "stage2_autoregressive_teacher_forcing",
+            "stage3_rejected_by_gates": True,
+            "rejection_reasons": ["rollout_weighted_mse exceeded allowed threshold"],
+        },
     }), encoding="utf-8")
     (run_dir / "metrics.jsonl").write_text(
         json.dumps({"stage": "stage1_direct_multihorizon", "global_epoch": 1, "val_loss": 0.4}) + "\n" +
@@ -449,6 +455,10 @@ def test_training_status_log_tail_runtime_cooldown_and_checkpoints(monkeypatch, 
     assert latest["training_metrics"]["val_rollout_plume_iou"] == 0.75
     assert latest["training_metrics"]["best_score"] == 0.12
     assert latest["training_metrics"]["best_stage"] == "stage2_autoregressive_teacher_forcing"
+    assert latest["selection_gate_outcome"]["stage3_rejected_by_gates"] is True
+    assert latest["selection_gate_outcome"]["promoted_stage_name"] == "stage2_autoregressive_teacher_forcing"
+    assert latest["selection_gate_outcome"]["rejection_reasons"] == ["rollout_weighted_mse exceeded allowed threshold"]
+    assert payload["selection_gate_outcome"] == latest["selection_gate_outcome"]
     assert payload["training_metrics"]["global_epoch"] == 3
 
 
