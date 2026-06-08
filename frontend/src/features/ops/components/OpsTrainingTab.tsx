@@ -406,30 +406,6 @@ export function OpsTrainingTab() {
           ) : null}
         </div>
       </section>
-      {trainingView.metrics.length > 0 ? (
-        <section className="panel">
-          <h3>Training Metrics</h3>
-          <>
-            <div className="ops-status-grid">
-              {trainingView.metrics.map((row) => (
-                <article key={row.label} className="ops-stat-card">
-                  <p className="muted" style={{ margin: 0 }}>
-                    {row.label}
-                  </p>
-                  <strong>{row.value}</strong>
-                </article>
-              ))}
-            </div>
-            {trainingView.progressPct !== null ? (
-              <div style={{ marginTop: 10 }}>
-                <div className="ops-progress">
-                  <div style={{ width: `${trainingView.progressPct}%` }} />
-                </div>
-              </div>
-            ) : null}
-          </>
-        </section>
-      ) : null}
       <section className="panel">
         <details className="advanced-section" open={Boolean(activeJobForDisplay)} >
           <summary>Live Training Logs</summary>
@@ -576,8 +552,6 @@ function deriveTrainingView(
       }
     })(),
   );
-  const metricSources = collectTrainingMetricSources(jobObj, adaptationTraining);
-  const metrics = metricSources[0] ?? {};
   const activeStatusRaw = activeJob
     ? asStr(pick(asObj(activeJob), ["status", "effective_status"]))
     : null;
@@ -598,11 +572,6 @@ function deriveTrainingView(
     ? formatDurationSeconds(elapsedSeconds ?? Math.max(0, Math.floor(((completed ? Date.parse(completed) : Date.now()) - Date.parse(started)) / 1000)))
     : "Not reported";
   const runtime = runtimeSeconds !== null ? formatDurationSeconds(runtimeSeconds) : completed && started ? formatDurationSeconds(Math.max(0, Math.floor((Date.parse(completed) - Date.parse(started)) / 1000))) : null;
-  const progress = pick(metrics, ["progress"]);
-  const progressPct =
-    typeof progress === "number"
-      ? Math.max(0, Math.min(100, progress > 1 ? progress : progress * 100))
-      : null;
   const latestStatus = asStr(pick(latestJobObj, ["status", "effective_status"])) ?? "Not reported";
   const activeStatus = activeStatusRaw ?? "Not reported";
   const jobCounts = adaptationTraining?.job_counts ?? {};
@@ -719,15 +688,11 @@ function deriveTrainingView(
   ]);
   const prominentRows = rows.filter((row) => !technicalLabels.has(row.label));
   const technicalRows = rows.filter((row) => technicalLabels.has(row.label));
-  const metricRows = collectTrainingMetricRows(metricSources, progressPct);
   return {
     state,
     detail: readinessDetail,
     rows: prominentRows,
     technicalRows,
-    metrics: metricRows,
-    progressPct,
-    hasActiveJob: Boolean(activeJob),
   };
 }
 
@@ -780,32 +745,6 @@ function collectTrainingMetricSources(
     .filter((source) => Object.keys(source).length > 0);
 }
 
-function collectTrainingMetricRows(
-  sources: Record<string, unknown>[],
-  progressPct: number | null,
-): Array<{ label: string; value: string }> {
-  const seen = new Set<string>();
-  const rows: Array<{ label: string; value: string }> = [];
-  for (const key of TRAINING_METRIC_KEYS) {
-    for (const source of sources) {
-      const value = source[key];
-      if (value === null || value === undefined || String(value).trim() === "")
-        continue;
-      if (seen.has(key)) break;
-      rows.push({
-        label: formatMetricLabel(key),
-        value: key === "progress" ? formatProgressValue(value) : formatMetricValue(key, value),
-      });
-      seen.add(key);
-      break;
-    }
-  }
-  if (progressPct !== null && !seen.has("progress")) {
-    rows.push({ label: "Progress", value: `${progressPct.toFixed(1)}%` });
-  }
-  return rows;
-}
-
 function formatMetricValue(key: string, value: unknown): string {
   if (key.includes("checkpoint_path") && typeof value === "string") {
     return value.split(/[\\/]/).slice(-2).join("/");
@@ -814,19 +753,6 @@ function formatMetricValue(key: string, value: unknown): string {
     return Number.isInteger(value) ? String(value) : value.toPrecision(6);
   }
   return String(value);
-}
-
-function formatMetricLabel(key: string): string {
-  return key
-    .split("_")
-    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
-    .join(" ");
-}
-
-function formatProgressValue(value: unknown): string {
-  if (typeof value !== "number") return String(value);
-  const pct = value > 1 ? value : value * 100;
-  return `${Math.max(0, Math.min(100, pct)).toFixed(1)}%`;
 }
 
 function metricSourceKey(source: Record<string, unknown>): string {
