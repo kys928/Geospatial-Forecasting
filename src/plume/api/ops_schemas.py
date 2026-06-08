@@ -173,6 +173,7 @@ class AdaptationTrainingStatusResponse(BaseModel):
     latest_job: dict[str, Any] | None = None
     latest_manual_job: dict[str, Any] | None = None
     latest_readiness_snapshot: dict[str, Any] | None = None
+    operator_summary: dict[str, Any] | None = None
     candidate_model_id: str | None = None
     output_dir: str | None = None
     result_run_dir: str | None = None
