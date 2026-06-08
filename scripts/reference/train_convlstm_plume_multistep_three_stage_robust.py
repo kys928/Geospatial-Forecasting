@@ -52,7 +52,7 @@ from torch.utils.data import DataLoader, Dataset, Subset
 CONFIG: Dict[str, Any] = {
     "run_name": "convlstm_multistep_three_stage_robust_v1",
     "data": {
-        "windows_dir": "/workspace/Dataset/hysplit-plume-convlstm-multiyear-2024-2026/windows",
+        "windows_dir": "data/hysplit-plume-convlstm-multiyear-2024-2026/windows",
         "npz_glob": "*.npz",
         "input_key": "input",
         "target_key": "target",
@@ -214,8 +214,8 @@ CONFIG: Dict[str, Any] = {
         }
     },
     "checkpointing": {
-        "output_dir": "/workspace/Geospatial-Forecasting/runs/convlstm_multistep_three_stage_robust_v1",
-        "artifact_model_dir": "/workspace/Geospatial-Forecasting/artifacts/models/convlstm_multistep_three_stage_robust_v1",
+        "output_dir": "runs/convlstm_multistep_three_stage_robust_v1",
+        "artifact_model_dir": "artifacts/models/convlstm_multistep_three_stage_robust_v1",
         "save_every_epochs": 2,
         "best_name": "best_full_checkpoint.pt",
         "final_name": "final_full_checkpoint.pt",

@@ -50,7 +50,7 @@ def test_config_defaults_include_new_thresholds():
     assert config.frame_interval_minutes == 60
     assert config.min_observation_span_minutes == 60
     assert config.max_sample_age_days == 7
-    assert config.min_seconds_between_training_runs == 3600
+    assert config.min_seconds_between_training_runs == 10800
 
 
 def test_frame_interval_validation():
@@ -101,5 +101,5 @@ def test_training_cooldown_blocks_recent_run(tmp_path):
 def test_training_cooldown_passes_after_elapsed(tmp_path):
     now = datetime(2026, 6, 1, tzinfo=UTC)
     _buffer(tmp_path / "buffer", 64, now - timedelta(hours=1), 60)
-    result = _service(tmp_path).evaluate(now=now, last_adaptation_training_at=now - timedelta(hours=2), gpu_snapshot=ENOUGH_GPU)
+    result = _service(tmp_path).evaluate(now=now, last_adaptation_training_at=now - timedelta(hours=4), gpu_snapshot=ENOUGH_GPU)
     assert _check(result, "training_cooldown").passed is True

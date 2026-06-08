@@ -34,9 +34,11 @@ from plume.services.adaptation_readiness import (
 )
 from plume.training.adaptation_dataset import AdaptationDatasetConfig, build_adaptation_dataset_manifest
 from plume.training.three_stage_adaptation_trainer import (
+    MODEL_CONTRACT as ROBUST_TRAINER_MODEL_CONTRACT,
     ThreeStageTrainerConfig,
     TrainingCancelled,
     TrainingRunSummary,
+    load_checkpoint_payload,
     train_three_stage_adaptation,
 )
 
@@ -2784,9 +2786,21 @@ def _validate_adaptation_resume_checkpoint(path: Path) -> None:
         import torch  # type: ignore
     except ModuleNotFoundError:
         return
-    raw = torch.load(path, map_location="cpu")
-    if not isinstance(raw, dict) or "model_state_dict" not in raw:
+    try:
+        raw = load_checkpoint_payload(path, map_location="cpu")
+    except Exception as exc:
+        raise ValueError(f"Selected adaptation resume checkpoint could not be read safely as a robust state_dict checkpoint: {path}: {exc}") from exc
+    if "model_state_dict" not in raw:
         raise ValueError(f"Selected adaptation resume checkpoint is not a robust trainer checkpoint: {path}")
+    contract = raw.get("model_contract")
+    if not isinstance(contract, dict):
+        raise ValueError(f"Selected adaptation resume checkpoint is missing robust model_contract metadata: {path}")
+    for key in ("model_name", "forecast_mode", "input_shape", "output_shape", "plume_channel"):
+        if contract.get(key) != ROBUST_TRAINER_MODEL_CONTRACT[key]:
+            raise ValueError(
+                "Selected adaptation resume checkpoint is incompatible with robust three-stage ConvLSTM "
+                f"({key}: expected {ROBUST_TRAINER_MODEL_CONTRACT[key]!r}, got {contract.get(key)!r}): {path}"
+            )
 
 
 
@@ -2896,8 +2910,10 @@ def _resolve_manual_training_checkpoint(
     patterns = [
         "artifacts/models/**/final_full_checkpoint.pt",
         "artifacts/models/**/best_full_checkpoint.pt",
+        "artifacts/models/**/best_overall_full_checkpoint.pt",
         "runs/**/final_full_checkpoint.pt",
         "runs/**/best_full_checkpoint.pt",
+        "runs/**/best_overall_full_checkpoint.pt",
     ]
     candidates: list[Path] = []
     for root in search_roots:

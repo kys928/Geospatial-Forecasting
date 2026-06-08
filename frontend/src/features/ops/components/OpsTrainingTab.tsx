@@ -74,23 +74,29 @@ const presetDefaults: Record<PresetKey, ManualControlState> = {
 };
 
 const TRAINING_METRIC_KEYS = [
-  "training_loss",
+  "stage",
+  "stage_name",
+  "global_epoch",
+  "epoch_in_stage",
   "train_loss",
-  "validation_loss",
   "val_loss",
-  "best_validation_loss",
-  "best_val_loss",
-  "epoch",
-  "progress",
-  "weighted_mse",
-  "mae",
-  "plume_iou",
-  "mass_abs_error",
-  "peak_location_error",
-  "selection_score",
   "val_rollout_weighted_mse",
-  "val_rollout_weighted_mse_t3",
-  "val_rollout_weighted_mse_t4",
+  "val_direct_weighted_mse",
+  "val_rollout_mae",
+  "val_rollout_mass_abs_error",
+  "val_rollout_peak_location_error",
+  "val_rollout_plume_iou",
+  "val_free_rollout_gap",
+  "selection_score",
+  "learning_rate",
+  "lr",
+  "teacher_forcing_ratio",
+  "teacher_forcing_prob",
+  "best_score",
+  "best_stage",
+  "best_global_epoch",
+  "best_checkpoint_path",
+  "progress",
 ];
 
 const asObj = (v: unknown) =>
@@ -272,6 +278,8 @@ export function OpsTrainingTab() {
       ),
     [statusState.status, jobForLogs, adaptationTraining, candidateState.context],
   );
+  const visibleLogs = logs.filter((line) => !/FutureWarning.*torch\.load|torch\.load.*FutureWarning/i.test(line));
+  const hiddenWarningCount = logs.length - visibleLogs.length;
   const hasErrorLogs = logs.some((line) => line.startsWith("ERROR:"));
   const canStopTraining = Boolean(activeJobForDisplay);
 
@@ -375,6 +383,19 @@ export function OpsTrainingTab() {
               </div>
             ))}
           </dl>
+          {trainingView.technicalRows.length > 0 ? (
+            <details className="advanced-section" style={{ gridColumn: "1 / -1" }}>
+              <summary>Technical Details</summary>
+              <dl className="ops-training-facts">
+                {trainingView.technicalRows.map((row) => (
+                  <div key={row.label}>
+                    <dt>{row.label}</dt>
+                    <dd title={row.value}>{row.value}</dd>
+                  </div>
+                ))}
+              </dl>
+            </details>
+          ) : null}
         </div>
       </section>
       {trainingView.metrics.length > 0 ? (
@@ -402,11 +423,13 @@ export function OpsTrainingTab() {
         </section>
       ) : null}
       <section className="panel">
+        <details className="advanced-section" open={Boolean(activeJobForDisplay)} >
+          <summary>Live Training Logs</summary>
         <div
           className="button-row"
-          style={{ justifyContent: "space-between", alignItems: "center" }}
+          style={{ justifyContent: "space-between", alignItems: "center", marginTop: 10 }}
         >
-          <h3 style={{ margin: 0 }}>Live Training Logs</h3>
+          <h3 style={{ margin: 0 }}>Raw trainer output</h3>
           <div className="button-row">
             <label
               className="muted"
@@ -436,7 +459,12 @@ export function OpsTrainingTab() {
             Real training log file not available; showing summary.
           </p>
         ) : null}
-        {!logs.length ? (
+        {hiddenWarningCount > 0 ? (
+          <p className="muted" style={{ margin: "8px 0 0" }}>
+            {hiddenWarningCount} known torch.load warning line(s) hidden from this view; Copy logs preserves raw output.
+          </p>
+        ) : null}
+        {!visibleLogs.length ? (
           <p className="muted" style={{ marginBottom: 0 }}>
             {activeJobForDisplay
               ? "Active training job has no logs available."
@@ -447,9 +475,10 @@ export function OpsTrainingTab() {
             ref={logRef}
             className={`ops-log-window${hasErrorLogs ? " ops-log-window-error" : ""}`}
           >
-            {logs.join("\n")}
+            {visibleLogs.join("\n")}
           </pre>
         )}
+        </details>
       </section>
       <section className="panel">
         <details className="advanced-section">
@@ -539,7 +568,7 @@ function deriveTrainingView(
       }
     })(),
   );
-  const metricSources = collectTrainingMetricSources(jobObj);
+  const metricSources = collectTrainingMetricSources(jobObj, adaptationTraining);
   const metrics = metricSources[0] ?? {};
   const activeStatusRaw = activeJob
     ? asStr(pick(asObj(activeJob), ["status", "effective_status"]))
@@ -651,7 +680,7 @@ function deriveTrainingView(
       : [{ label: "Elapsed", value: elapsed }]),
     {
       label: "Retraining cooldown",
-      value: formatDurationSeconds(adaptationTraining?.cooldown_seconds ?? 3600),
+      value: formatDurationSeconds(adaptationTraining?.cooldown_seconds ?? 10800),
     },
     ...(adaptationTraining?.cooldown_remaining_seconds && adaptationTraining.cooldown_remaining_seconds > 0
       ? [{ label: "Next automatic training eligible in", value: formatDurationSeconds(adaptationTraining.cooldown_remaining_seconds) }]
@@ -669,11 +698,25 @@ function deriveTrainingView(
         "Job counts",
       ].includes(row.label),
   );
+  const technicalLabels = new Set([
+    "Latest job role",
+    "Training log",
+    "Candidate",
+    "Output dir",
+    "Result run dir",
+    "Best checkpoint",
+    "Final checkpoint",
+    "Started",
+    "Job counts",
+  ]);
+  const prominentRows = rows.filter((row) => !technicalLabels.has(row.label));
+  const technicalRows = rows.filter((row) => technicalLabels.has(row.label));
   const metricRows = collectTrainingMetricRows(metricSources, progressPct);
   return {
     state,
     detail: readinessDetail,
-    rows,
+    rows: prominentRows,
+    technicalRows,
     metrics: metricRows,
     progressPct,
     hasActiveJob: Boolean(activeJob),
@@ -715,8 +758,10 @@ function primaryReadinessReason(readiness: Record<string, unknown>): string | nu
 
 function collectTrainingMetricSources(
   jobObj: Record<string, unknown>,
+  adaptationTraining?: AdaptationTrainingStatus | null,
 ): Record<string, unknown>[] {
   return [
+    adaptationTraining?.training_metrics,
     pick(jobObj, ["metrics", "training_metrics", "progress_metrics"]),
     pick(jobObj, ["training_summary"]),
     pick(asObj(pick(jobObj, ["training_summary"])), ["metrics"]),
@@ -741,7 +786,7 @@ function collectTrainingMetricRows(
       if (seen.has(key)) break;
       rows.push({
         label: formatMetricLabel(key),
-        value: key === "progress" ? formatProgressValue(value) : String(value),
+        value: key === "progress" ? formatProgressValue(value) : formatMetricValue(key, value),
       });
       seen.add(key);
       break;
@@ -751,6 +796,16 @@ function collectTrainingMetricRows(
     rows.push({ label: "Progress", value: `${progressPct.toFixed(1)}%` });
   }
   return rows;
+}
+
+function formatMetricValue(key: string, value: unknown): string {
+  if (key.includes("checkpoint_path") && typeof value === "string") {
+    return value.split(/[\\/]/).slice(-2).join("/");
+  }
+  if (typeof value === "number") {
+    return Number.isInteger(value) ? String(value) : value.toPrecision(6);
+  }
+  return String(value);
 }
 
 function formatMetricLabel(key: string): string {

@@ -50,7 +50,7 @@ class AdaptationReadinessConfig:
     allow_cpu_training_fallback: bool = False
     min_free_vram_gib_for_training: float = 2.0
     retry_cooldown_seconds: int = 3600
-    min_seconds_between_training_runs: int = 3600
+    min_seconds_between_training_runs: int = 10800
     max_concurrent_training_jobs: int = 1
     allow_fresh_start: bool = False
     warning_checkpoint_count: int = 20
