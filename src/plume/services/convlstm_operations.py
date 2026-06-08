@@ -1350,6 +1350,9 @@ def register_candidate_from_adaptation_run(
     if not isinstance(metric_value, (float, int)):
         metric_value = 0.0
 
+    parent_active_model_id = _optional_str((metadata or {}).get("parent_active_model_id"))
+    parent_active_model_id_reason = _optional_str((metadata or {}).get("parent_active_model_id_reason"))
+
     record_id = model_id or f"candidate_{run_path.name}"
     now = _utc_now_iso()
     record = {
@@ -1365,8 +1368,13 @@ def register_candidate_from_adaptation_run(
         "checkpoint_metric": {"name": "selection_score", "value": float(metric_value)},
         "plume_metrics": {},
         "timestamp": now,
-        "parent_active_model_id": None,
-        "adaptation_run": {**dict(metadata or {}), "training_summary": training_summary},
+        "parent_active_model_id": parent_active_model_id,
+        "adaptation_run": {
+            **dict(metadata or {}),
+            "parent_active_model_id": parent_active_model_id,
+            "parent_active_model_id_reason": parent_active_model_id_reason,
+            "training_summary": training_summary,
+        },
     }
     payload = registry.load()
     if any(item.get("model_id") == record_id for item in payload["models"]):
@@ -2395,6 +2403,11 @@ def run_adaptation_retraining_job(
             allow_fresh_start=readiness_config.allow_fresh_start,
         )
 
+    parent_active_model_id, parent_active_model_id_reason = _resolve_resume_parent_active_model_id(
+        registry_payload=registry_payload,
+        resume_checkpoint_path=resume_selection.checkpoint_path,
+    )
+
     buffer = AdaptationBuffer(
         AdaptationBufferConfig(
             buffer_root=readiness_config.resolve_buffer_root(),
@@ -2481,6 +2494,8 @@ def run_adaptation_retraining_job(
                 "best_overall_checkpoint": summary_payload.get("best_overall_checkpoint"),
                 "final_checkpoint": summary_payload.get("final_checkpoint"),
                 "selected_resume_checkpoint": resume_selection.to_dict(),
+                "parent_active_model_id": parent_active_model_id,
+                "parent_active_model_id_reason": parent_active_model_id_reason,
                 "dataset_counts": dict(manifest.counts),
                 "dataset_warnings": list(manifest.warnings),
                 "readiness": readiness_payload,
@@ -2759,6 +2774,37 @@ def _active_checkpoint_path(registry_payload: dict[str, object]) -> str | None:
             path = Path(str(item["path"]))
             return str(path) if path.exists() else None
     return None
+
+
+def _resolve_resume_parent_active_model_id(
+    *,
+    registry_payload: dict[str, object],
+    resume_checkpoint_path: str | None,
+) -> tuple[str | None, str | None]:
+    if not resume_checkpoint_path:
+        return None, "resume_checkpoint_missing"
+    active_id = _optional_str(registry_payload.get("active_model_id"))
+    if active_id is None:
+        return None, "active_model_id_missing"
+    models = registry_payload.get("models") if isinstance(registry_payload.get("models"), list) else []
+    active_record = next((item for item in models if isinstance(item, dict) and item.get("model_id") == active_id), None)
+    if active_record is None:
+        return None, "active_model_record_missing"
+    active_checkpoint_path = _optional_str(active_record.get("path"))
+    if active_checkpoint_path is None:
+        return None, "active_checkpoint_path_missing"
+    if _checkpoint_paths_match(active_checkpoint_path, resume_checkpoint_path):
+        return active_id, None
+    return None, "resume_checkpoint_not_active_model"
+
+
+def _checkpoint_paths_match(left: str | Path, right: str | Path) -> bool:
+    left_path = Path(left).expanduser()
+    right_path = Path(right).expanduser()
+    try:
+        return left_path.resolve(strict=False) == right_path.resolve(strict=False)
+    except OSError:
+        return str(left_path) == str(right_path)
 
 
 def _latest_best_checkpoint_path(*, registry_payload: dict[str, object], fallback_checkpoint: object) -> str | None:

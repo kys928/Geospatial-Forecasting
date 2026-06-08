@@ -195,12 +195,17 @@ def test_worker_uses_active_checkpoint_when_available(monkeypatch, tmp_path: Pat
     config_dir = _seed(tmp_path, active_checkpoint=ckpt, latest_checkpoint=_checkpoint(tmp_path / "latest.pt"))
     _mock_trainer(monkeypatch)
 
-    _run(tmp_path, config_dir)
+    result = _run(tmp_path, config_dir)
 
     job = RetrainingJobStore(tmp_path / "jobs.json").latest_job()
-    selected = job["metadata"]["adaptation"]["selected_resume_checkpoint"]
+    adaptation_metadata = job["metadata"]["adaptation"]
+    selected = adaptation_metadata["selected_resume_checkpoint"]
     assert selected["source"] == "active_checkpoint"
     assert selected["checkpoint_path"] == str(ckpt)
+    assert adaptation_metadata["parent_active_model_id"] == "active"
+    assert adaptation_metadata["parent_active_model_id_reason"] is None
+    assert result["candidate"]["parent_active_model_id"] == "active"
+    assert result["candidate"]["adaptation_run"]["parent_active_model_id"] == "active"
 
 
 def test_worker_falls_back_to_latest_best_checkpoint(monkeypatch, tmp_path: Path):
@@ -209,12 +214,17 @@ def test_worker_falls_back_to_latest_best_checkpoint(monkeypatch, tmp_path: Path
     config_dir = _seed(tmp_path, active_checkpoint=missing_active, latest_checkpoint=latest)
     _mock_trainer(monkeypatch)
 
-    _run(tmp_path, config_dir)
+    result = _run(tmp_path, config_dir)
 
     job = RetrainingJobStore(tmp_path / "jobs.json").latest_job()
-    selected = job["metadata"]["adaptation"]["selected_resume_checkpoint"]
+    adaptation_metadata = job["metadata"]["adaptation"]
+    selected = adaptation_metadata["selected_resume_checkpoint"]
     assert selected["source"] == "latest_best_checkpoint"
     assert selected["checkpoint_path"] == str(latest)
+    assert adaptation_metadata["parent_active_model_id"] is None
+    assert adaptation_metadata["parent_active_model_id_reason"] == "resume_checkpoint_not_active_model"
+    assert result["candidate"]["parent_active_model_id"] is None
+    assert result["candidate"]["adaptation_run"]["parent_active_model_id_reason"] == "resume_checkpoint_not_active_model"
 
 
 def test_worker_fails_or_defers_when_no_checkpoint_and_fresh_start_disabled(monkeypatch, tmp_path: Path):
@@ -318,6 +328,26 @@ def test_worker_claims_queued_manual_training_job(monkeypatch, tmp_path: Path):
     assert result["claimed"] is True
     assert result["status"] == "succeeded"
     assert len(calls) == 1
+
+
+def test_manual_training_records_active_parent_model_lineage(monkeypatch, tmp_path: Path):
+    monkeypatch.setattr("plume.services.convlstm_operations._validate_adaptation_resume_checkpoint", lambda _path: None)
+    ckpt = _checkpoint(tmp_path / "active.pt")
+    config_dir = _manual_seed(tmp_path, status="queued", checkpoint=ckpt)
+    _mock_trainer(monkeypatch)
+
+    result = _run(tmp_path, config_dir)
+
+    job = RetrainingJobStore(tmp_path / "jobs.json").latest_job()
+    adaptation_metadata = job["metadata"]["adaptation"]
+    assert adaptation_metadata["selected_resume_checkpoint"] == {
+        "checkpoint_path": str(ckpt),
+        "source": "manual_override",
+        "resume_mode": "model_only",
+    }
+    assert adaptation_metadata["parent_active_model_id"] == "active"
+    assert adaptation_metadata["parent_active_model_id_reason"] is None
+    assert result["candidate"]["parent_active_model_id"] == "active"
 
 
 def test_manual_training_bypasses_adaptation_readiness_gate(monkeypatch, tmp_path: Path):
