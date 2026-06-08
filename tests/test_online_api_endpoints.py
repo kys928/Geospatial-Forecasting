@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from pathlib import Path
 
 import numpy as np
 from fastapi.testclient import TestClient
@@ -109,15 +110,21 @@ def test_online_session_404_for_missing_session():
     assert response.status_code == 404
 
 
-def test_create_session_defaults_to_convlstm_online(monkeypatch):
+def test_create_session_defaults_to_convlstm_online(monkeypatch, tmp_path):
     monkeypatch.setenv("PLUME_CONVLSTM_PREDICTION_ENGINE", "convlstm")
     monkeypatch.setenv("PLUME_CONVLSTM_INIT_MODE", "random_init")
     monkeypatch.setenv("PLUME_CONVLSTM_CHECKPOINT_PATH", "")
     monkeypatch.setenv("PLUME_CONVLSTM_DEVICE", "cpu")
-    app = create_app()
-    client = TestClient(app)
+    registry_path = Path("artifacts/convlstm_ops/model_registry.json")
+    hidden_registry = tmp_path / "model_registry.json"
+    registry_path.rename(hidden_registry)
+    try:
+        app = create_app()
+        client = TestClient(app)
 
-    response = client.post("/sessions", json={})
+        response = client.post("/sessions", json={})
+    finally:
+        hidden_registry.rename(registry_path)
 
     assert response.status_code == 200
     assert response.json()["backend_name"] == "convlstm_online"
