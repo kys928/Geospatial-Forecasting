@@ -173,6 +173,7 @@ class AdaptationTrainingStatusResponse(BaseModel):
     latest_job: dict[str, Any] | None = None
     latest_manual_job: dict[str, Any] | None = None
     latest_readiness_snapshot: dict[str, Any] | None = None
+    operator_summary: dict[str, Any] | None = None
     candidate_model_id: str | None = None
     output_dir: str | None = None
     result_run_dir: str | None = None
@@ -182,6 +183,8 @@ class AdaptationTrainingStatusResponse(BaseModel):
     cooldown_remaining_seconds: int | None = None
     next_automatic_training_eligible_at: str | None = None
     cooldown_source: str | None = None
+    cooldown_scope: str | None = None
+    cooldown_reason: str | None = None
     error_message: str | None = None
     job_store_busy: bool = False
     recovery_skipped_reason: str | None = None

@@ -69,12 +69,52 @@ def test_runner_loop_max_iterations_forecast(monkeypatch, capsys, tmp_path):
 
     out_lines = [json.loads(line) for line in capsys.readouterr().out.strip().splitlines()]
     assert calls == ["forecast", "forecast"]
-    assert [line["iteration"] for line in out_lines] == [1, 2]
+    assert [line["iteration"] for line in out_lines] == [1]
     status_payload = json.loads(status_path.read_text(encoding="utf-8"))
     assert status_payload["iteration"] == 2
     assert status_payload["worker_id"] == "loop-worker"
     assert status_payload["last_heartbeat_at"]
 
+
+def test_runner_loop_logs_again_when_state_changes(monkeypatch, capsys):
+    results = iter([{"status": "idle"}, {"status": "idle"}, {"status": "claimed", "job_id": "job-1"}])
+    monkeypatch.setattr(run, "_run_forecast", lambda _args: next(results))
+    monkeypatch.setattr(run.time, "sleep", lambda _seconds: None)
+
+    assert run.main(["--kind", "forecast", "--loop", "--max-iterations", "3", "--interval-seconds", "0"]) == 0
+
+    out_lines = [json.loads(line) for line in capsys.readouterr().out.strip().splitlines()]
+    assert [line["iteration"] for line in out_lines] == [1, 3]
+    assert out_lines[0]["result"] == {"status": "idle"}
+    assert out_lines[1]["result"] == {"status": "claimed", "job_id": "job-1"}
+
+
+def test_runner_loop_debug_logs_every_iteration(monkeypatch, capsys):
+    monkeypatch.setenv("PLUME_WORKER_LOG_EVERY_ITERATION", "true")
+    monkeypatch.setattr(run, "_run_forecast", lambda _args: {"status": "idle"})
+    monkeypatch.setattr(run.time, "sleep", lambda _seconds: None)
+
+    assert run.main(["--kind", "forecast", "--loop", "--max-iterations", "2", "--interval-seconds", "0"]) == 0
+
+    out_lines = [json.loads(line) for line in capsys.readouterr().out.strip().splitlines()]
+    assert [line["iteration"] for line in out_lines] == [1, 2]
+
+
+def test_runner_loop_cooldown_minute_bucket_throttles_repeated_logs(monkeypatch, capsys):
+    results = iter([
+        {"status": "idle", "cooldown_remaining_seconds": 125},
+        {"status": "idle", "cooldown_remaining_seconds": 121},
+        {"status": "idle", "cooldown_remaining_seconds": 59},
+    ])
+    monkeypatch.setattr(run, "_run_retraining", lambda _args: next(results))
+    monkeypatch.setattr(run.time, "sleep", lambda _seconds: None)
+
+    assert run.main(["--kind", "retraining", "--loop", "--max-iterations", "3", "--interval-seconds", "0"]) == 0
+
+    out_lines = [json.loads(line) for line in capsys.readouterr().out.strip().splitlines()]
+    assert [line["iteration"] for line in out_lines] == [1, 3]
+    assert out_lines[0]["result"] == {"status": "idle", "cooldown_remaining_seconds": 125}
+    assert out_lines[1]["result"] == {"status": "idle", "cooldown_remaining_seconds": 59}
 
 def test_runner_loop_all_calls_both_each_iteration(monkeypatch):
     calls = []

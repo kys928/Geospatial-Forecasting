@@ -1326,6 +1326,42 @@ def register_candidate_from_run(
     return record
 
 
+def build_selection_gate_outcome(training_summary: dict[str, object]) -> dict[str, object] | None:
+    gate_summary = training_summary.get("selection_gate_summary")
+    if not isinstance(gate_summary, dict):
+        return None
+    best_metrics = training_summary.get("best_metrics") if isinstance(training_summary.get("best_metrics"), dict) else {}
+    promoted_stage_name = _optional_str(best_metrics.get("stage_name") or best_metrics.get("stage"))
+    stage3_rejected = bool(gate_summary.get("stage3_rejected_by_gates"))
+    rejection_reasons = [str(reason) for reason in gate_summary.get("rejection_reasons", []) if isinstance(reason, (str, int, float))]
+    outcome = {
+        "enabled": bool(gate_summary.get("enabled")),
+        "stage3_rejected_by_gates": stage3_rejected,
+        "promoted_stage_name": promoted_stage_name,
+        "promoted_checkpoint_kind": _selection_gate_promoted_checkpoint_kind(training_summary, promoted_stage_name),
+        "rejection_reasons": rejection_reasons,
+    }
+    if stage3_rejected:
+        outcome["operator_message"] = "Stage 3 was rejected by safety gates; promoted the best accepted stage 2 checkpoint."
+    elif outcome["enabled"]:
+        outcome["operator_message"] = "Stage 3 passed safety gates or did not replace the selected checkpoint."
+    else:
+        outcome["operator_message"] = "Selection gates were disabled; promoted the best checkpoint by selection score."
+    return outcome
+
+
+def _selection_gate_promoted_checkpoint_kind(training_summary: dict[str, object], promoted_stage_name: str | None) -> str | None:
+    if training_summary.get("best_overall_checkpoint"):
+        return "best_overall"
+    if promoted_stage_name == "stage1_direct_warmup" and training_summary.get("best_stage1_checkpoint"):
+        return "best_stage1"
+    if promoted_stage_name == "stage2_autoregressive_teacher_forcing" and training_summary.get("best_stage2_checkpoint"):
+        return "best_stage2"
+    if promoted_stage_name == "stage3_robust_finetune" and training_summary.get("best_stage3_checkpoint"):
+        return "best_stage3"
+    return None
+
+
 def register_candidate_from_adaptation_run(
     *,
     registry: ModelRegistry,
@@ -1350,6 +1386,15 @@ def register_candidate_from_adaptation_run(
     if not isinstance(metric_value, (float, int)):
         metric_value = 0.0
 
+    selection_gate_outcome = build_selection_gate_outcome(training_summary)
+    if selection_gate_outcome is not None:
+        training_summary = {**training_summary, "selection_gate_outcome": selection_gate_outcome}
+    else:
+        existing_outcome = (metadata or {}).get("selection_gate_outcome")
+        selection_gate_outcome = dict(existing_outcome) if isinstance(existing_outcome, dict) else None
+    parent_active_model_id = _optional_str((metadata or {}).get("parent_active_model_id"))
+    parent_active_model_id_reason = _optional_str((metadata or {}).get("parent_active_model_id_reason"))
+
     record_id = model_id or f"candidate_{run_path.name}"
     now = _utc_now_iso()
     record = {
@@ -1365,8 +1410,14 @@ def register_candidate_from_adaptation_run(
         "checkpoint_metric": {"name": "selection_score", "value": float(metric_value)},
         "plume_metrics": {},
         "timestamp": now,
-        "parent_active_model_id": None,
-        "adaptation_run": {**dict(metadata or {}), "training_summary": training_summary},
+        "parent_active_model_id": parent_active_model_id,
+        "adaptation_run": {
+            **dict(metadata or {}),
+            "parent_active_model_id": parent_active_model_id,
+            "parent_active_model_id_reason": parent_active_model_id_reason,
+            "selection_gate_outcome": selection_gate_outcome,
+            "training_summary": training_summary,
+        },
     }
     payload = registry.load()
     if any(item.get("model_id") == record_id for item in payload["models"]):
@@ -2145,6 +2196,8 @@ def maybe_enqueue_automatic_adaptation_job(
             "attempted": True,
             "enqueued": False,
             "reason": "active_job",
+            "cooldown_reason": "active_job_exists",
+            "cooldown_scope": "automatic",
             "message": "automatic retraining skipped because another training job is active or queued",
             "active_job_count": len(active_jobs),
             "job_id": None,
@@ -2161,6 +2214,7 @@ def maybe_enqueue_automatic_adaptation_job(
         _parse_iso_datetime(job.get("finished_at"))
         for job in jobs
         if str(job.get("status", "")).lower() in _TERMINAL_RETRAINING_STATUSES
+        and _is_automatic_adaptation_retraining_job(job)
         and not _metadata_dict(job.get("metadata")).get("auto_cancelled_stale_backlog")
     ]
     latest_terminal_times = [value for value in latest_terminal_times if value is not None]
@@ -2173,7 +2227,17 @@ def maybe_enqueue_automatic_adaptation_job(
                 event_type="automatic_retraining_skipped_cooldown",
                 payload={"cooldown_seconds": cooldown_seconds, "remaining_seconds": remaining, "last_finished_at": last_finished.isoformat()},
             )
-            return {"attempted": True, "enqueued": False, "reason": "cooldown", "job_id": None, "cooldown_seconds": cooldown_seconds, "cooldown_remaining_seconds": remaining, "backlog_cleanup": backlog_cleanup}
+            return {
+                "attempted": True,
+                "enqueued": False,
+                "reason": "cooldown",
+                "cooldown_reason": "automatic_training_cadence",
+                "cooldown_scope": "automatic",
+                "job_id": None,
+                "cooldown_seconds": cooldown_seconds,
+                "cooldown_remaining_seconds": remaining,
+                "backlog_cleanup": backlog_cleanup,
+            }
 
     registry_payload = registry.load() if registry is not None else {"models": []}
     active_checkpoint_path = _active_checkpoint_path(registry_payload)
@@ -2193,7 +2257,7 @@ def maybe_enqueue_automatic_adaptation_job(
     job = submit_retraining_job(job_store=job_store, dataset_snapshot_ref="adaptation_readiness_green", run_config_ref="automatic_adaptation", output_dir=str(Path("artifacts") / "runs"))
     job = job_store.update_job(
         job_id=str(job["job_id"]),
-        metadata={"automatic_trigger": True, "readiness": readiness_payload, "cooldown_seconds": cooldown_seconds},
+        metadata={"automatic_trigger": True, "readiness": readiness_payload, "cooldown_seconds": cooldown_seconds, "cooldown_scope": "automatic"},
     )
     event_log.append(event_type="automatic_retraining_job_enqueued", payload={"job_id": str(job.get("job_id")), "cooldown_seconds": cooldown_seconds})
     return {"attempted": True, "enqueued": True, "reason": "ready", "job_id": str(job.get("job_id")), "job": job, "readiness": readiness_payload, "backlog_cleanup": backlog_cleanup}
@@ -2395,6 +2459,11 @@ def run_adaptation_retraining_job(
             allow_fresh_start=readiness_config.allow_fresh_start,
         )
 
+    parent_active_model_id, parent_active_model_id_reason = _resolve_resume_parent_active_model_id(
+        registry_payload=registry_payload,
+        resume_checkpoint_path=resume_selection.checkpoint_path,
+    )
+
     buffer = AdaptationBuffer(
         AdaptationBufferConfig(
             buffer_root=readiness_config.resolve_buffer_root(),
@@ -2471,6 +2540,13 @@ def run_adaptation_retraining_job(
             traceback.print_exc(file=log_handle)
         raise
     summary_payload = summary.to_dict() if isinstance(summary, TrainingRunSummary) else dict(summary)  # type: ignore[arg-type]
+    selection_gate_outcome = build_selection_gate_outcome(summary_payload)
+    if selection_gate_outcome is not None:
+        summary_payload["selection_gate_outcome"] = selection_gate_outcome
+        try:
+            (output_dir / "training_summary.json").write_text(json.dumps(summary_payload, indent=2, sort_keys=True), encoding="utf-8")
+        except OSError:
+            pass
     return {
         "run_dir": str(output_dir),
         "run_id": run_id,
@@ -2481,6 +2557,9 @@ def run_adaptation_retraining_job(
                 "best_overall_checkpoint": summary_payload.get("best_overall_checkpoint"),
                 "final_checkpoint": summary_payload.get("final_checkpoint"),
                 "selected_resume_checkpoint": resume_selection.to_dict(),
+                "selection_gate_outcome": selection_gate_outcome,
+                "parent_active_model_id": parent_active_model_id,
+                "parent_active_model_id_reason": parent_active_model_id_reason,
                 "dataset_counts": dict(manifest.counts),
                 "dataset_warnings": list(manifest.warnings),
                 "readiness": readiness_payload,
@@ -2759,6 +2838,37 @@ def _active_checkpoint_path(registry_payload: dict[str, object]) -> str | None:
             path = Path(str(item["path"]))
             return str(path) if path.exists() else None
     return None
+
+
+def _resolve_resume_parent_active_model_id(
+    *,
+    registry_payload: dict[str, object],
+    resume_checkpoint_path: str | None,
+) -> tuple[str | None, str | None]:
+    if not resume_checkpoint_path:
+        return None, "resume_checkpoint_missing"
+    active_id = _optional_str(registry_payload.get("active_model_id"))
+    if active_id is None:
+        return None, "active_model_id_missing"
+    models = registry_payload.get("models") if isinstance(registry_payload.get("models"), list) else []
+    active_record = next((item for item in models if isinstance(item, dict) and item.get("model_id") == active_id), None)
+    if active_record is None:
+        return None, "active_model_record_missing"
+    active_checkpoint_path = _optional_str(active_record.get("path"))
+    if active_checkpoint_path is None:
+        return None, "active_checkpoint_path_missing"
+    if _checkpoint_paths_match(active_checkpoint_path, resume_checkpoint_path):
+        return active_id, None
+    return None, "resume_checkpoint_not_active_model"
+
+
+def _checkpoint_paths_match(left: str | Path, right: str | Path) -> bool:
+    left_path = Path(left).expanduser()
+    right_path = Path(right).expanduser()
+    try:
+        return left_path.resolve(strict=False) == right_path.resolve(strict=False)
+    except OSError:
+        return str(left_path) == str(right_path)
 
 
 def _latest_best_checkpoint_path(*, registry_payload: dict[str, object], fallback_checkpoint: object) -> str | None:

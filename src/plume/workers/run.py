@@ -54,6 +54,35 @@ def _safe_status_update(store: WorkerStatusStore, **fields: object) -> str | Non
     except Exception as exc:
         return f"worker_status_update_failed: {exc}"
 
+
+def _normalize_loop_log_value(value: object) -> object:
+    if isinstance(value, dict):
+        normalized: dict[str, object] = {}
+        for key, item in value.items():
+            if key == "cooldown_remaining_seconds" and isinstance(item, (int, float)):
+                normalized[key] = int(float(item) // 60)
+            else:
+                normalized[key] = _normalize_loop_log_value(item)
+        return normalized
+    if isinstance(value, list):
+        return [_normalize_loop_log_value(item) for item in value]
+    return value
+
+
+def _loop_log_signature(result: dict[str, object]) -> str:
+    return json.dumps(_normalize_loop_log_value(result), sort_keys=True)
+
+
+def _should_log_loop_result(
+    *,
+    result: dict[str, object],
+    previous_signature: str | None,
+    log_every_iteration: bool,
+) -> tuple[bool, str]:
+    signature = _loop_log_signature(result)
+    return log_every_iteration or signature != previous_signature, signature
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Run queued plume worker jobs.")
     parser.add_argument("--kind", choices=("forecast", "retraining", "all"), required=True)
@@ -152,6 +181,8 @@ def main(argv: list[str] | None = None) -> int:
         raise ValueError("--interval-seconds must be non-negative")
 
     iteration = 0
+    previous_log_signature: str | None = None
+    log_every_iteration = _env_flag("PLUME_WORKER_LOG_EVERY_ITERATION", False)
     _safe_status_update(store, worker_id=worker_id, pid=os.getpid(), kind=args.kind, mode="loop", last_started_at=_now_iso(), iteration=iteration)
     try:
         while True:
@@ -160,15 +191,21 @@ def main(argv: list[str] | None = None) -> int:
             result = _run_selected(args)
             result_status, result_summary = _summarize_result(result)
             warning = _safe_status_update(store, worker_id=worker_id, pid=os.getpid(), kind=args.kind, mode="loop", last_finished_at=_now_iso(), last_heartbeat_at=_now_iso(), last_result_status=result_status, last_result_summary=result_summary, iteration=iteration, error_message=None)
-            payload = {"mode": "loop", "kind": args.kind, "iteration": iteration, "result": result}
-            if warning:
-                payload["worker_status_warning"] = warning
-            print(
-                json.dumps(
-                    payload,
-                    sort_keys=True,
-                )
+            should_log, previous_log_signature = _should_log_loop_result(
+                result=result,
+                previous_signature=previous_log_signature,
+                log_every_iteration=log_every_iteration,
             )
+            if should_log:
+                payload = {"mode": "loop", "kind": args.kind, "iteration": iteration, "result": result}
+                if warning:
+                    payload["worker_status_warning"] = warning
+                print(
+                    json.dumps(
+                        payload,
+                        sort_keys=True,
+                    )
+                )
             if args.max_iterations is not None and iteration >= args.max_iterations:
                 break
             time.sleep(args.interval_seconds)

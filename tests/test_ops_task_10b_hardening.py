@@ -143,6 +143,57 @@ def test_auto_enqueue_terminal_statuses_do_not_block(monkeypatch, tmp_path: Path
     assert jobs["cancelled"] == "cancelled"
 
 
+def test_auto_enqueue_blocks_on_automatic_cooldown_only(monkeypatch, tmp_path: Path):
+    config_dir = tmp_path / "configs"
+    _write_adaptation_config(config_dir, cooldown=3600)
+    now = datetime.now(UTC)
+    monkeypatch.setattr("plume.services.convlstm_operations.AdaptationReadinessService.evaluate", lambda *_a, **_k: Ready())
+    store = RetrainingJobStore(tmp_path / "jobs.json")
+    automatic = store.create_job(dataset_snapshot_ref="adaptation_readiness_green", run_config_ref="automatic_adaptation", output_dir=str(tmp_path / "runs"))
+    store.update_job(job_id=automatic["job_id"], metadata={"automatic_trigger": True})
+    store.update_job(job_id=automatic["job_id"], status="running", started_at=(now - timedelta(minutes=3)).isoformat())
+    store.update_job(job_id=automatic["job_id"], status="succeeded", finished_at=(now - timedelta(minutes=2)).isoformat(), metadata={"automatic_trigger": True})
+
+    result = maybe_enqueue_automatic_adaptation_job(
+        job_store=store,
+        event_log=OperationalEventLog(tmp_path / "events.jsonl"),
+        config_dir=config_dir,
+        registry=_registry(tmp_path / "registry.json"),
+        now=now,
+    )
+
+    assert result["enqueued"] is False
+    assert result["reason"] == "cooldown"
+    assert result["cooldown_scope"] == "automatic"
+    assert result["cooldown_reason"] == "automatic_training_cadence"
+    assert result["cooldown_remaining_seconds"] > 0
+
+
+def test_manual_cancelled_job_does_not_create_automatic_cooldown_status(monkeypatch, tmp_path: Path):
+    monkeypatch.setenv("PLUME_OPS_JOBS_PATH", str(tmp_path / "jobs.json"))
+    monkeypatch.setenv("PLUME_OPS_REGISTRY_PATH", str(tmp_path / "registry.json"))
+    monkeypatch.setenv("PLUME_OPS_STATE_PATH", str(tmp_path / "state.json"))
+    monkeypatch.setenv("PLUME_OPS_EVENTS_PATH", str(tmp_path / "events.jsonl"))
+    store = RetrainingJobStore(tmp_path / "jobs.json")
+    now = datetime.now(UTC)
+    manual = store.create_job(dataset_snapshot_ref="manual-dataset", run_config_ref=json.dumps({"manual_override": True}), output_dir=str(tmp_path / "runs"), job_id="manual-cancelled")
+    store.update_job(job_id=manual["job_id"], metadata={"manual_trigger": True})
+    store.update_job(job_id=manual["job_id"], status="running", started_at=(now - timedelta(minutes=2)).isoformat(), metadata={"manual_trigger": True})
+    store.update_job(job_id=manual["job_id"], status="cancelled", finished_at=(now - timedelta(minutes=1)).isoformat(), error_message="cancelled", metadata={"manual_trigger": True})
+    _registry(tmp_path / "registry.json")
+
+    payload = _adaptation_training_status()
+
+    assert payload["cooldown_scope"] == "automatic"
+    assert payload["cooldown_reason"] is None
+    assert payload["cooldown_remaining_seconds"] == 0
+    summary = payload["operator_summary"]
+    assert summary["latest_job_id"] == "manual-cancelled"
+    assert summary["latest_status"] == "cancelled"
+    assert summary["training_log_state"] == "unavailable"
+    assert summary["operator_message"] == "Latest adaptation training job was cancelled."
+
+
 def _automatic_job_payload(*, job_id: str, status: str, sequence: int, created_at: datetime, automatic: bool = True, manual: bool = False) -> dict[str, object]:
     metadata: dict[str, object] = {}
     if automatic:
@@ -277,9 +328,10 @@ def test_auto_enqueue_cooldown_and_readiness_block(monkeypatch, tmp_path: Path):
     config_dir = tmp_path / "configs"
     _write_adaptation_config(config_dir, cooldown=3600)
     store = RetrainingJobStore(tmp_path / "jobs.json")
-    job = store.create_job(dataset_snapshot_ref=None, run_config_ref=None, output_dir=str(tmp_path / "runs"))
-    store.update_job(job_id=job["job_id"], status="running", started_at=(datetime.now(UTC) - timedelta(minutes=2)).isoformat())
-    store.update_job(job_id=job["job_id"], status="succeeded", finished_at=(datetime.now(UTC) - timedelta(minutes=1)).isoformat())
+    job = store.create_job(dataset_snapshot_ref="adaptation_readiness_green", run_config_ref="automatic_adaptation", output_dir=str(tmp_path / "runs"))
+    store.update_job(job_id=job["job_id"], metadata={"automatic_trigger": True})
+    store.update_job(job_id=job["job_id"], status="running", started_at=(datetime.now(UTC) - timedelta(minutes=2)).isoformat(), metadata={"automatic_trigger": True})
+    store.update_job(job_id=job["job_id"], status="succeeded", finished_at=(datetime.now(UTC) - timedelta(minutes=1)).isoformat(), metadata={"automatic_trigger": True})
     monkeypatch.setattr("plume.services.convlstm_operations.AdaptationReadinessService.evaluate", lambda *_a, **_k: Ready())
 
     cooldown = maybe_enqueue_automatic_adaptation_job(job_store=store, event_log=OperationalEventLog(tmp_path / "events.jsonl"), config_dir=config_dir, registry=_registry(tmp_path / "registry.json"))
@@ -343,7 +395,7 @@ def test_training_status_running_empty_log_returns_initialized_line(monkeypatch,
     store.update_job(
         job_id=job["job_id"],
         status="running",
-        started_at="2026-01-01T00:00:00+00:00",
+        started_at=datetime.now(UTC).isoformat(),
         result_run_dir=str(run_dir),
         worker_pid=os.getpid(),
         metadata={
@@ -381,7 +433,7 @@ def test_training_status_running_relative_log_path_is_resolved(monkeypatch, tmp_
     store.update_job(
         job_id=job["job_id"],
         status="running",
-        started_at="2026-01-01T00:00:00+00:00",
+        started_at=datetime.now(UTC).isoformat(),
         result_run_dir=str(run_dir),
         worker_pid=os.getpid(),
         metadata={
@@ -397,6 +449,67 @@ def test_training_status_running_relative_log_path_is_resolved(monkeypatch, tmp_
     assert latest["log_available"] is True
     assert latest["log_tail"] == ["relative log line"]
     assert latest["log_file_path"] == str(relative_log_path)
+
+
+def test_training_status_operator_summary_no_jobs(monkeypatch, tmp_path: Path):
+    monkeypatch.setenv("PLUME_OPS_JOBS_PATH", str(tmp_path / "jobs.json"))
+    monkeypatch.setenv("PLUME_OPS_REGISTRY_PATH", str(tmp_path / "registry.json"))
+    monkeypatch.setenv("PLUME_OPS_STATE_PATH", str(tmp_path / "state.json"))
+    monkeypatch.setenv("PLUME_OPS_EVENTS_PATH", str(tmp_path / "events.jsonl"))
+    monkeypatch.setenv("PLUME_WORKER_STATUS_PATH", str(tmp_path / "worker_status.json"))
+    _registry(tmp_path / "registry.json")
+
+    summary = _adaptation_training_status()["operator_summary"]
+
+    assert summary["current_state"] == "idle"
+    assert summary["latest_job_id"] is None
+    assert summary["latest_job_role"] == "none"
+    assert summary["training_log_state"] == "unavailable"
+    assert summary["operator_message"] == "No adaptation training jobs have been recorded."
+
+
+def test_training_status_operator_summary_running_job(monkeypatch, tmp_path: Path):
+    monkeypatch.setenv("PLUME_OPS_JOBS_PATH", str(tmp_path / "jobs.json"))
+    monkeypatch.setenv("PLUME_OPS_REGISTRY_PATH", str(tmp_path / "registry.json"))
+    monkeypatch.setenv("PLUME_OPS_STATE_PATH", str(tmp_path / "state.json"))
+    monkeypatch.setenv("PLUME_OPS_EVENTS_PATH", str(tmp_path / "events.jsonl"))
+    worker_status = tmp_path / "worker_status.json"
+    worker_status.write_text(json.dumps({"worker_id": "worker-1", "last_result_status": "idle"}), encoding="utf-8")
+    monkeypatch.setenv("PLUME_WORKER_STATUS_PATH", str(worker_status))
+    store = RetrainingJobStore(tmp_path / "jobs.json")
+    run_dir = tmp_path / "runs" / "running"
+    run_dir.mkdir(parents=True)
+    log_path = run_dir / "training.log"
+    log_path.write_text("training started\n", encoding="utf-8")
+    job = store.create_job(dataset_snapshot_ref="adaptation_readiness_green", run_config_ref="automatic_adaptation", output_dir=str(tmp_path / "runs"), job_id="running-job")
+    store.update_job(
+        job_id=job["job_id"],
+        status="running",
+        started_at=datetime.now(UTC).isoformat(),
+        result_run_dir=str(run_dir),
+        metadata={
+            "automatic_trigger": True,
+            "adaptation": {
+                "selected_resume_checkpoint": {"checkpoint_path": "base.pt", "source": "active_checkpoint", "resume_mode": "model_only"},
+                "parent_active_model_id": "active-baseline",
+                "log_file_path": str(log_path),
+            },
+        },
+    )
+    (run_dir / "metrics.jsonl").write_text(json.dumps({"stage": "stage2", "global_epoch": 4, "val_loss": 0.2}) + "\n", encoding="utf-8")
+    _registry(tmp_path / "registry.json")
+
+    summary = _adaptation_training_status()["operator_summary"]
+
+    assert summary["current_state"] == "running"
+    assert summary["active_job_id"] == "running-job"
+    assert summary["latest_job_role"] == "active"
+    assert summary["selected_base_checkpoint_path"] == "base.pt"
+    assert summary["selected_base_model_id"] == "active-baseline"
+    assert summary["current_stage_name"] == "stage2"
+    assert summary["current_global_epoch"] == 4
+    assert summary["training_log_state"] == "available"
+    assert summary["worker_state"] == {"worker_id": "worker-1", "last_result_status": "idle"}
 
 
 def test_training_status_log_tail_runtime_cooldown_and_checkpoints(monkeypatch, tmp_path: Path):
@@ -415,6 +528,12 @@ def test_training_status_log_tail_runtime_cooldown_and_checkpoints(monkeypatch, 
         "best_overall_checkpoint": str(best),
         "final_checkpoint": str(final),
         "best_metrics": {"selection_score": 0.12, "stage_name": "stage2_autoregressive_teacher_forcing", "global_epoch": 3},
+        "selection_gate_summary": {
+            "enabled": True,
+            "reference_stage_name": "stage2_autoregressive_teacher_forcing",
+            "stage3_rejected_by_gates": True,
+            "rejection_reasons": ["rollout_weighted_mse exceeded allowed threshold"],
+        },
     }), encoding="utf-8")
     (run_dir / "metrics.jsonl").write_text(
         json.dumps({"stage": "stage1_direct_multihorizon", "global_epoch": 1, "val_loss": 0.4}) + "\n" +
@@ -424,7 +543,7 @@ def test_training_status_log_tail_runtime_cooldown_and_checkpoints(monkeypatch, 
     (run_dir / "training.log").write_text("\n".join(f"line {i}" for i in range(250)) + "\n", encoding="utf-8")
     job = store.create_job(dataset_snapshot_ref=None, run_config_ref=None, output_dir=str(tmp_path / "runs"), job_id="job-1")
     store.update_job(job_id=job["job_id"], status="running", started_at="2026-01-01T00:00:00+00:00", result_run_dir=str(run_dir), metadata={"automatic_trigger": True})
-    store.update_job(job_id=job["job_id"], status="succeeded", finished_at="2026-01-01T00:02:00+00:00", result_run_dir=str(run_dir), metadata={"automatic_trigger": True})
+    store.update_job(job_id=job["job_id"], status="succeeded", finished_at="2026-01-01T00:02:00+00:00", result_run_dir=str(run_dir), result_candidate_id="candidate-1", metadata={"automatic_trigger": True})
     _registry(tmp_path / "registry.json")
 
     payload = _adaptation_training_status()
@@ -449,6 +568,19 @@ def test_training_status_log_tail_runtime_cooldown_and_checkpoints(monkeypatch, 
     assert latest["training_metrics"]["val_rollout_plume_iou"] == 0.75
     assert latest["training_metrics"]["best_score"] == 0.12
     assert latest["training_metrics"]["best_stage"] == "stage2_autoregressive_teacher_forcing"
+    assert latest["selection_gate_outcome"]["stage3_rejected_by_gates"] is True
+    assert latest["selection_gate_outcome"]["promoted_stage_name"] == "stage2_autoregressive_teacher_forcing"
+    assert latest["selection_gate_outcome"]["rejection_reasons"] == ["rollout_weighted_mse exceeded allowed threshold"]
+    assert payload["selection_gate_outcome"] == latest["selection_gate_outcome"]
+    summary = payload["operator_summary"]
+    assert summary["latest_job_id"] == "job-1"
+    assert summary["latest_status"] == "succeeded"
+    assert summary["latest_job_role"] == "historical"
+    assert summary["result_candidate_id"] == "candidate-1"
+    assert summary["result_run_dir"] == str(run_dir)
+    assert summary["gate_outcome"] == latest["selection_gate_outcome"]
+    assert summary["training_log_state"] == "available"
+    assert summary["cooldown_scope"] == "automatic"
     assert payload["training_metrics"]["global_epoch"] == 3
 
 

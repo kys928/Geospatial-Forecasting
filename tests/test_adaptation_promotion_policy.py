@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -84,6 +86,147 @@ def _candidate(path: Path, metrics: dict[str, float] | None = None, *, status: s
             }
         },
     }
+
+
+def _torch_checkpoint_payload() -> dict[str, object]:
+    return {
+        "model_state_dict": {},
+        "model_contract": {
+            "model_name": promotion.ROBUST_MODEL_NAME,
+            "input_shape": promotion.EXPECTED_INPUT_SHAPE,
+            "output_shape": promotion.EXPECTED_OUTPUT_SHAPE,
+        },
+    }
+
+
+def test_checkpoint_compatibility_prefers_weights_only_torch_load(monkeypatch, tmp_path: Path):
+    checkpoint = tmp_path / "candidate.pt"
+    checkpoint.write_bytes(b"checkpoint")
+    calls: list[dict[str, object]] = []
+
+    def fake_load(path: Path, **kwargs: object) -> dict[str, object]:
+        calls.append({"path": path, **kwargs})
+        return _torch_checkpoint_payload()
+
+    torch = SimpleNamespace(load=fake_load)
+    monkeypatch.setitem(sys.modules, "torch", torch)
+    monkeypatch.setattr(promotion.importlib.util, "find_spec", lambda name: object() if name == "torch" else None)
+
+    result = promotion.check_adaptation_checkpoint_compatibility(
+        {"path": str(checkpoint)},
+        require_strict_torch=False,
+    )
+
+    assert result.compatible is True
+    assert result.auto_activation_allowed is True
+    assert calls == [{"path": checkpoint, "map_location": "cpu", "weights_only": True}]
+
+
+def test_checkpoint_compatibility_falls_back_for_legacy_torch_without_weights_only(monkeypatch, tmp_path: Path):
+    checkpoint = tmp_path / "candidate.pt"
+    checkpoint.write_bytes(b"checkpoint")
+    calls: list[dict[str, object]] = []
+
+    def fake_load(path: Path, **kwargs: object) -> dict[str, object]:
+        calls.append({"path": path, **kwargs})
+        if kwargs.get("weights_only") is True:
+            raise TypeError("weights_only is not supported")
+        return _torch_checkpoint_payload()
+
+    torch = SimpleNamespace(load=fake_load)
+    monkeypatch.setitem(sys.modules, "torch", torch)
+    monkeypatch.setattr(promotion.importlib.util, "find_spec", lambda name: object() if name == "torch" else None)
+
+    result = promotion.check_adaptation_checkpoint_compatibility(
+        {"path": str(checkpoint)},
+        require_strict_torch=False,
+    )
+
+    assert result.compatible is True
+    assert result.auto_activation_allowed is True
+    assert calls == [
+        {"path": checkpoint, "map_location": "cpu", "weights_only": True},
+        {"path": checkpoint, "map_location": "cpu"},
+    ]
+
+
+def test_checkpoint_compatibility_falls_back_for_known_weights_only_compatibility_error(monkeypatch, tmp_path: Path):
+    checkpoint = tmp_path / "candidate.pt"
+    checkpoint.write_bytes(b"checkpoint")
+    calls: list[dict[str, object]] = []
+
+    def fake_load(path: Path, **kwargs: object) -> dict[str, object]:
+        calls.append({"path": path, **kwargs})
+        if kwargs.get("weights_only") is True:
+            raise RuntimeError(
+                "Weights only load failed. Unsupported global: GLOBAL custom.Checkpoint. "
+                "Use torch.serialization.add_safe_globals to allowlist this class."
+            )
+        return _torch_checkpoint_payload()
+
+    torch = SimpleNamespace(load=fake_load)
+    monkeypatch.setitem(sys.modules, "torch", torch)
+    monkeypatch.setattr(promotion.importlib.util, "find_spec", lambda name: object() if name == "torch" else None)
+
+    result = promotion.check_adaptation_checkpoint_compatibility(
+        {"path": str(checkpoint)},
+        require_strict_torch=False,
+    )
+
+    assert result.compatible is True
+    assert result.auto_activation_allowed is True
+    assert calls == [
+        {"path": checkpoint, "map_location": "cpu", "weights_only": True},
+        {"path": checkpoint, "map_location": "cpu"},
+    ]
+
+
+def test_checkpoint_compatibility_does_not_fallback_for_arbitrary_weights_only_runtime_error(monkeypatch, tmp_path: Path):
+    checkpoint = tmp_path / "candidate.pt"
+    checkpoint.write_bytes(b"checkpoint")
+    calls: list[dict[str, object]] = []
+
+    def fake_load(path: Path, **kwargs: object) -> object:
+        calls.append({"path": path, **kwargs})
+        raise RuntimeError("transient storage read failed")
+
+    torch = SimpleNamespace(load=fake_load)
+    monkeypatch.setitem(sys.modules, "torch", torch)
+    monkeypatch.setattr(promotion.importlib.util, "find_spec", lambda name: object() if name == "torch" else None)
+
+    result = promotion.check_adaptation_checkpoint_compatibility(
+        {"path": str(checkpoint)},
+        require_strict_torch=False,
+    )
+
+    assert result.compatible is False
+    assert result.auto_activation_allowed is False
+    assert result.reasons == ["checkpoint_torch_load_failed:transient storage read failed"]
+    assert calls == [{"path": checkpoint, "map_location": "cpu", "weights_only": True}]
+
+
+def test_checkpoint_compatibility_reports_torch_load_failure_without_swallowing_corruption(monkeypatch, tmp_path: Path):
+    checkpoint = tmp_path / "candidate.pt"
+    checkpoint.write_bytes(b"not a checkpoint")
+    calls: list[dict[str, object]] = []
+
+    def fake_load(path: Path, **kwargs: object) -> object:
+        calls.append({"path": path, **kwargs})
+        raise RuntimeError("corrupt checkpoint")
+
+    torch = SimpleNamespace(load=fake_load)
+    monkeypatch.setitem(sys.modules, "torch", torch)
+    monkeypatch.setattr(promotion.importlib.util, "find_spec", lambda name: object() if name == "torch" else None)
+
+    result = promotion.check_adaptation_checkpoint_compatibility(
+        {"path": str(checkpoint)},
+        require_strict_torch=False,
+    )
+
+    assert result.compatible is False
+    assert result.auto_activation_allowed is False
+    assert result.reasons == ["checkpoint_torch_load_failed:corrupt checkpoint"]
+    assert calls == [{"path": checkpoint, "map_location": "cpu", "weights_only": True}]
 
 
 def test_promotion_classifies_clearly_better(monkeypatch, tmp_path: Path):

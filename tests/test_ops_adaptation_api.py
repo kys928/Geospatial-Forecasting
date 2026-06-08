@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from fastapi.testclient import TestClient
@@ -12,7 +13,7 @@ from plume.api.routes import ops as ops_routes
 from plume.services import adaptation_promotion as promotion
 from plume.services.adaptation_buffer import AdaptationBuffer, AdaptationBufferConfig
 from plume.services.adaptation_promotion import CompatibilityResult
-from plume.services.convlstm_operations import ModelRegistry
+from plume.services.convlstm_operations import ModelRegistry, RetrainingJobStore
 
 
 def _client(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> tuple[TestClient, dict[str, Path]]:
@@ -233,6 +234,50 @@ def test_ops_jobs_exposes_manual_training_job(monkeypatch, tmp_path: Path):
     assert response.status_code == 200
     jobs = client.get("/ops/jobs").json()["jobs"]
     assert jobs[0]["metadata"]["manual_trigger"] is True
+
+
+
+def test_manual_training_allowed_during_automatic_cooldown(monkeypatch, tmp_path: Path):
+    client, paths = _client(monkeypatch, tmp_path)
+    paths["state"].write_text(json.dumps({"phase": "collecting", "buffered_new_sample_count": 0}), encoding="utf-8")
+    monkeypatch.setenv("PLUME_OPS_AUTO_DISPATCH_WORKER", "false")
+    store = RetrainingJobStore(paths["jobs"])
+    now = datetime.now(UTC)
+    automatic = store.create_job(dataset_snapshot_ref="adaptation_readiness_green", run_config_ref="automatic_adaptation", output_dir=str(tmp_path / "runs"))
+    store.update_job(job_id=automatic["job_id"], metadata={"automatic_trigger": True})
+    store.update_job(job_id=automatic["job_id"], status="running", started_at=(now - timedelta(minutes=3)).isoformat(), metadata={"automatic_trigger": True})
+    store.update_job(job_id=automatic["job_id"], status="succeeded", finished_at=(now - timedelta(minutes=2)).isoformat(), metadata={"automatic_trigger": True})
+
+    response = client.post(
+        "/ops/retraining/trigger",
+        json={"manual_override": True, "dataset_snapshot_ref": "buffered_internal_dataset", "run_config_ref": "{}"},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["submitted"] is True
+    jobs = client.get("/ops/jobs").json()["jobs"]
+    manual = next(job for job in jobs if job["job_id"] == body["job"]["job_id"])
+    assert manual["metadata"]["manual_trigger"] is True
+
+
+def test_manual_training_blocked_when_active_job_exists(monkeypatch, tmp_path: Path):
+    client, paths = _client(monkeypatch, tmp_path)
+    paths["state"].write_text(json.dumps({"phase": "collecting", "buffered_new_sample_count": 0}), encoding="utf-8")
+    store = RetrainingJobStore(paths["jobs"])
+    active = store.create_job(dataset_snapshot_ref="adaptation_readiness_green", run_config_ref="automatic_adaptation", output_dir=str(tmp_path / "runs"))
+    store.update_job(job_id=active["job_id"], metadata={"automatic_trigger": True})
+
+    response = client.post(
+        "/ops/retraining/trigger",
+        json={"manual_override": True, "dataset_snapshot_ref": "buffered_internal_dataset", "run_config_ref": "{}"},
+    )
+
+    assert response.status_code == 409
+    detail = response.json()["detail"]
+    assert detail["cooldown_reason"] == "active_job_exists"
+    assert detail["cooldown_scope"] == "manual"
+    assert detail["active_job_ids"] == [active["job_id"]]
 
 
 def test_worker_waiting_manual_job_message_source(monkeypatch, tmp_path: Path):

@@ -51,9 +51,11 @@ from plume.services.convlstm_operations import (
     apply_adaptation_promotion_policy,
     delete_adaptation_checkpoint_file,
     approve_candidate,
+    build_selection_gate_outcome,
     dispatch_retraining_worker,
     evaluate_adaptation_candidate_for_registry,
     evaluate_retraining_readiness,
+    list_blocking_retraining_jobs,
     reject_candidate,
     rollback_to_previous_model,
     submit_retraining_job,
@@ -743,6 +745,108 @@ def _candidate_response(record: dict[str, object]) -> dict[str, object]:
     }
 
 
+def _active_training_job(jobs: list[dict[str, object]]) -> dict[str, object] | None:
+    active_statuses = {"queued", "waiting", "claimed", "starting", "running"}
+    active = [job for job in jobs if str(job.get("status", "")).lower() in active_statuses]
+    return max(active, key=lambda item: int(item.get("created_sequence", -1))) if active else None
+
+
+def _metadata_dict_value(metadata: object, key: str) -> dict[str, object] | None:
+    if not isinstance(metadata, dict):
+        return None
+    sources = [metadata]
+    for nested_key in ("adaptation", "adaptation_run", "training_summary"):
+        nested = metadata.get(nested_key)
+        if isinstance(nested, dict):
+            sources.append(nested)
+            nested_summary = nested.get("training_summary")
+            if isinstance(nested_summary, dict):
+                sources.append(nested_summary)
+    for source in sources:
+        value = source.get(key)
+        if isinstance(value, dict):
+            return dict(value)
+    return None
+
+
+def _training_log_state(*, latest: dict[str, object] | None, log_available: bool, stale: bool, log_file_path: object) -> str:
+    if latest is None:
+        return "unavailable"
+    if stale:
+        return "stale"
+    if log_available:
+        return "available"
+    if str(latest.get("status", "")).lower() in {"queued", "waiting", "claimed", "starting", "running"} and log_file_path:
+        return "initializing"
+    return "unavailable"
+
+
+def _operator_message(summary: dict[str, object]) -> str:
+    active_job_id = summary.get("active_job_id")
+    active_status = str(summary.get("active_status") or "").lower()
+    latest_status = str(summary.get("latest_status") or "").lower()
+    if active_job_id and active_status in {"queued", "waiting", "claimed", "starting", "running"}:
+        return f"Adaptation training job {active_job_id} is {active_status}."
+    if summary.get("cooldown_remaining_seconds"):
+        return "Automatic retraining is waiting for the configured cadence cooldown."
+    if latest_status == "succeeded" and summary.get("result_candidate_id"):
+        return f"Latest adaptation training succeeded and produced candidate {summary['result_candidate_id']}."
+    if latest_status == "cancelled":
+        return "Latest adaptation training job was cancelled."
+    if latest_status == "failed":
+        return "Latest adaptation training job failed; review error_message and training logs."
+    if summary.get("latest_job_id") is None:
+        return "No adaptation training jobs have been recorded."
+    return "Adaptation training status is available."
+
+
+def _build_operator_summary(
+    *,
+    latest: dict[str, object] | None,
+    active_job: dict[str, object] | None,
+    run_dir: object,
+    metadata: dict[str, object],
+    training_metrics: dict[str, object],
+    latest_metrics: dict[str, object],
+    selection_gate_outcome: object,
+    cooldown: dict[str, object],
+    log_available: bool,
+    stale: bool,
+    log_file_path: object,
+    worker_status: dict[str, object] | None,
+) -> dict[str, object]:
+    focus_job = active_job or latest
+    focus_metadata = focus_job.get("metadata") if isinstance(focus_job, dict) and isinstance(focus_job.get("metadata"), dict) else metadata
+    selected_resume = _metadata_dict_value(focus_metadata, "selected_resume_checkpoint")
+    latest_status = None if latest is None else str(latest.get("status"))
+    active_status = None if active_job is None else str(active_job.get("status"))
+    latest_job_role = "none" if latest is None else ("active" if active_job is not None and latest.get("job_id") == active_job.get("job_id") else "historical")
+    metrics_source = latest_metrics if latest_metrics else training_metrics
+    summary: dict[str, object] = {
+        "current_state": active_status or latest_status or "idle",
+        "active_job_id": None if active_job is None else active_job.get("job_id"),
+        "active_status": active_status,
+        "latest_job_id": None if latest is None else latest.get("job_id"),
+        "latest_status": latest_status,
+        "latest_job_role": latest_job_role,
+        "selected_base_checkpoint_path": selected_resume.get("checkpoint_path") if isinstance(selected_resume, dict) else None,
+        "selected_base_model_id": _metadata_value(focus_metadata, "parent_active_model_id"),
+        "current_stage_name": metrics_source.get("stage_name") or metrics_source.get("stage"),
+        "current_global_epoch": metrics_source.get("global_epoch"),
+        "latest_metrics": metrics_source,
+        "result_candidate_id": None if focus_job is None else focus_job.get("result_candidate_id"),
+        "result_run_dir": run_dir,
+        "gate_outcome": selection_gate_outcome if isinstance(selection_gate_outcome, dict) else None,
+        "cooldown_remaining_seconds": cooldown.get("cooldown_remaining_seconds"),
+        "cooldown_seconds": cooldown.get("cooldown_seconds"),
+        "cooldown_reason": cooldown.get("cooldown_reason"),
+        "cooldown_scope": cooldown.get("cooldown_scope"),
+        "training_log_state": _training_log_state(latest=focus_job, log_available=log_available, stale=stale, log_file_path=log_file_path),
+        "worker_state": worker_status,
+    }
+    summary["operator_message"] = _operator_message(summary)
+    return summary
+
 def _adaptation_training_status() -> dict[str, object]:
     jobs_store = RetrainingJobStore(_ops_paths()["jobs"])
     recovery_result = try_recover_stale_active_jobs(jobs_store)
@@ -753,12 +857,19 @@ def _adaptation_training_status() -> dict[str, object]:
         counts[status] = counts.get(status, 0) + 1
     adaptation_jobs = [job for job in jobs if _job_has_adaptation_metadata(job)] or jobs
     latest = max(adaptation_jobs, key=lambda item: int(item.get("created_sequence", -1))) if adaptation_jobs else None
+    active_job = _active_training_job(adaptation_jobs)
     manual_jobs = [job for job in adaptation_jobs if isinstance(job.get("metadata"), dict) and job.get("metadata", {}).get("manual_trigger") is True]
     latest_manual = max(manual_jobs, key=lambda item: int(item.get("created_sequence", -1))) if manual_jobs else None
     metadata = latest.get("metadata") if isinstance(latest, dict) and isinstance(latest.get("metadata"), dict) else {}
     readiness = metadata.get("readiness") or metadata.get("readiness_snapshot") or metadata.get("adaptation_readiness") if isinstance(metadata, dict) else None
     run_dir = None if latest is None else latest.get("result_run_dir") or latest.get("output_dir") or _metadata_value(metadata, "output_dir")
     training_summary = _load_training_summary_from_run_dir(run_dir)
+    metadata_training_summary = _metadata_training_summary(metadata)
+    if not training_summary and metadata_training_summary:
+        training_summary = metadata_training_summary
+    selection_gate_outcome = training_summary.get("selection_gate_outcome") if isinstance(training_summary.get("selection_gate_outcome"), dict) else build_selection_gate_outcome(training_summary)
+    if isinstance(selection_gate_outcome, dict):
+        training_summary = {**training_summary, "selection_gate_outcome": selection_gate_outcome}
     latest_metrics = _load_latest_metrics_from_run_dir(run_dir)
     training_metrics = _training_metrics_from_artifacts(training_summary, latest_metrics)
     best_checkpoint = training_summary.get("best_overall_checkpoint") or _metadata_value(metadata, "best_overall_checkpoint")
@@ -821,6 +932,7 @@ def _adaptation_training_status() -> dict[str, object]:
             "trigger_source": _trigger_source(latest_enriched),
             "training_summary": training_summary,
             "training_metrics": training_metrics,
+            "selection_gate_outcome": selection_gate_outcome if isinstance(selection_gate_outcome, dict) else None,
         })
         if started_dt and finished_dt:
             latest_enriched["runtime_seconds"] = max(0, int((finished_dt - started_dt).total_seconds()))
@@ -829,17 +941,34 @@ def _adaptation_training_status() -> dict[str, object]:
             latest_enriched["elapsed_seconds"] = max(0, int((datetime.now(timezone.utc) - started_dt).total_seconds()))
             latest_enriched["runtime_seconds"] = None
     cooldown = _cooldown_status(jobs, int(_load_adaptation_config("configs").min_seconds_between_training_runs))
+    worker_status = WorkerStatusStore(_worker_status_path()).read_status()
+    operator_summary = _build_operator_summary(
+        latest=latest_enriched,
+        active_job=active_job,
+        run_dir=run_dir,
+        metadata=metadata,
+        training_metrics=training_metrics,
+        latest_metrics=latest_metrics,
+        selection_gate_outcome=selection_gate_outcome,
+        cooldown=cooldown,
+        log_available=log_available,
+        stale=stale,
+        log_file_path=log_file_path,
+        worker_status=worker_status,
+    )
     return {
         "job_counts": counts,
         "latest_job": latest_enriched,
         "latest_manual_job": latest_manual,
         "latest_readiness_snapshot": readiness if isinstance(readiness, dict) else None,
+        "operator_summary": operator_summary,
         "candidate_model_id": None if latest is None else latest.get("result_candidate_id") or (metadata or {}).get("candidate_model_id"),
         "output_dir": None if latest is None else latest.get("output_dir"),
         "result_run_dir": run_dir,
         "best_overall_checkpoint": str(best_checkpoint) if best_checkpoint else None,
         "final_checkpoint": str(final_checkpoint) if final_checkpoint else None,
         "training_metrics": training_metrics,
+        "selection_gate_outcome": selection_gate_outcome if isinstance(selection_gate_outcome, dict) else None,
         **cooldown,
         "error_message": None if latest is None else latest.get("error_message"),
         "job_store_busy": bool(recovery_result.get("job_store_busy")),
@@ -849,10 +978,12 @@ def _adaptation_training_status() -> dict[str, object]:
 
 
 def _cooldown_status(jobs: list[dict[str, object]], cooldown_seconds: int) -> dict[str, object]:
+    active_jobs = [job for job in jobs if str(job.get("status", "")).lower() in {"queued", "waiting", "claimed", "starting", "running"}]
     terminal_times = [
         _parse_iso(job.get("finished_at"))
         for job in jobs
-        if str(job.get("status", "")).lower() in {"succeeded", "failed", "cancelled"}
+        if str(job.get("status", "")).lower() in {"succeeded", "completed", "failed", "cancelled"}
+        and _is_automatic_training_job_for_cooldown(job)
     ]
     terminal_times = [value for value in terminal_times if value is not None]
     if not terminal_times or cooldown_seconds <= 0:
@@ -861,6 +992,8 @@ def _cooldown_status(jobs: list[dict[str, object]], cooldown_seconds: int) -> di
             "cooldown_remaining_seconds": 0,
             "next_automatic_training_eligible_at": None,
             "cooldown_source": "min_seconds_between_training_runs",
+            "cooldown_scope": "automatic",
+            "cooldown_reason": "active_job_exists" if active_jobs else None,
         }
     last_finished = max(terminal_times)
     eligible_at = last_finished + timedelta(seconds=cooldown_seconds)
@@ -870,7 +1003,20 @@ def _cooldown_status(jobs: list[dict[str, object]], cooldown_seconds: int) -> di
         "cooldown_remaining_seconds": remaining,
         "next_automatic_training_eligible_at": eligible_at.isoformat() if remaining > 0 else None,
         "cooldown_source": "min_seconds_between_training_runs",
+        "cooldown_scope": "automatic",
+        "cooldown_reason": "active_job_exists" if active_jobs else ("automatic_training_cadence" if remaining > 0 else None),
     }
+
+
+def _is_automatic_training_job_for_cooldown(job: dict[str, object]) -> bool:
+    metadata = job.get("metadata") if isinstance(job.get("metadata"), dict) else {}
+    if metadata.get("manual_trigger") is True or metadata.get("manual_override") is True:
+        return False
+    return (
+        metadata.get("automatic_trigger") is True
+        or str(job.get("run_config_ref") or "") == "automatic_adaptation"
+        or str(job.get("dataset_snapshot_ref") or "") == "adaptation_readiness_green"
+    )
 
 
 def _trigger_source(job: dict[str, object] | None) -> str:
@@ -881,13 +1027,30 @@ def _trigger_source(job: dict[str, object] | None) -> str:
         return "automatic"
     return "unknown"
 
+def _metadata_training_summary(metadata: object) -> dict[str, object]:
+    if not isinstance(metadata, dict):
+        return {}
+    sources = [metadata]
+    adaptation = metadata.get("adaptation")
+    adaptation_run = metadata.get("adaptation_run")
+    if isinstance(adaptation, dict):
+        sources.append(adaptation)
+    if isinstance(adaptation_run, dict):
+        sources.append(adaptation_run)
+    for source in sources:
+        summary = source.get("training_summary")
+        if isinstance(summary, dict):
+            return dict(summary)
+    return {}
+
+
 def _metadata_value(metadata: object, key: str) -> str | None:
     if not isinstance(metadata, dict):
         return None
     value = metadata.get(key)
     if isinstance(value, str):
         return value
-    for nested_key in ("training_summary", "run_artifacts", "adaptation_run"):
+    for nested_key in ("adaptation", "training_summary", "run_artifacts", "adaptation_run"):
         nested = metadata.get(nested_key)
         if isinstance(nested, dict) and isinstance(nested.get(key), str):
             return str(nested[key])
@@ -1214,6 +1377,17 @@ def register_ops_routes(app: FastAPI, *, forecast_service, dispatch_worker=dispa
             if not policy_check["should_trigger"]:
                 raise HTTPException(status_code=409, detail={"message": "Retraining policy check failed", "policy_check": policy_check})
             job_store = RetrainingJobStore(paths["jobs"])
+            blocking_jobs = list_blocking_retraining_jobs(job_store.list_jobs())
+            if payload.manual_override and blocking_jobs:
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "message": "Manual retraining blocked because another training job is active or queued",
+                        "cooldown_reason": "active_job_exists",
+                        "cooldown_scope": "manual",
+                        "active_job_ids": [str(job.get("job_id")) for job in blocking_jobs],
+                    },
+                )
             job = submit_retraining_job(
                 job_store=job_store,
                 dataset_snapshot_ref=payload.dataset_snapshot_ref,

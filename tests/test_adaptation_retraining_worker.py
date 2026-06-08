@@ -7,7 +7,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from plume.services.convlstm_operations import ModelRegistry, OperationalState, OperationalStateStore, RetrainingJobStore
+from plume.services.convlstm_operations import ModelRegistry, OperationalState, OperationalStateStore, RetrainingJobStore, build_selection_gate_outcome
 from plume.training.three_stage_adaptation_trainer import TrainingRunSummary
 from plume.workers.retraining_worker import run_retraining_worker_once
 
@@ -153,6 +153,47 @@ def _mock_trainer(monkeypatch):
     return calls
 
 
+
+def test_selection_gate_outcome_summarizes_stage3_rejection() -> None:
+    outcome = build_selection_gate_outcome(
+        {
+            "best_overall_checkpoint": "best_overall_full_checkpoint.pt",
+            "best_metrics": {"stage_name": "stage2_autoregressive_teacher_forcing"},
+            "selection_gate_summary": {
+                "enabled": True,
+                "reference_stage_name": "stage2_autoregressive_teacher_forcing",
+                "stage3_rejected_by_gates": True,
+                "rejection_reasons": ["rollout_weighted_mse exceeded allowed threshold"],
+            },
+        }
+    )
+
+    assert outcome == {
+        "enabled": True,
+        "stage3_rejected_by_gates": True,
+        "promoted_stage_name": "stage2_autoregressive_teacher_forcing",
+        "promoted_checkpoint_kind": "best_overall",
+        "rejection_reasons": ["rollout_weighted_mse exceeded allowed threshold"],
+        "operator_message": "Stage 3 was rejected by safety gates; promoted the best accepted stage 2 checkpoint.",
+    }
+
+
+def test_selection_gate_outcome_reports_enabled_without_rejection() -> None:
+    outcome = build_selection_gate_outcome(
+        {
+            "best_overall_checkpoint": "best_overall_full_checkpoint.pt",
+            "best_metrics": {"stage_name": "stage3_robust_finetune"},
+            "selection_gate_summary": {"enabled": True, "stage3_rejected_by_gates": False, "rejection_reasons": []},
+        }
+    )
+
+    assert outcome is not None
+    assert outcome["enabled"] is True
+    assert outcome["stage3_rejected_by_gates"] is False
+    assert outcome["promoted_stage_name"] == "stage3_robust_finetune"
+    assert outcome["promoted_checkpoint_kind"] == "best_overall"
+
+
 def test_worker_does_not_train_when_readiness_not_green(monkeypatch, tmp_path: Path):
     _buffer(tmp_path / "buffer")
     config_dir = tmp_path / "configs"
@@ -195,12 +236,17 @@ def test_worker_uses_active_checkpoint_when_available(monkeypatch, tmp_path: Pat
     config_dir = _seed(tmp_path, active_checkpoint=ckpt, latest_checkpoint=_checkpoint(tmp_path / "latest.pt"))
     _mock_trainer(monkeypatch)
 
-    _run(tmp_path, config_dir)
+    result = _run(tmp_path, config_dir)
 
     job = RetrainingJobStore(tmp_path / "jobs.json").latest_job()
-    selected = job["metadata"]["adaptation"]["selected_resume_checkpoint"]
+    adaptation_metadata = job["metadata"]["adaptation"]
+    selected = adaptation_metadata["selected_resume_checkpoint"]
     assert selected["source"] == "active_checkpoint"
     assert selected["checkpoint_path"] == str(ckpt)
+    assert adaptation_metadata["parent_active_model_id"] == "active"
+    assert adaptation_metadata["parent_active_model_id_reason"] is None
+    assert result["candidate"]["parent_active_model_id"] == "active"
+    assert result["candidate"]["adaptation_run"]["parent_active_model_id"] == "active"
 
 
 def test_worker_falls_back_to_latest_best_checkpoint(monkeypatch, tmp_path: Path):
@@ -209,12 +255,17 @@ def test_worker_falls_back_to_latest_best_checkpoint(monkeypatch, tmp_path: Path
     config_dir = _seed(tmp_path, active_checkpoint=missing_active, latest_checkpoint=latest)
     _mock_trainer(monkeypatch)
 
-    _run(tmp_path, config_dir)
+    result = _run(tmp_path, config_dir)
 
     job = RetrainingJobStore(tmp_path / "jobs.json").latest_job()
-    selected = job["metadata"]["adaptation"]["selected_resume_checkpoint"]
+    adaptation_metadata = job["metadata"]["adaptation"]
+    selected = adaptation_metadata["selected_resume_checkpoint"]
     assert selected["source"] == "latest_best_checkpoint"
     assert selected["checkpoint_path"] == str(latest)
+    assert adaptation_metadata["parent_active_model_id"] is None
+    assert adaptation_metadata["parent_active_model_id_reason"] == "resume_checkpoint_not_active_model"
+    assert result["candidate"]["parent_active_model_id"] is None
+    assert result["candidate"]["adaptation_run"]["parent_active_model_id_reason"] == "resume_checkpoint_not_active_model"
 
 
 def test_worker_fails_or_defers_when_no_checkpoint_and_fresh_start_disabled(monkeypatch, tmp_path: Path):
@@ -241,6 +292,54 @@ def test_worker_records_candidate_checkpoint_after_success(monkeypatch, tmp_path
     registry = ModelRegistry(tmp_path / "registry.json").load()
     assert registry["active_model_id"] == "active"
     assert result["candidate"]["status"] == "candidate"
+
+
+def test_worker_preserves_selection_gate_outcome_in_summary_and_candidate(monkeypatch, tmp_path: Path):
+    ckpt = _checkpoint(tmp_path / "active.pt")
+    config_dir = _seed(tmp_path, active_checkpoint=ckpt)
+
+    def fake_train_three_stage_adaptation(**kwargs):
+        out = Path(kwargs["output_dir"])
+        out.mkdir(parents=True, exist_ok=True)
+        best = out / "best_overall_full_checkpoint.pt"
+        final = out / "final_full_checkpoint.pt"
+        best.write_bytes(b"best")
+        final.write_bytes(b"final")
+        summary = TrainingRunSummary(
+            run_name=out.name,
+            created_at="2026-01-01T00:00:00Z",
+            finished_at="2026-01-01T00:01:00Z",
+            status="completed",
+            best_overall_checkpoint=str(best),
+            final_checkpoint=str(final),
+            best_metrics={"selection_score": 0.1, "stage_name": "stage2_autoregressive_teacher_forcing"},
+            dataset_counts={"train_total": 1, "val_total": 1},
+            resume_checkpoint_path=str(kwargs.get("resume_checkpoint_path")),
+            resume_mode=str(kwargs.get("resume_mode")),
+            selection_gate_summary={
+                "enabled": True,
+                "reference_stage_name": "stage2_autoregressive_teacher_forcing",
+                "stage3_rejected_by_gates": True,
+                "rejection_reasons": ["t4_weighted_mse exceeded allowed threshold"],
+            },
+        )
+        (out / "training_summary.json").write_text(json.dumps(summary.to_dict()), encoding="utf-8")
+        return summary
+
+    monkeypatch.setattr("plume.services.convlstm_operations._validate_adaptation_resume_checkpoint", lambda _path: None)
+    monkeypatch.setattr("plume.services.convlstm_operations.train_three_stage_adaptation", fake_train_three_stage_adaptation)
+
+    result = _run(tmp_path, config_dir)
+
+    job = RetrainingJobStore(tmp_path / "jobs.json").latest_job()
+    outcome = job["metadata"]["adaptation"]["selection_gate_outcome"]
+    assert outcome["stage3_rejected_by_gates"] is True
+    assert outcome["promoted_stage_name"] == "stage2_autoregressive_teacher_forcing"
+    assert outcome["rejection_reasons"] == ["t4_weighted_mse exceeded allowed threshold"]
+    persisted_summary = json.loads((Path(job["result_run_dir"]) / "training_summary.json").read_text(encoding="utf-8"))
+    assert persisted_summary["selection_gate_outcome"] == outcome
+    assert result["candidate"]["adaptation_run"]["selection_gate_outcome"] == outcome
+    assert result["candidate"]["adaptation_run"]["training_summary"]["selection_gate_outcome"] == outcome
 
 
 def test_worker_records_failure_on_trainer_exception(monkeypatch, tmp_path: Path):
@@ -318,6 +417,26 @@ def test_worker_claims_queued_manual_training_job(monkeypatch, tmp_path: Path):
     assert result["claimed"] is True
     assert result["status"] == "succeeded"
     assert len(calls) == 1
+
+
+def test_manual_training_records_active_parent_model_lineage(monkeypatch, tmp_path: Path):
+    monkeypatch.setattr("plume.services.convlstm_operations._validate_adaptation_resume_checkpoint", lambda _path: None)
+    ckpt = _checkpoint(tmp_path / "active.pt")
+    config_dir = _manual_seed(tmp_path, status="queued", checkpoint=ckpt)
+    _mock_trainer(monkeypatch)
+
+    result = _run(tmp_path, config_dir)
+
+    job = RetrainingJobStore(tmp_path / "jobs.json").latest_job()
+    adaptation_metadata = job["metadata"]["adaptation"]
+    assert adaptation_metadata["selected_resume_checkpoint"] == {
+        "checkpoint_path": str(ckpt),
+        "source": "manual_override",
+        "resume_mode": "model_only",
+    }
+    assert adaptation_metadata["parent_active_model_id"] == "active"
+    assert adaptation_metadata["parent_active_model_id_reason"] is None
+    assert result["candidate"]["parent_active_model_id"] == "active"
 
 
 def test_manual_training_bypasses_adaptation_readiness_gate(monkeypatch, tmp_path: Path):
