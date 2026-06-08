@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 import importlib.util
+import math
 
 if importlib.util.find_spec("torch") is None:
     torch = None
@@ -123,6 +124,8 @@ class RobustMultiStepConvLSTMForecaster(nn.Module):
         activation = self.output_activation.lower() if isinstance(self.output_activation, str) else self.output_activation
         if activation == "softplus":
             return F.softplus(x)
+        if activation == "shifted_softplus":
+            return F.softplus(x) - x.new_tensor(math.log(2.0))
         if activation == "relu":
             return torch.relu(x)
         if activation in {None, "none", "linear"}:
