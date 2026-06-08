@@ -170,3 +170,65 @@ def test_ops_adaptation_check_now_uses_same_wiring(monkeypatch: pytest.MonkeyPat
     assert captured["registry"] is not None
     assert captured["registry"]["models"][0]["model_id"] == "candidate"
     assert captured["last_adaptation_training_at"] == expected
+
+
+def test_ops_adaptation_readiness_reports_busy_when_stale_recovery_lock_busy(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    client, _paths = _client(monkeypatch, tmp_path)
+
+    def fake_evaluate(self, *args: object, **kwargs: object) -> FakeReadinessResult:
+        return FakeReadinessResult()
+
+    def busy_recovery(self, *args: object, **kwargs: object) -> dict[str, object]:
+        raise RuntimeError(f"Could not acquire retraining job lock: {self.lock_path}")
+
+    monkeypatch.setattr(ops_routes.AdaptationReadinessService, "evaluate", fake_evaluate)
+    monkeypatch.setattr("plume.services.convlstm_operations.RetrainingJobStore.recover_stale_active_jobs", busy_recovery)
+
+    response = client.get("/ops/adaptation/readiness")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["job_store_busy"] is True
+    assert body["recovery_skipped_reason"] == "lock_busy"
+    assert any("Retraining job store busy" in warning for warning in body["warnings"])
+
+
+def test_ops_adaptation_training_status_reports_busy_when_stale_recovery_lock_busy(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    client, paths = _client(monkeypatch, tmp_path)
+    _write_jobs(paths["jobs"], [_adaptation_job("waiting", "2026-01-01T00:00:00Z")])
+
+    def busy_recovery(self, *args: object, **kwargs: object) -> dict[str, object]:
+        raise RuntimeError(f"Could not acquire retraining job lock: {self.lock_path}")
+
+    monkeypatch.setattr("plume.services.convlstm_operations.RetrainingJobStore.recover_stale_active_jobs", busy_recovery)
+
+    response = client.get("/ops/adaptation/training/status")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["job_store_busy"] is True
+    assert body["recovery_skipped_reason"] == "lock_busy"
+    assert body["job_counts"]["waiting"] == 1
+
+
+def test_ops_adaptation_readiness_still_raises_unrelated_recovery_errors(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    client, _paths = _client(monkeypatch, tmp_path)
+
+    def unrelated_recovery(self, *args: object, **kwargs: object) -> dict[str, object]:
+        raise RuntimeError("unexpected recovery failure")
+
+    monkeypatch.setattr("plume.services.convlstm_operations.RetrainingJobStore.recover_stale_active_jobs", unrelated_recovery)
+
+    response = client.get("/ops/adaptation/readiness")
+
+    assert response.status_code == 400
+    assert "unexpected recovery failure" in response.json()["detail"]

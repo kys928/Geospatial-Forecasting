@@ -1969,16 +1969,62 @@ def _automatic_backlog_stale_seconds() -> int:
     return 900
 
 
+def _is_retraining_job_lock_contention(exc: Exception) -> bool:
+    return isinstance(exc, RuntimeError) and "Could not acquire retraining job lock:" in str(exc)
+
+
+def try_recover_stale_active_jobs(
+    job_store: RetrainingJobStore,
+    *,
+    stale_after_seconds: float | None = None,
+    now: datetime | None = None,
+) -> dict[str, object]:
+    """Recover stale active jobs without making read/status paths lock-fragile."""
+    try:
+        result = job_store.recover_stale_active_jobs(stale_after_seconds=stale_after_seconds, now=now)
+        return {**result, "job_store_busy": False, "recovery_skipped_reason": None}
+    except Exception as exc:
+        if not _is_retraining_job_lock_contention(exc):
+            raise
+        threshold = _retraining_active_stale_seconds(stale_after_seconds)
+        return {
+            "recovered_count": 0,
+            "recovered_job_ids": [],
+            "recovered_jobs": [],
+            "reason": "stale active retraining recovery skipped because retraining job store is busy",
+            "stale_after_seconds": threshold,
+            "job_store_busy": True,
+            "recovery_skipped_reason": "lock_busy",
+        }
+
+
 def _is_automatic_adaptation_retraining_job(job: dict[str, object]) -> bool:
     if _is_manual_retraining_job(job):
         return False
     metadata = _metadata_dict(job.get("metadata"))
+    adaptation_metadata = metadata.get("adaptation")
+    output_dir = str(job.get("output_dir") or "")
+    normalized_output = output_dir.replace("\\", "/").lstrip("./")
+    output_under_artifact_runs = (
+        normalized_output.startswith("artifacts/runs/retrain-job-")
+        or "/artifacts/runs/retrain-job-" in f"/{normalized_output}"
+    )
     markers = [
         metadata.get("automatic_trigger") is True,
+        adaptation_metadata is not None,
         str(job.get("run_config_ref") or "") == "automatic_adaptation",
         str(job.get("dataset_snapshot_ref") or "") == "adaptation_readiness_green",
+        str(job.get("dataset_snapshot_ref") or "") == "buffered_internal_dataset",
+        output_under_artifact_runs,
     ]
     return any(markers)
+
+
+def _waiting_job_has_live_or_claimed_worker(job: dict[str, object]) -> bool:
+    metadata = _metadata_dict(job.get("metadata"))
+    if metadata.get("worker_claimed") is True:
+        return True
+    return _pid_appears_alive(job.get("worker_pid") or metadata.get("worker_pid"))
 
 
 def _automatic_backlog_anchor(job: dict[str, object]) -> datetime | None:
@@ -2009,6 +2055,8 @@ def cleanup_stale_automatic_retraining_backlog(
             continue
         if not _is_automatic_adaptation_retraining_job(job):
             continue
+        if status == "waiting" and _waiting_job_has_live_or_claimed_worker(job):
+            continue
         anchor = _automatic_backlog_anchor(job)
         if anchor is None:
             continue
@@ -2022,20 +2070,26 @@ def cleanup_stale_automatic_retraining_backlog(
             job.get("metadata"),
             f"Automatic retraining job {message}.",
         )
-        metadata = _merge_job_metadata(
-            metadata,
-            {
-                "auto_cancelled_stale_backlog": True,
-                "auto_cancelled_at": finished_at,
-                "auto_cancel_reason": message,
-                "stale_after_seconds": threshold,
-            },
-        )
+        metadata_update: dict[str, object] = {
+            "auto_cancelled_stale_backlog": True,
+            "auto_cancelled_at": finished_at,
+            "auto_cancel_reason": message,
+            "stale_after_seconds": threshold,
+        }
+        if status == "waiting":
+            metadata_update.update(
+                {
+                    "stale_waiting_backlog_recovered": True,
+                    "stale_waiting_backlog_recovered_at": finished_at,
+                }
+            )
+        metadata = _merge_job_metadata(metadata, metadata_update)
         cancelled.append(
             job_store.update_job(
                 job_id=job_id,
                 status="cancelled",
                 finished_at=finished_at,
+                updated_at=finished_at,
                 error_message=message,
                 metadata=metadata,
             )
