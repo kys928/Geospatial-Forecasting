@@ -241,6 +241,7 @@ def test_ops_retraining_trigger_respects_policy(monkeypatch, tmp_path: Path):
     assert blocked.status_code == 409
     assert blocked.json()["detail"]["message"] == "Retraining policy check failed"
 
+    Path(env["PLUME_OPS_JOBS_PATH"]).write_text(json.dumps({"jobs": [], "next_sequence": 1}), encoding="utf-8")
     allowed = client.post(
         "/ops/retraining/trigger",
         json={"manual_override": True, "dataset_snapshot_ref": "snapshot://manual", "run_config_ref": '{"epochs": 1}'},

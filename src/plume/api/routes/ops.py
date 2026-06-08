@@ -55,6 +55,7 @@ from plume.services.convlstm_operations import (
     dispatch_retraining_worker,
     evaluate_adaptation_candidate_for_registry,
     evaluate_retraining_readiness,
+    list_blocking_retraining_jobs,
     reject_candidate,
     rollback_to_previous_model,
     submit_retraining_job,
@@ -858,10 +859,12 @@ def _adaptation_training_status() -> dict[str, object]:
 
 
 def _cooldown_status(jobs: list[dict[str, object]], cooldown_seconds: int) -> dict[str, object]:
+    active_jobs = [job for job in jobs if str(job.get("status", "")).lower() in {"queued", "waiting", "claimed", "starting", "running"}]
     terminal_times = [
         _parse_iso(job.get("finished_at"))
         for job in jobs
-        if str(job.get("status", "")).lower() in {"succeeded", "failed", "cancelled"}
+        if str(job.get("status", "")).lower() in {"succeeded", "completed", "failed", "cancelled"}
+        and _is_automatic_training_job_for_cooldown(job)
     ]
     terminal_times = [value for value in terminal_times if value is not None]
     if not terminal_times or cooldown_seconds <= 0:
@@ -870,6 +873,8 @@ def _cooldown_status(jobs: list[dict[str, object]], cooldown_seconds: int) -> di
             "cooldown_remaining_seconds": 0,
             "next_automatic_training_eligible_at": None,
             "cooldown_source": "min_seconds_between_training_runs",
+            "cooldown_scope": "automatic",
+            "cooldown_reason": "active_job_exists" if active_jobs else None,
         }
     last_finished = max(terminal_times)
     eligible_at = last_finished + timedelta(seconds=cooldown_seconds)
@@ -879,7 +884,20 @@ def _cooldown_status(jobs: list[dict[str, object]], cooldown_seconds: int) -> di
         "cooldown_remaining_seconds": remaining,
         "next_automatic_training_eligible_at": eligible_at.isoformat() if remaining > 0 else None,
         "cooldown_source": "min_seconds_between_training_runs",
+        "cooldown_scope": "automatic",
+        "cooldown_reason": "active_job_exists" if active_jobs else ("automatic_training_cadence" if remaining > 0 else None),
     }
+
+
+def _is_automatic_training_job_for_cooldown(job: dict[str, object]) -> bool:
+    metadata = job.get("metadata") if isinstance(job.get("metadata"), dict) else {}
+    if metadata.get("manual_trigger") is True or metadata.get("manual_override") is True:
+        return False
+    return (
+        metadata.get("automatic_trigger") is True
+        or str(job.get("run_config_ref") or "") == "automatic_adaptation"
+        or str(job.get("dataset_snapshot_ref") or "") == "adaptation_readiness_green"
+    )
 
 
 def _trigger_source(job: dict[str, object] | None) -> str:
@@ -1240,6 +1258,17 @@ def register_ops_routes(app: FastAPI, *, forecast_service, dispatch_worker=dispa
             if not policy_check["should_trigger"]:
                 raise HTTPException(status_code=409, detail={"message": "Retraining policy check failed", "policy_check": policy_check})
             job_store = RetrainingJobStore(paths["jobs"])
+            blocking_jobs = list_blocking_retraining_jobs(job_store.list_jobs())
+            if payload.manual_override and blocking_jobs:
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "message": "Manual retraining blocked because another training job is active or queued",
+                        "cooldown_reason": "active_job_exists",
+                        "cooldown_scope": "manual",
+                        "active_job_ids": [str(job.get("job_id")) for job in blocking_jobs],
+                    },
+                )
             job = submit_retraining_job(
                 job_store=job_store,
                 dataset_snapshot_ref=payload.dataset_snapshot_ref,

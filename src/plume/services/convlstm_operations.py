@@ -2196,6 +2196,8 @@ def maybe_enqueue_automatic_adaptation_job(
             "attempted": True,
             "enqueued": False,
             "reason": "active_job",
+            "cooldown_reason": "active_job_exists",
+            "cooldown_scope": "automatic",
             "message": "automatic retraining skipped because another training job is active or queued",
             "active_job_count": len(active_jobs),
             "job_id": None,
@@ -2212,6 +2214,7 @@ def maybe_enqueue_automatic_adaptation_job(
         _parse_iso_datetime(job.get("finished_at"))
         for job in jobs
         if str(job.get("status", "")).lower() in _TERMINAL_RETRAINING_STATUSES
+        and _is_automatic_adaptation_retraining_job(job)
         and not _metadata_dict(job.get("metadata")).get("auto_cancelled_stale_backlog")
     ]
     latest_terminal_times = [value for value in latest_terminal_times if value is not None]
@@ -2224,7 +2227,17 @@ def maybe_enqueue_automatic_adaptation_job(
                 event_type="automatic_retraining_skipped_cooldown",
                 payload={"cooldown_seconds": cooldown_seconds, "remaining_seconds": remaining, "last_finished_at": last_finished.isoformat()},
             )
-            return {"attempted": True, "enqueued": False, "reason": "cooldown", "job_id": None, "cooldown_seconds": cooldown_seconds, "cooldown_remaining_seconds": remaining, "backlog_cleanup": backlog_cleanup}
+            return {
+                "attempted": True,
+                "enqueued": False,
+                "reason": "cooldown",
+                "cooldown_reason": "automatic_training_cadence",
+                "cooldown_scope": "automatic",
+                "job_id": None,
+                "cooldown_seconds": cooldown_seconds,
+                "cooldown_remaining_seconds": remaining,
+                "backlog_cleanup": backlog_cleanup,
+            }
 
     registry_payload = registry.load() if registry is not None else {"models": []}
     active_checkpoint_path = _active_checkpoint_path(registry_payload)
@@ -2244,7 +2257,7 @@ def maybe_enqueue_automatic_adaptation_job(
     job = submit_retraining_job(job_store=job_store, dataset_snapshot_ref="adaptation_readiness_green", run_config_ref="automatic_adaptation", output_dir=str(Path("artifacts") / "runs"))
     job = job_store.update_job(
         job_id=str(job["job_id"]),
-        metadata={"automatic_trigger": True, "readiness": readiness_payload, "cooldown_seconds": cooldown_seconds},
+        metadata={"automatic_trigger": True, "readiness": readiness_payload, "cooldown_seconds": cooldown_seconds, "cooldown_scope": "automatic"},
     )
     event_log.append(event_type="automatic_retraining_job_enqueued", payload={"job_id": str(job.get("job_id")), "cooldown_seconds": cooldown_seconds})
     return {"attempted": True, "enqueued": True, "reason": "ready", "job_id": str(job.get("job_id")), "job": job, "readiness": readiness_payload, "backlog_cleanup": backlog_cleanup}

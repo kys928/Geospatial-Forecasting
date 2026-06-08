@@ -143,6 +143,52 @@ def test_auto_enqueue_terminal_statuses_do_not_block(monkeypatch, tmp_path: Path
     assert jobs["cancelled"] == "cancelled"
 
 
+def test_auto_enqueue_blocks_on_automatic_cooldown_only(monkeypatch, tmp_path: Path):
+    config_dir = tmp_path / "configs"
+    _write_adaptation_config(config_dir, cooldown=3600)
+    now = datetime.now(UTC)
+    monkeypatch.setattr("plume.services.convlstm_operations.AdaptationReadinessService.evaluate", lambda *_a, **_k: Ready())
+    store = RetrainingJobStore(tmp_path / "jobs.json")
+    automatic = store.create_job(dataset_snapshot_ref="adaptation_readiness_green", run_config_ref="automatic_adaptation", output_dir=str(tmp_path / "runs"))
+    store.update_job(job_id=automatic["job_id"], metadata={"automatic_trigger": True})
+    store.update_job(job_id=automatic["job_id"], status="running", started_at=(now - timedelta(minutes=3)).isoformat())
+    store.update_job(job_id=automatic["job_id"], status="succeeded", finished_at=(now - timedelta(minutes=2)).isoformat(), metadata={"automatic_trigger": True})
+
+    result = maybe_enqueue_automatic_adaptation_job(
+        job_store=store,
+        event_log=OperationalEventLog(tmp_path / "events.jsonl"),
+        config_dir=config_dir,
+        registry=_registry(tmp_path / "registry.json"),
+        now=now,
+    )
+
+    assert result["enqueued"] is False
+    assert result["reason"] == "cooldown"
+    assert result["cooldown_scope"] == "automatic"
+    assert result["cooldown_reason"] == "automatic_training_cadence"
+    assert result["cooldown_remaining_seconds"] > 0
+
+
+def test_manual_cancelled_job_does_not_create_automatic_cooldown_status(monkeypatch, tmp_path: Path):
+    monkeypatch.setenv("PLUME_OPS_JOBS_PATH", str(tmp_path / "jobs.json"))
+    monkeypatch.setenv("PLUME_OPS_REGISTRY_PATH", str(tmp_path / "registry.json"))
+    monkeypatch.setenv("PLUME_OPS_STATE_PATH", str(tmp_path / "state.json"))
+    monkeypatch.setenv("PLUME_OPS_EVENTS_PATH", str(tmp_path / "events.jsonl"))
+    store = RetrainingJobStore(tmp_path / "jobs.json")
+    now = datetime.now(UTC)
+    manual = store.create_job(dataset_snapshot_ref="manual-dataset", run_config_ref=json.dumps({"manual_override": True}), output_dir=str(tmp_path / "runs"), job_id="manual-cancelled")
+    store.update_job(job_id=manual["job_id"], metadata={"manual_trigger": True})
+    store.update_job(job_id=manual["job_id"], status="running", started_at=(now - timedelta(minutes=2)).isoformat(), metadata={"manual_trigger": True})
+    store.update_job(job_id=manual["job_id"], status="cancelled", finished_at=(now - timedelta(minutes=1)).isoformat(), error_message="cancelled", metadata={"manual_trigger": True})
+    _registry(tmp_path / "registry.json")
+
+    payload = _adaptation_training_status()
+
+    assert payload["cooldown_scope"] == "automatic"
+    assert payload["cooldown_reason"] is None
+    assert payload["cooldown_remaining_seconds"] == 0
+
+
 def _automatic_job_payload(*, job_id: str, status: str, sequence: int, created_at: datetime, automatic: bool = True, manual: bool = False) -> dict[str, object]:
     metadata: dict[str, object] = {}
     if automatic:
@@ -277,9 +323,10 @@ def test_auto_enqueue_cooldown_and_readiness_block(monkeypatch, tmp_path: Path):
     config_dir = tmp_path / "configs"
     _write_adaptation_config(config_dir, cooldown=3600)
     store = RetrainingJobStore(tmp_path / "jobs.json")
-    job = store.create_job(dataset_snapshot_ref=None, run_config_ref=None, output_dir=str(tmp_path / "runs"))
-    store.update_job(job_id=job["job_id"], status="running", started_at=(datetime.now(UTC) - timedelta(minutes=2)).isoformat())
-    store.update_job(job_id=job["job_id"], status="succeeded", finished_at=(datetime.now(UTC) - timedelta(minutes=1)).isoformat())
+    job = store.create_job(dataset_snapshot_ref="adaptation_readiness_green", run_config_ref="automatic_adaptation", output_dir=str(tmp_path / "runs"))
+    store.update_job(job_id=job["job_id"], metadata={"automatic_trigger": True})
+    store.update_job(job_id=job["job_id"], status="running", started_at=(datetime.now(UTC) - timedelta(minutes=2)).isoformat(), metadata={"automatic_trigger": True})
+    store.update_job(job_id=job["job_id"], status="succeeded", finished_at=(datetime.now(UTC) - timedelta(minutes=1)).isoformat(), metadata={"automatic_trigger": True})
     monkeypatch.setattr("plume.services.convlstm_operations.AdaptationReadinessService.evaluate", lambda *_a, **_k: Ready())
 
     cooldown = maybe_enqueue_automatic_adaptation_job(job_store=store, event_log=OperationalEventLog(tmp_path / "events.jsonl"), config_dir=config_dir, registry=_registry(tmp_path / "registry.json"))
