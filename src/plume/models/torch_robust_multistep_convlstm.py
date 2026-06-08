@@ -194,7 +194,10 @@ class RobustMultiStepConvLSTMCheckpoint:
         if not path.exists():
             raise FileNotFoundError(f"Robust ConvLSTM checkpoint not found: {path}")
 
-        raw = torch.load(path, map_location=device)
+        try:
+            raw = torch.load(path, map_location=device, weights_only=True)
+        except TypeError:
+            raw = torch.load(path, map_location=device)
         if not isinstance(raw, dict):
             raise ValueError("Expected robust ConvLSTM checkpoint payload to be a dict")
         model_state = raw.get("model_state_dict")

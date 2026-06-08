@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 import json
 import math
 import os
+import shutil
 from pathlib import Path
 from typing import Any, Callable, Literal
 
@@ -41,6 +42,8 @@ MODEL_CONTRACT: dict[str, Any] = {
     "input_shape": [3, 10, 64, 64],
     "output_shape": [4, 1, 64, 64],
     "plume_channel": 0,
+    "wind_u_channel": 1,
+    "wind_v_channel": 2,
     "has_direct_branch": True,
     "has_autoregressive_branch": True,
     "residual_rollout": True,
@@ -71,15 +74,16 @@ class StageConfig:
     train_rollout: bool = True
     teacher_forcing_start: float = 1.0
     teacher_forcing_end: float = 1.0
+    horizon_weights: list[float] = field(default_factory=lambda: [1.0, 1.0, 1.0, 1.0])
     loss_weights: LossWeights = field(default_factory=LossWeights)
 
 
 @dataclass
 class NoiseConfig:
     enabled_stage3: bool = True
-    plume_gaussian_std: float = 0.002
-    plume_dropout_prob: float = 0.0
-    plume_random_shift_pixels: int = 0
+    plume_gaussian_std: float = 0.02
+    plume_dropout_prob: float = 0.03
+    plume_random_shift_pixels: int = 1
     clip_min: float = 0.0
 
 
@@ -102,18 +106,51 @@ class ThreeStageTrainerConfig:
     num_workers: int = 0
     plume_threshold: float = 1e-6
     plume_weight: float = 5.0
-    model: dict[str, Any] = field(default_factory=dict)
+    background_target_threshold: float = 1e-6
+    model: dict[str, Any] = field(default_factory=lambda: {
+        "encoder_channels": 32,
+        "hidden_channels": 64,
+        "num_encoder_lstm_layers": 2,
+        "decoder_channels": 32,
+        "kernel_size": 3,
+        "groupnorm_groups": 4,
+        "residual_rollout": True,
+        "detach_feedback": True,
+    })
+    optimizer: dict[str, Any] = field(default_factory=lambda: {
+        "name": "AdamW",
+        "weight_decay": 1.0e-4,
+        "betas": (0.9, 0.999),
+        "eps": 1.0e-8,
+        "gradient_clip": 1.0,
+    })
+    physics_contract: dict[str, Any] = field(default_factory=lambda: {
+        "advection_enabled": False,
+        "advection_status": "disabled_unconfirmed_physical_grid",
+        "wind_u_channel_confirmed": 1,
+        "wind_v_channel_confirmed": 2,
+        "wind_units": "m/s",
+        "dt_seconds_generation_inferred": 3600,
+        "dx_meters_confirmed": None,
+        "dy_meters_confirmed": None,
+        "plume_value_space": "log_transformed_or_unknown",
+        "notes": [
+            "safe physics losses are mass/temporal smoothness/nonnegative/background only",
+            "wind advection residual remains disabled until physical grid metadata is confirmed",
+        ],
+    })
     stage1: StageConfig = field(
         default_factory=lambda: StageConfig(
             name="stage1_direct_multihorizon",
             max_epochs=5,
             min_epochs=2,
             patience=2,
-            learning_rate=3e-4,
+            learning_rate=1e-3,
             train_direct=True,
             train_rollout=False,
-            teacher_forcing_start=1.0,
-            teacher_forcing_end=1.0,
+            teacher_forcing_start=0.0,
+            teacher_forcing_end=0.0,
+            horizon_weights=[1.0, 0.8, 0.6, 0.4],
             loss_weights=LossWeights(direct_data=1.0),
         )
     )
@@ -123,12 +160,13 @@ class ThreeStageTrainerConfig:
             max_epochs=20,
             min_epochs=6,
             patience=5,
-            learning_rate=2e-4,
-            train_direct=True,
+            learning_rate=5e-4,
+            train_direct=False,
             train_rollout=True,
-            teacher_forcing_start=0.8,
+            teacher_forcing_start=1.0,
             teacher_forcing_end=0.2,
-            loss_weights=LossWeights(rollout_data=1.0, direct_data=0.1, consistency=0.05),
+            horizon_weights=[1.0, 0.9, 0.8, 0.7],
+            loss_weights=LossWeights(rollout_data=1.0),
         )
     )
     stage3: StageConfig = field(
@@ -137,20 +175,22 @@ class ThreeStageTrainerConfig:
             max_epochs=8,
             min_epochs=3,
             patience=3,
-            learning_rate=3e-5,
+            learning_rate=2e-4,
             train_direct=True,
             train_rollout=True,
-            teacher_forcing_start=0.30,
-            teacher_forcing_end=0.15,
+            teacher_forcing_start=0.50,
+            teacher_forcing_end=0.10,
             loss_weights=LossWeights(
                 rollout_data=1.0,
-                direct_data=0.05,
-                consistency=0.02,
-                mass=0.002,
-                temporal=0.005,
-                smooth=0.001,
-                bg=0.002,
+                direct_data=0.60,
+                consistency=0.20,
+                mass=0.05,
+                temporal=0.05,
+                smooth=0.01,
+                nonneg=0.10,
+                bg=0.02,
             ),
+            horizon_weights=[1.0, 1.0, 1.0, 1.0],
         )
     )
     noise: NoiseConfig = field(default_factory=NoiseConfig)
@@ -192,6 +232,17 @@ def require_torch() -> Any:
     return torch
 
 
+def load_checkpoint_payload(path: str | Path, *, map_location: Any = "cpu") -> dict[str, Any]:
+    require_torch()
+    try:
+        raw = torch.load(path, map_location=map_location, weights_only=True)
+    except TypeError:  # Older torch versions do not support weights_only.
+        raw = torch.load(path, map_location=map_location)
+    if not isinstance(raw, dict):
+        raise ValueError(f"Selected robust ConvLSTM checkpoint payload is not a dict: {path}")
+    return raw
+
+
 def teacher_forcing_prob(epoch: int, total_epochs: int, start: float, end: float) -> float:
     progress = epoch / max(1, total_epochs - 1)
     return float(start + progress * (end - start))
@@ -210,19 +261,18 @@ def reduce_batch_size_after_oom(current_batch_size: int, min_batch_size: int) ->
     return max(min_batch_size, current_batch_size // 2)
 
 
-def selection_score(metrics: dict[str, float]) -> float:
-    rollout = float(metrics.get("val_rollout_weighted_mse", 0.0))
-    direct = float(metrics.get("val_direct_weighted_mse", 0.0))
-    return float(
-        1.00 * rollout
-        + 0.35 * float(metrics.get("val_rollout_weighted_mse_t3", 0.0))
-        + 0.55 * float(metrics.get("val_rollout_weighted_mse_t4", 0.0))
-        + 0.10 * float(metrics.get("val_rollout_mae", 0.0))
-        + 0.0003 * float(metrics.get("val_rollout_mass_abs_error", 0.0))
-        + 0.002 * float(metrics.get("val_rollout_peak_location_error", 0.0))
-        + 0.05 * direct
-        + 0.20 * abs(rollout - direct)
-    )
+def selection_score(metrics: dict[str, Any]) -> float:
+    weights = {
+        "val_rollout_weighted_mse": 1.0,
+        "val_rollout_mae": 0.25,
+        "val_rollout_mass_abs_error": 0.001,
+        "val_rollout_peak_location_error": 0.002,
+        "val_rollout_background_false_positive_area": 0.01,
+        "val_rollout_plume_iou": -0.25,
+        "val_direct_weighted_mse": 0.35,
+        "val_free_rollout_gap": 0.50,
+    }
+    return float(sum(float(metrics.get(key, 0.0)) * weight for key, weight in weights.items()))
 
 
 def stage3_passes_selection_gates(
@@ -260,15 +310,20 @@ def weighted_plume_mse(
     plume_threshold: float = 1e-6,
     plume_weight: float = 5.0,
     sample_weights: Any | None = None,
+    horizon_weights: list[float] | None = None,
 ) -> Any:
     require_torch()
-    weights = torch.where(target > plume_threshold, torch.as_tensor(plume_weight, device=target.device), torch.ones_like(target))
-    loss_by_element = weights * (prediction - target).pow(2)
+    plume_weights = torch.where(target > plume_threshold, torch.as_tensor(plume_weight, device=target.device), torch.ones_like(target))
+    if horizon_weights is not None:
+        horizon = torch.as_tensor(horizon_weights, dtype=target.dtype, device=target.device).view(1, -1, 1, 1, 1)
+        plume_weights = plume_weights * horizon
+    loss_by_element = plume_weights * (prediction - target).pow(2)
     if sample_weights is None:
-        return loss_by_element.mean()
+        return loss_by_element.sum() / plume_weights.sum().clamp_min(1.0)
     sample = sample_weights.to(device=target.device, dtype=target.dtype).view(-1, 1, 1, 1, 1)
-    per_sample = loss_by_element.flatten(start_dim=1).mean(dim=1)
-    return (per_sample * sample.flatten()).sum() / sample.flatten().sum().clamp_min(1e-6)
+    weighted_loss = loss_by_element * sample
+    weighted_norm = plume_weights * sample
+    return weighted_loss.sum() / weighted_norm.sum().clamp_min(1.0)
 
 
 def mass_abs_error(prediction: Any, target: Any) -> Any:
@@ -301,8 +356,6 @@ def background_penalty(prediction: Any, target: Any, plume_threshold: float) -> 
 def apply_stage3_noise(inputs: Any, config: NoiseConfig) -> Any:
     if not config.enabled_stage3:
         return inputs
-    if config.plume_random_shift_pixels != 0:
-        raise NotImplementedError("Stage 3 plume_random_shift_pixels must remain 0 in this trainer phase")
     noisy = inputs.clone()
     plume = noisy[:, :, 0:1, :, :]
     if config.plume_gaussian_std > 0:
@@ -310,6 +363,11 @@ def apply_stage3_noise(inputs: Any, config: NoiseConfig) -> Any:
     if config.plume_dropout_prob > 0:
         keep = (torch.rand_like(plume) >= config.plume_dropout_prob).to(plume.dtype)
         plume = plume * keep
+    max_shift = int(config.plume_random_shift_pixels)
+    if max_shift > 0:
+        shift_y = int(torch.randint(-max_shift, max_shift + 1, (), device=inputs.device).item())
+        shift_x = int(torch.randint(-max_shift, max_shift + 1, (), device=inputs.device).item())
+        plume = torch.roll(plume, shifts=(shift_y, shift_x), dims=(-2, -1))
     noisy[:, :, 0:1, :, :] = plume.clamp_min(config.clip_min)
     return noisy
 
@@ -412,7 +470,7 @@ class ThreeStageAdaptationTrainer:
         return torch.device(requested)
 
     def _load_model_only_checkpoint(self, path: Path) -> None:
-        raw = torch.load(path, map_location=self.device)
+        raw = load_checkpoint_payload(path, map_location=self.device)
         if not isinstance(raw, dict) or "model_state_dict" not in raw:
             raise ValueError(f"Checkpoint {path} does not contain model_state_dict")
         contract = raw.get("model_contract")
@@ -453,8 +511,12 @@ class ThreeStageAdaptationTrainer:
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self._write_json(self.output_dir / "config.json", self.config.to_dict())
         metrics_path = self.output_dir / "metrics.jsonl"
+        events_path = self.output_dir / "events.jsonl"
         if metrics_path.exists():
             metrics_path.unlink()
+        if events_path.exists():
+            events_path.unlink()
+        self._append_event({"event": "run_start", "run_name": self.config.run_name, "created_at": self.created_at})
 
         summary = TrainingRunSummary(
             run_name=self.config.run_name,
@@ -473,11 +535,14 @@ class ThreeStageAdaptationTrainer:
                 self._raise_if_cancelled()
                 if not stage.enabled:
                     continue
+                self._append_event({"event": "stage_start", "stage": stage.name, "stage_index": stage_index})
                 stage_summary = self._run_stage(stage_index, stage)
                 summary.stage_summaries.append(stage_summary)
+                self._append_event({"event": "stage_complete", "stage": stage.name, "stage_index": stage_index, "summary": stage_summary})
             self._raise_if_cancelled()
             final_metrics = self._evaluate(self._make_loader(self.val_samples, shuffle=False))
             final_ckpt = self._save_checkpoint("final_full_checkpoint.pt", "final", 0, final_metrics)
+            self._ensure_best_aliases()
             summary.final_checkpoint = str(final_ckpt)
             summary.status = "completed"
             summary.best_overall_checkpoint = str(self.output_dir / "best_overall_full_checkpoint.pt") if (self.output_dir / "best_overall_full_checkpoint.pt").exists() else None
@@ -488,12 +553,14 @@ class ThreeStageAdaptationTrainer:
             summary.selection_gate_summary = dict(self.selection_gate_summary)
             summary.finished_at = utc_now()
             self._write_json(self.output_dir / "training_summary.json", summary.to_dict())
+            self._append_event({"event": "run_complete", "final_checkpoint": summary.final_checkpoint, "best_overall_checkpoint": summary.best_overall_checkpoint})
             return summary
         except Exception:
             summary.status = "failed"
             summary.finished_at = utc_now()
             summary.selection_gate_summary = dict(self.selection_gate_summary)
             self._write_json(self.output_dir / "training_summary.json", summary.to_dict())
+            self._append_event({"event": "run_failed", "finished_at": summary.finished_at})
             raise
 
     def _raise_if_cancelled(self) -> None:
@@ -533,7 +600,14 @@ class ThreeStageAdaptationTrainer:
     def _run_stage_once(self, stage_index: int, stage: StageConfig) -> dict[str, Any]:
         train_loader = self._make_loader(self.train_samples, shuffle=True)
         val_loader = self._make_loader(self.val_samples, shuffle=False)
-        optimizer = torch.optim.Adam(self.model.parameters(), lr=stage.learning_rate)
+        opt_cfg = self.config.optimizer
+        optimizer = torch.optim.AdamW(
+            self.model.parameters(),
+            lr=stage.learning_rate,
+            weight_decay=float(opt_cfg.get("weight_decay", 1.0e-4)),
+            betas=tuple(opt_cfg.get("betas", (0.9, 0.999))),
+            eps=float(opt_cfg.get("eps", 1.0e-8)),
+        )
         best_stage_score = math.inf
         best_stage_metrics: dict[str, Any] = {}
         best_epoch = 0
@@ -617,22 +691,25 @@ class ThreeStageAdaptationTrainer:
                 if stage.train_rollout or stage.loss_weights.rollout_data > 0
                 else None
             )
-            loss = self._compute_loss(direct_pred, rollout_pred, targets, weights, stage.loss_weights)
+            loss = self._compute_loss(direct_pred, rollout_pred, targets, weights, stage.loss_weights, stage.horizon_weights)
             loss.backward()
+            gradient_clip = float(self.config.optimizer.get("gradient_clip", 1.0))
+            if gradient_clip > 0:
+                torch.nn.utils.clip_grad_norm_(self.model.parameters(), gradient_clip)
             optimizer.step()
             total += float(loss.detach().cpu())
             count += 1
         return total / max(1, count)
 
-    def _compute_loss(self, direct_pred: Any | None, rollout_pred: Any | None, targets: Any, weights: Any | None, lw: LossWeights) -> Any:
+    def _compute_loss(self, direct_pred: Any | None, rollout_pred: Any | None, targets: Any, weights: Any | None, lw: LossWeights, horizon_weights: list[float]) -> Any:
         loss = targets.new_tensor(0.0)
         if direct_pred is not None and lw.direct_data:
             loss = loss + lw.direct_data * weighted_plume_mse(
-                direct_pred, targets, plume_threshold=self.config.plume_threshold, plume_weight=self.config.plume_weight, sample_weights=weights
+                direct_pred, targets, plume_threshold=self.config.plume_threshold, plume_weight=self.config.plume_weight, sample_weights=weights, horizon_weights=horizon_weights
             )
         if rollout_pred is not None and lw.rollout_data:
             loss = loss + lw.rollout_data * weighted_plume_mse(
-                rollout_pred, targets, plume_threshold=self.config.plume_threshold, plume_weight=self.config.plume_weight, sample_weights=weights
+                rollout_pred, targets, plume_threshold=self.config.plume_threshold, plume_weight=self.config.plume_weight, sample_weights=weights, horizon_weights=horizon_weights
             )
         if direct_pred is not None and rollout_pred is not None and lw.consistency:
             loss = loss + lw.consistency * (direct_pred - rollout_pred).pow(2).mean()
@@ -668,12 +745,18 @@ class ThreeStageAdaptationTrainer:
         return averaged
 
     def _batch_metrics(self, direct_pred: Any, rollout_pred: Any, targets: Any, weights: Any | None) -> dict[str, float]:
+        free_rollout_gap = (rollout_pred - direct_pred).pow(2).mean()
+        bg_mask = targets <= self.config.background_target_threshold
+        bg_false_positive = rollout_pred[bg_mask].abs().mean() if bool(bg_mask.any()) else targets.new_tensor(0.0)
         metrics: dict[str, float] = {
             "val_direct_weighted_mse": float(weighted_plume_mse(direct_pred, targets, plume_threshold=self.config.plume_threshold, plume_weight=self.config.plume_weight, sample_weights=weights).cpu()),
             "val_rollout_weighted_mse": float(weighted_plume_mse(rollout_pred, targets, plume_threshold=self.config.plume_threshold, plume_weight=self.config.plume_weight, sample_weights=weights).cpu()),
             "val_rollout_mae": float((rollout_pred - targets).abs().mean().cpu()),
             "val_rollout_mass_abs_error": float(mass_abs_error(rollout_pred, targets).cpu()),
             "val_rollout_peak_location_error": float(self._peak_location_error(rollout_pred, targets).cpu()),
+            "val_rollout_plume_iou": float(self._plume_iou(rollout_pred, targets).cpu()),
+            "val_rollout_background_false_positive_area": float(bg_false_positive.cpu()),
+            "val_free_rollout_gap": float(free_rollout_gap.cpu()),
         }
         for i in range(4):
             metrics[f"val_rollout_weighted_mse_t{i + 1}"] = float(weighted_plume_mse(
@@ -683,6 +766,14 @@ class ThreeStageAdaptationTrainer:
                 direct_pred[:, i : i + 1], targets[:, i : i + 1], plume_threshold=self.config.plume_threshold, plume_weight=self.config.plume_weight, sample_weights=weights
             ).cpu())
         return metrics
+
+
+    def _plume_iou(self, prediction: Any, target: Any) -> Any:
+        pred_mask = prediction > self.config.plume_threshold
+        target_mask = target > self.config.plume_threshold
+        inter = (pred_mask & target_mask).flatten(start_dim=2).sum(dim=2).float()
+        union = (pred_mask | target_mask).flatten(start_dim=2).sum(dim=2).float()
+        return torch.where(union > 0, inter / union.clamp_min(1.0), torch.ones_like(union)).mean()
 
     @staticmethod
     def _peak_location_error(prediction: Any, target: Any) -> Any:
@@ -748,11 +839,36 @@ class ThreeStageAdaptationTrainer:
         tmp = path.with_suffix(path.suffix + ".tmp")
         torch.save(payload, tmp)
         os.replace(tmp, path)
+        if filename == "best_overall_full_checkpoint.pt":
+            self._copy_checkpoint_alias(path, self.output_dir / "best_full_checkpoint.pt")
+        elif filename == "best_full_checkpoint.pt":
+            self._copy_checkpoint_alias(path, self.output_dir / "best_overall_full_checkpoint.pt")
+        self._append_event({"event": "checkpoint_saved", "path": str(path), "stage": stage_name, "stage_index": stage_index, "global_epoch": self.global_epoch})
         return path
+
+    def _copy_checkpoint_alias(self, source: Path, destination: Path) -> None:
+        if source.resolve(strict=False) == destination.resolve(strict=False):
+            return
+        tmp = destination.with_suffix(destination.suffix + ".tmp")
+        shutil.copy2(source, tmp)
+        os.replace(tmp, destination)
+
+    def _ensure_best_aliases(self) -> None:
+        best_overall = self.output_dir / "best_overall_full_checkpoint.pt"
+        best_contract = self.output_dir / "best_full_checkpoint.pt"
+        if best_overall.exists() and not best_contract.exists():
+            self._copy_checkpoint_alias(best_overall, best_contract)
+        elif best_contract.exists() and not best_overall.exists():
+            self._copy_checkpoint_alias(best_contract, best_overall)
 
     def _append_metrics(self, metrics: dict[str, Any]) -> None:
         with (self.output_dir / "metrics.jsonl").open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(metrics, sort_keys=True) + "\n")
+
+    def _append_event(self, event: dict[str, Any]) -> None:
+        payload = {"timestamp": utc_now(), **event}
+        with (self.output_dir / "events.jsonl").open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(payload, sort_keys=True, default=str) + "\n")
 
     @staticmethod
     def _write_json(path: Path, payload: dict[str, Any]) -> None:
@@ -804,5 +920,6 @@ __all__ = [
     "teacher_forcing_prob",
     "train_three_stage_adaptation",
     "trainer_side_rollout",
+    "load_checkpoint_payload",
     "weighted_plume_mse",
 ]

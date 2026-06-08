@@ -42,8 +42,10 @@ adaptation:
     default_robust_checkpoint_globs:
       - artifacts/models/**/final_full_checkpoint.pt
       - artifacts/models/**/best_full_checkpoint.pt
+      - artifacts/models/**/best_overall_full_checkpoint.pt
       - runs/**/final_full_checkpoint.pt
       - runs/**/best_full_checkpoint.pt
+      - runs/**/best_overall_full_checkpoint.pt
     default_reference_dataset_candidates:
       - /workspace/Dataset/hysplit-plume-convlstm-multiyear-2024-2026
       - /workspace/Dataset
@@ -69,7 +71,7 @@ adaptation:
     allow_cpu_training_fallback: false
     min_free_vram_gib_for_training: 2.0
     retry_cooldown_seconds: 3600
-    min_seconds_between_training_runs: 3600
+    min_seconds_between_training_runs: 10800
     max_concurrent_training_jobs: 1
 
   promotion:

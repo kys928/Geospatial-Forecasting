@@ -620,6 +620,53 @@ def _load_training_summary_from_run_dir(run_dir: object) -> dict[str, object]:
     except Exception:
         return {}
 
+
+def _load_latest_metrics_from_run_dir(run_dir: object) -> dict[str, object]:
+    if not isinstance(run_dir, str) or not run_dir.strip():
+        return {}
+    path = Path(run_dir) / "metrics.jsonl"
+    if not path.exists():
+        return {}
+    latest: dict[str, object] = {}
+    try:
+        for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+            if not line.strip():
+                continue
+            payload = json.loads(line)
+            if isinstance(payload, dict):
+                latest = payload
+    except Exception:
+        return {}
+    return latest
+
+
+def _training_metrics_from_artifacts(summary: dict[str, object], latest_metrics: dict[str, object]) -> dict[str, object]:
+    best = summary.get("best") if isinstance(summary.get("best"), dict) else {}
+    best_metrics = summary.get("best_metrics") if isinstance(summary.get("best_metrics"), dict) else {}
+    if not best_metrics and isinstance(best, dict):
+        best_metrics = best.get("metrics") if isinstance(best.get("metrics"), dict) else {}
+    merged: dict[str, object] = {}
+    for source in (best_metrics, summary.get("last_metrics") if isinstance(summary.get("last_metrics"), dict) else {}, latest_metrics):
+        if isinstance(source, dict):
+            merged.update(source)
+    if isinstance(best, dict) and best:
+        if best.get("score") is not None:
+            merged.setdefault("best_score", best.get("score"))
+        if best.get("stage") is not None:
+            merged.setdefault("best_stage", best.get("stage"))
+        if best.get("global_epoch") is not None:
+            merged.setdefault("best_global_epoch", best.get("global_epoch"))
+        if best.get("path") is not None:
+            merged.setdefault("best_checkpoint_path", best.get("path"))
+    if summary:
+        if isinstance(best_metrics, dict) and best_metrics.get("selection_score") is not None:
+            merged.setdefault("best_score", best_metrics.get("selection_score"))
+            merged.setdefault("best_stage", best_metrics.get("stage_name") or best_metrics.get("stage"))
+            merged.setdefault("best_global_epoch", best_metrics.get("global_epoch"))
+        if summary.get("best_overall_checkpoint") is not None:
+            merged.setdefault("best_checkpoint_path", summary.get("best_overall_checkpoint"))
+    return merged
+
 def _is_adaptation_record(record: dict[str, object]) -> bool:
     return isinstance(record.get("adaptation_run"), dict) or record.get("contract_version") == "robust_convlstm_adaptation_v1"
 
@@ -712,6 +759,8 @@ def _adaptation_training_status() -> dict[str, object]:
     readiness = metadata.get("readiness") or metadata.get("readiness_snapshot") or metadata.get("adaptation_readiness") if isinstance(metadata, dict) else None
     run_dir = None if latest is None else latest.get("result_run_dir") or latest.get("output_dir") or _metadata_value(metadata, "output_dir")
     training_summary = _load_training_summary_from_run_dir(run_dir)
+    latest_metrics = _load_latest_metrics_from_run_dir(run_dir)
+    training_metrics = _training_metrics_from_artifacts(training_summary, latest_metrics)
     best_checkpoint = training_summary.get("best_overall_checkpoint") or _metadata_value(metadata, "best_overall_checkpoint")
     final_checkpoint = training_summary.get("final_checkpoint") or _metadata_value(metadata, "final_checkpoint")
     candidate_path = None
@@ -770,6 +819,8 @@ def _adaptation_training_status() -> dict[str, object]:
             "log_available": log_available,
             "candidate_model_id": latest_enriched.get("result_candidate_id"),
             "trigger_source": _trigger_source(latest_enriched),
+            "training_summary": training_summary,
+            "training_metrics": training_metrics,
         })
         if started_dt and finished_dt:
             latest_enriched["runtime_seconds"] = max(0, int((finished_dt - started_dt).total_seconds()))
@@ -788,6 +839,7 @@ def _adaptation_training_status() -> dict[str, object]:
         "result_run_dir": run_dir,
         "best_overall_checkpoint": str(best_checkpoint) if best_checkpoint else None,
         "final_checkpoint": str(final_checkpoint) if final_checkpoint else None,
+        "training_metrics": training_metrics,
         **cooldown,
         "error_message": None if latest is None else latest.get("error_message"),
         "job_store_busy": bool(recovery_result.get("job_store_busy")),

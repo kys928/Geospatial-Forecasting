@@ -411,7 +411,16 @@ def test_training_status_log_tail_runtime_cooldown_and_checkpoints(monkeypatch, 
     final = run_dir / "final.pt"
     best.write_text("best", encoding="utf-8")
     final.write_text("final", encoding="utf-8")
-    (run_dir / "training_summary.json").write_text(json.dumps({"best_overall_checkpoint": str(best), "final_checkpoint": str(final)}), encoding="utf-8")
+    (run_dir / "training_summary.json").write_text(json.dumps({
+        "best_overall_checkpoint": str(best),
+        "final_checkpoint": str(final),
+        "best_metrics": {"selection_score": 0.12, "stage_name": "stage2_autoregressive_teacher_forcing", "global_epoch": 3},
+    }), encoding="utf-8")
+    (run_dir / "metrics.jsonl").write_text(
+        json.dumps({"stage": "stage1_direct_multihorizon", "global_epoch": 1, "val_loss": 0.4}) + "\n" +
+        json.dumps({"stage": "stage2_autoregressive_teacher_forcing", "global_epoch": 3, "val_loss": 0.2, "val_rollout_plume_iou": 0.75}) + "\n",
+        encoding="utf-8",
+    )
     (run_dir / "training.log").write_text("\n".join(f"line {i}" for i in range(250)) + "\n", encoding="utf-8")
     job = store.create_job(dataset_snapshot_ref=None, run_config_ref=None, output_dir=str(tmp_path / "runs"), job_id="job-1")
     store.update_job(job_id=job["job_id"], status="running", started_at="2026-01-01T00:00:00+00:00", result_run_dir=str(run_dir), metadata={"automatic_trigger": True})
@@ -427,7 +436,7 @@ def test_training_status_log_tail_runtime_cooldown_and_checkpoints(monkeypatch, 
     assert latest["log_available"] is True
     assert len(latest["log_tail"]) == 200
     assert latest["log_tail"][0] == "line 50"
-    assert payload["cooldown_seconds"] == 3600
+    assert payload["cooldown_seconds"] == 10800
     assert "job_counts" in payload
     assert payload["job_counts"]["succeeded"] == 1
     assert "latest_job" in payload
@@ -436,6 +445,11 @@ def test_training_status_log_tail_runtime_cooldown_and_checkpoints(monkeypatch, 
     assert "elapsed_seconds" in latest
     assert "runtime_seconds" in latest
     assert latest["trigger_source"] == "automatic"
+    assert latest["training_metrics"]["val_loss"] == 0.2
+    assert latest["training_metrics"]["val_rollout_plume_iou"] == 0.75
+    assert latest["training_metrics"]["best_score"] == 0.12
+    assert latest["training_metrics"]["best_stage"] == "stage2_autoregressive_teacher_forcing"
+    assert payload["training_metrics"]["global_epoch"] == 3
 
 
 def test_training_status_missing_log_falls_back_to_summary(monkeypatch, tmp_path: Path):
