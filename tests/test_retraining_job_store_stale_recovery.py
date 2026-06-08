@@ -9,9 +9,11 @@ import time
 import pytest
 
 from plume.services.convlstm_operations import ModelRegistry, RetrainingJobStore
+import plume.services.convlstm_operations as convlstm_operations
 
 
-def test_mark_stale_running_failed_marks_old_running_job(tmp_path):
+def test_mark_stale_running_failed_marks_old_running_job(monkeypatch, tmp_path):
+    monkeypatch.setattr(convlstm_operations, "_pid_appears_alive", lambda _pid: False)
     store = RetrainingJobStore(tmp_path / "jobs.json")
     created = store.create_job(dataset_snapshot_ref=None, run_config_ref=None, output_dir=None)
     store.claim_next_queued_job(worker_pid=11)
@@ -28,6 +30,26 @@ def test_mark_stale_running_failed_marks_old_running_job(tmp_path):
     assert updated["status"] == "failed"
     assert updated["metadata"]["source"] == "test"
     assert updated["metadata"]["stale_active_recovered"] is True
+
+
+def test_mark_stale_running_failed_protects_old_running_job_with_alive_pid(monkeypatch, tmp_path):
+    monkeypatch.setattr(convlstm_operations, "_pid_appears_alive", lambda _pid: True)
+    store = RetrainingJobStore(tmp_path / "jobs.json")
+    created = store.create_job(dataset_snapshot_ref=None, run_config_ref=None, output_dir=None)
+    store.claim_next_queued_job(worker_pid=11)
+    now = datetime.now(timezone.utc)
+    store.update_job(
+        job_id=created["job_id"],
+        started_at=(now - timedelta(seconds=200)).isoformat(),
+        metadata={"source": "test"},
+    )
+
+    recovered = store.mark_stale_running_failed(stale_after_seconds=60, now=now)
+    updated = store.latest_job()
+
+    assert recovered == []
+    assert updated["status"] == "running"
+    assert updated["metadata"] == {"source": "test"}
 
 
 def test_mark_stale_running_failed_respects_status_and_started_at_precedence(tmp_path):

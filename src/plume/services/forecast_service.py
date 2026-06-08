@@ -122,6 +122,10 @@ class ForecastService:
             "dataset_playback_enabled",
             "active_registry_model_id",
             "generated_at",
+            "stale_model",
+            "active_model_mismatch",
+            "current_active_model_id",
+            "artifact_model_id",
         )
         provenance = {key: result.execution_metadata.get(key) for key in provenance_keys}
         if any(value is not None for value in provenance.values()):

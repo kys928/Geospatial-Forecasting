@@ -799,3 +799,43 @@ def test_orchestrator_with_job_store_preserves_existing_training_flow(tmp_path: 
     assert latest_job is not None
     assert latest_job["status"] == "succeeded"
     assert latest_job["result_run_dir"] == str(run_dir)
+
+
+def test_retraining_worker_claim_lock_contention_returns_idle(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    from plume.workers import retraining_worker
+
+    def busy_claim(self, *, worker_pid=None):  # noqa: ANN001
+        raise RuntimeError(f"Could not acquire retraining job lock: {tmp_path / 'retraining_jobs.json.lock'}")
+
+    monkeypatch.setattr(RetrainingJobStore, "claim_next_queued_job", busy_claim)
+    result = retraining_worker.run_retraining_worker_once(
+        jobs_path=tmp_path / "retraining_jobs.json",
+        registry_path=tmp_path / "model_registry.json",
+        state_path=tmp_path / "operational_state.json",
+        events_path=tmp_path / "ops_events.jsonl",
+        config_dir=tmp_path,
+        worker_pid=1234,
+    )
+
+    assert result["status"] == "idle"
+    assert result["reason"] == "job_store_busy"
+    assert result["job_store_busy"] is True
+    assert result["claimed"] is False
+
+
+def test_retraining_worker_claim_unknown_runtime_error_still_fails(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    from plume.workers import retraining_worker
+
+    def unrelated_failure(self, *, worker_pid=None):  # noqa: ANN001
+        raise RuntimeError("unexpected job store corruption")
+
+    monkeypatch.setattr(RetrainingJobStore, "claim_next_queued_job", unrelated_failure)
+    with pytest.raises(RuntimeError, match="unexpected job store corruption"):
+        retraining_worker.run_retraining_worker_once(
+            jobs_path=tmp_path / "retraining_jobs.json",
+            registry_path=tmp_path / "model_registry.json",
+            state_path=tmp_path / "operational_state.json",
+            events_path=tmp_path / "ops_events.jsonl",
+            config_dir=tmp_path,
+            worker_pid=1234,
+        )

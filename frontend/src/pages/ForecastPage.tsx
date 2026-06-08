@@ -29,6 +29,7 @@ export function ForecastPage() {
 
   const inFlightRef = useRef(false);
   const hasAutoBootstrappedRef = useRef(false);
+  const regeneratedMismatchKeyRef = useRef<string | null>(null);
   const [mapPipelineStatus, setMapPipelineStatus] = useState("idle");
   const [activeForecastError, setActiveForecastError] = useState<string | null>(null);
 
@@ -169,14 +170,26 @@ export function ForecastPage() {
   const sessionRasterMetadata = (selectedFrameRaster?.metadata as Record<string, unknown> | undefined) ?? {};
   const sessionProvenance = (sessionFrameMetadata.provenance as Record<string, unknown> | undefined) ?? sessionFrameMetadata;
   const provenanceError = activeForecastError ?? (frameError ? `Active ConvLSTM frame unavailable: ${frameError}` : null);
-  const provenanceLabel = sessionProvenance.forecast_source === "active_model_inference" && sessionProvenance.model_family === "ConvLSTM" && sessionProvenance.fallback_used !== true
-    ? `Active ConvLSTM forecast: ${String(sessionProvenance.model_id ?? sessionRasterMetadata.model ?? "unknown")}`
-    : provenanceError
+  const activeModelMismatch = sessionProvenance.active_model_mismatch === true || sessionProvenance.stale_model === true;
+  const provenanceLabel = activeModelMismatch
+    ? `Stale ConvLSTM forecast: ${String(sessionProvenance.artifact_model_id ?? sessionProvenance.model_id ?? sessionRasterMetadata.model ?? "unknown")} (active model is ${String(sessionProvenance.current_active_model_id ?? "unknown")}; regenerating recommended)`
+    : sessionProvenance.forecast_source === "active_model_inference" && sessionProvenance.model_family === "ConvLSTM" && sessionProvenance.fallback_used !== true
+      ? `Active ConvLSTM forecast: ${String(sessionProvenance.model_id ?? sessionRasterMetadata.model ?? "unknown")}`
+      : provenanceError
       ? `Active ConvLSTM unavailable: ${provenanceError}`
       : mapPipelineStatus === "error"
         ? "Active ConvLSTM unavailable: forecast request failed."
         : "Active ConvLSTM forecast starting.";
   const timelineDisabled = !hasMultiFrameSession;
+
+  useEffect(() => {
+    if (!activeModelMismatch || inFlightRef.current) return;
+    const mismatchKey = `${String(sessionProvenance.artifact_model_id ?? sessionProvenance.model_id ?? "unknown")}->${String(sessionProvenance.current_active_model_id ?? "unknown")}`;
+    if (regeneratedMismatchKeyRef.current === mismatchKey) return;
+    regeneratedMismatchKeyRef.current = mismatchKey;
+    hasAutoBootstrappedRef.current = false;
+    void runActiveForecast();
+  }, [activeModelMismatch, sessionProvenance.artifact_model_id, sessionProvenance.model_id, sessionProvenance.current_active_model_id]);
 
   return (
     <AppShell title="Map / Forecast" subtitle="Current forecast map and plume overlay.">
@@ -187,8 +200,8 @@ export function ForecastPage() {
             <strong>{provenanceLabel}</strong>
             {sessionProvenance.input_source ? <div className="muted">Input: {sessionProvenance.input_source === "dataset_window" ? "dataset window" : sessionProvenance.input_source === "degraded_session_state" ? "degraded session state" : String(sessionProvenance.input_source)}</div> : null}
           </div>
-          {activeForecastError ? (
-            <button className="primary-button" onClick={() => { hasAutoBootstrappedRef.current = false; void runActiveForecast(); }}>Retry active ConvLSTM forecast</button>
+          {activeForecastError || activeModelMismatch ? (
+            <button className="primary-button" onClick={() => { hasAutoBootstrappedRef.current = false; void runActiveForecast(); }}>{activeModelMismatch ? "Regenerate active ConvLSTM forecast" : "Retry active ConvLSTM forecast"}</button>
           ) : null}
         </div>
         <ForecastMap

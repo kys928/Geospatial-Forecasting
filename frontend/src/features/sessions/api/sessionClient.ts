@@ -16,6 +16,13 @@ import type {
 
 const ACTIVE_SESSION_STORAGE_KEY = "plume_active_session_id";
 const ACTIVE_FORECAST_SESSION_CONTRACT = "active-convlstm-session-v2";
+export const ACTIVE_FORECAST_SESSION_INVALIDATED_EVENT = "plume:active-forecast-session-invalidated";
+
+export function invalidateActiveForecastSession(reason = "active_model_changed"): void {
+  localStorage.removeItem(ACTIVE_SESSION_STORAGE_KEY);
+  window.dispatchEvent(new CustomEvent(ACTIVE_FORECAST_SESSION_INVALIDATED_EVENT, { detail: { reason } }));
+}
+
 
 export interface RunSessionForecastResult {
   sessionId: string;

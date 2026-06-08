@@ -1,6 +1,7 @@
-import { createContext, useCallback, useContext, useMemo, useState, type ReactNode } from "react";
+import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
 import type { SelectedFeatureState } from "../../forecast/types/forecast.types";
 import type { SessionForecastBundle } from "../types/session.types";
+import { ACTIVE_FORECAST_SESSION_INVALIDATED_EVENT } from "../api/sessionClient";
 
 type ForecastViewSource = "none" | "session" | "persisted";
 
@@ -70,6 +71,18 @@ export function SessionForecastViewProvider({ children }: { children: ReactNode 
 
   const clearSelectedFeature = useCallback(() => {
     setSelectedFeatureState(null);
+  }, []);
+
+  useEffect(() => {
+    const handleInvalidation = () => {
+      setActiveSessionIdState(null);
+      setLatestForecastBundleState(null);
+      setForecastViewSource("none");
+      setActivePersistedForecastId(null);
+      setSelectedFeatureState(null);
+    };
+    window.addEventListener(ACTIVE_FORECAST_SESSION_INVALIDATED_EVENT, handleInvalidation);
+    return () => window.removeEventListener(ACTIVE_FORECAST_SESSION_INVALIDATED_EVENT, handleInvalidation);
   }, []);
 
   const value = useMemo(

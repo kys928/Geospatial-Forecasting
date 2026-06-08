@@ -1971,8 +1971,12 @@ def _automatic_backlog_stale_seconds() -> int:
     return 900
 
 
-def _is_retraining_job_lock_contention(exc: Exception) -> bool:
+def is_retraining_lock_contention_error(exc: Exception) -> bool:
     return isinstance(exc, RuntimeError) and "Could not acquire retraining job lock:" in str(exc)
+
+
+def _is_retraining_job_lock_contention(exc: Exception) -> bool:
+    return is_retraining_lock_contention_error(exc)
 
 
 def try_recover_stale_active_jobs(
@@ -2306,7 +2310,12 @@ def process_next_queued_retraining_job(
     train_fn: Callable[[dict[str, object]], dict[str, object]],
     worker_pid: int | None = None,
 ) -> dict[str, object] | None:
-    claimed = job_store.claim_next_queued_job(worker_pid=worker_pid or os.getpid())
+    try:
+        claimed = job_store.claim_next_queued_job(worker_pid=worker_pid or os.getpid())
+    except RuntimeError as exc:
+        if not is_retraining_lock_contention_error(exc):
+            raise
+        return None
     if claimed is None:
         return None
     job_id = str(claimed["job_id"])

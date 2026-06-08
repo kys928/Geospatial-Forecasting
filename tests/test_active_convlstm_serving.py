@@ -612,3 +612,32 @@ def test_predict_route_keeps_plain_payload_value_error_as_400():
 
     assert response.status_code == 400
     assert "Invalid prediction payload" in response.json()["detail"]
+
+
+def test_online_forecast_marks_old_artifacts_stale_after_active_model_changes(tmp_path: Path):
+    result, _fake_model = _active_convlstm_result_from_backend()
+    registry_path = tmp_path / "registry.json"
+    ModelRegistry(registry_path).save({
+        "active_model_id": "new-active-convlstm",
+        "previous_active_model_id": "active-convlstm",
+        "models": [
+            {"model_id": "active-convlstm", "status": "archived", "approval_status": "approved_for_activation", "path": "old.pt", "contract_version": CONVLSTM_CONTRACT_VERSION, "target_policy": "plume_only"},
+            {"model_id": "new-active-convlstm", "status": "active", "approval_status": "approved_for_activation", "path": "new.pt", "contract_version": CONVLSTM_CONTRACT_VERSION, "target_policy": "plume_only"},
+        ],
+        "events": [],
+        "approval_audit": [],
+    })
+
+    class _Config(Config):
+        def load_backend(self):
+            return {"use_model_registry": True, "model_registry_path": str(registry_path)}
+
+    service = OnlineForecastService(config=_Config(), state_store=InMemoryStateStore())
+    marked = service._mark_active_model_mismatch(result)
+
+    assert marked.execution_metadata["model_id"] == "active-convlstm"
+    assert marked.execution_metadata["stale_model"] is True
+    assert marked.execution_metadata["active_model_mismatch"] is True
+    assert marked.execution_metadata["artifact_model_id"] == "active-convlstm"
+    assert marked.execution_metadata["current_active_model_id"] == "new-active-convlstm"
+    assert marked.forecast.metadata["model_id"] == "active-convlstm"
