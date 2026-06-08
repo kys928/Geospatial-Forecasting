@@ -95,6 +95,10 @@ class ForecastContextService:
             "generated_at",
             "fallback_reason",
             "input_source",
+            "stale_model",
+            "active_model_mismatch",
+            "current_active_model_id",
+            "artifact_model_id",
         )
         provenance_summary = self._as_dict(summary.get("provenance"))
         if not provenance_summary:
@@ -229,6 +233,10 @@ class ForecastContextService:
             "active_registry_model_id": provenance_summary.get("active_registry_model_id"),
             "input_source": provenance_summary.get("input_source"),
             "generated_at": provenance_summary.get("generated_at"),
+            "stale_model": provenance_summary.get("stale_model"),
+            "active_model_mismatch": provenance_summary.get("active_model_mismatch"),
+            "current_active_model_id": provenance_summary.get("current_active_model_id"),
+            "artifact_model_id": provenance_summary.get("artifact_model_id"),
             "output_space": self._nested(session_state, "output_space"),
             "input_mode": self._first(self._nested(session_state, "input_mode"), self._nested(session_state, "runtime.input_mode")),
             "prediction_trust": self._nested(session_state, "prediction_trust"),

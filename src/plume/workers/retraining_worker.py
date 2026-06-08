@@ -12,6 +12,7 @@ from plume.services.convlstm_operations import (
     OperationalStateStore,
     RetrainingJobStore,
     execute_retraining_job,
+    is_retraining_lock_contention_error,
     register_candidate_from_adaptation_run,
     register_candidate_from_run,
     run_adaptation_retraining_job,
@@ -64,7 +65,20 @@ def run_retraining_worker_once(
             event_log.append(event_type="automatic_retraining_enqueue_error", payload={"error_message": str(exc)})
             auto_enqueue_info = {"auto_enqueue": {"attempted": True, "enqueued": False, "reason": "error", "job_id": None, "error_message": str(exc)}}
 
-    claimed = job_store.claim_next_queued_job(worker_pid=resolved_pid)
+    try:
+        claimed = job_store.claim_next_queued_job(worker_pid=resolved_pid)
+    except RuntimeError as exc:
+        if not is_retraining_lock_contention_error(exc):
+            raise
+        return {
+            "claimed": False,
+            "status": "idle",
+            "reason": "job_store_busy",
+            "job_store_busy": True,
+            "message": "Retraining job store is busy; retrying next worker iteration.",
+            **recovery_info,
+            **auto_enqueue_info,
+        }
     if claimed is None:
         return {"claimed": False, "status": "idle", **recovery_info, **auto_enqueue_info}
 

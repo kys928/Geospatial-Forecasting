@@ -1,3 +1,4 @@
+import { invalidateActiveForecastSession } from "../../sessions/api/sessionClient";
 import { httpGet, httpPost } from "../../../services/api/http";
 import { cachedOpsRequest, invalidateOpsCache, peekOpsCache } from "./opsCache";
 import type { OpsRegistryResponse } from "../../registry/types/registry.types";
@@ -76,6 +77,12 @@ function opsHeaders(): HeadersInit | undefined {
 async function opsMutation<T>(request: () => Promise<T>): Promise<T> {
   const response = await request();
   invalidateOpsCache();
+  return response;
+}
+
+async function opsActivationMutation<T>(request: () => Promise<T>): Promise<T> {
+  const response = await opsMutation(request);
+  invalidateActiveForecastSession("ops_model_activation");
   return response;
 }
 
@@ -199,13 +206,13 @@ export const opsClient = {
   },
 
   activateModel(modelId: string): Promise<ActivationResponse> {
-    return opsMutation(() =>
+    return opsActivationMutation(() =>
       httpPost<ActivationResponse, { model_id: string }>("/ops/models/activate", { model_id: modelId }, opsHeaders()),
     );
   },
 
   rollbackModel(): Promise<RollbackResponse> {
-    return opsMutation(() => httpPost<RollbackResponse>("/ops/models/rollback", {}, opsHeaders()));
+    return opsActivationMutation(() => httpPost<RollbackResponse>("/ops/models/rollback", {}, opsHeaders()));
   },
 
   getAdaptationBufferStatus(options: OpsRequestOptions = {}): Promise<AdaptationBufferStatus> {
@@ -273,7 +280,7 @@ export const opsClient = {
   },
 
   approveAdaptationCandidate(modelId: string, payload?: CandidateDecisionRequest): Promise<AdaptationPromotionDecision> {
-    return opsMutation(() =>
+    return opsActivationMutation(() =>
       httpPost<AdaptationPromotionDecision, CandidateDecisionRequest | undefined>(`/ops/adaptation/candidates/${encodeURIComponent(modelId)}/approve`, payload, opsHeaders()),
     );
   },

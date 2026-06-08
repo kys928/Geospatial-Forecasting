@@ -12,6 +12,7 @@ from plume.schemas.observation_batch import ObservationBatch
 from plume.schemas.prediction_request import PredictionRequest
 from plume.schemas.update_result import UpdateResult
 from plume.services.forecast_service import ForecastRunResult
+from plume.services.convlstm_operations import ModelRegistry
 from plume.services.metadata_utils import json_safe, normalize_conditions, normalize_source
 from plume.services.observation_service import ObservationService
 from plume.state.base import BaseStateStore
@@ -244,7 +245,38 @@ class OnlineForecastService:
                     "Latest forecast exists as persisted linkage only; full forecast result is not recoverable after restart"
                 )
             raise ValueError(f"No forecast result found for session: {session_id}")
-        return result
+        return self._mark_active_model_mismatch(result)
+
+    def _current_registry_active_model_id(self) -> str | None:
+        backend_config = self.config.load_backend()
+        if not (backend_config.get("use_model_registry") or backend_config.get("model_registry_path")):
+            return None
+        registry_path = backend_config.get("model_registry_path")
+        if not isinstance(registry_path, str) or not registry_path.strip():
+            return None
+        try:
+            active_model_id = ModelRegistry(registry_path).load().get("active_model_id")
+        except Exception:
+            return None
+        return active_model_id if isinstance(active_model_id, str) and active_model_id else None
+
+    def _mark_active_model_mismatch(self, result: ForecastRunResult) -> ForecastRunResult:
+        current_active_model_id = self._current_registry_active_model_id()
+        artifact_model_id = result.execution_metadata.get("model_id") or result.execution_metadata.get("active_registry_model_id")
+        if not current_active_model_id or not artifact_model_id or str(artifact_model_id) == current_active_model_id:
+            return result
+        mismatch_metadata = {
+            "stale_model": True,
+            "active_model_mismatch": True,
+            "current_active_model_id": current_active_model_id,
+            "artifact_model_id": str(artifact_model_id),
+        }
+        forecast_metadata = result.forecast.metadata if isinstance(result.forecast.metadata, dict) else {}
+        return replace(
+            result,
+            forecast=replace(result.forecast, metadata={**forecast_metadata, **mismatch_metadata}),
+            execution_metadata={**result.execution_metadata, **mismatch_metadata},
+        )
 
     def _predict_with_optional_fallback(
         self,

@@ -268,7 +268,7 @@ export function OpsTrainingTab() {
     () => buildSummaryText(trainingView.state, checklist, trainingView.detail),
     [trainingView.state, checklist, trainingView.detail],
   );
-  const logs = useMemo(
+  const rawLogs = useMemo(
     () =>
       collectLogs(
         statusState.status,
@@ -277,6 +277,14 @@ export function OpsTrainingTab() {
         candidateState.context,
       ),
     [statusState.status, jobForLogs, adaptationTraining, candidateState.context],
+  );
+  const metricLogLines = useMemo(
+    () => formatTrainingMetricsAsLogLines(jobForLogs, adaptationTraining),
+    [jobForLogs, adaptationTraining],
+  );
+  const logs = useMemo(
+    () => combineTrainingLogs(rawLogs, metricLogLines),
+    [rawLogs, metricLogLines],
   );
   const visibleLogs = logs.filter((line) => !/FutureWarning.*torch\.load|torch\.load.*FutureWarning/i.test(line));
   const hiddenWarningCount = logs.length - visibleLogs.length;
@@ -429,7 +437,7 @@ export function OpsTrainingTab() {
           className="button-row"
           style={{ justifyContent: "space-between", alignItems: "center", marginTop: 10 }}
         >
-          <h3 style={{ margin: 0 }}>Raw trainer output</h3>
+          <h3 style={{ margin: 0 }}>Terminal training output</h3>
           <div className="button-row">
             <label
               className="muted"
@@ -456,7 +464,7 @@ export function OpsTrainingTab() {
         </div>
         {jobForLogs?.log_available === false ? (
           <p className="muted" style={{ margin: "8px 0 0" }}>
-            Real training log file not available; showing summary.
+            Real training log file not available; showing generated metrics and summary.
           </p>
         ) : null}
         {hiddenWarningCount > 0 ? (
@@ -819,6 +827,111 @@ function formatProgressValue(value: unknown): string {
   if (typeof value !== "number") return String(value);
   const pct = value > 1 ? value : value * 100;
   return `${Math.max(0, Math.min(100, pct)).toFixed(1)}%`;
+}
+
+function metricSourceKey(source: Record<string, unknown>): string {
+  return [source.stage_name ?? source.stage ?? "stage", source.global_epoch ?? "epoch", source.epoch_in_stage ?? "stage_epoch"]
+    .map((value) => String(value))
+    .join(":");
+}
+
+function firstMetricValue(source: Record<string, unknown>, keys: string[]): unknown {
+  for (const key of keys) {
+    const value = source[key];
+    if (value !== undefined && value !== null && String(value).trim() !== "") return value;
+  }
+  return undefined;
+}
+
+function formatMetricPair(key: string, value: unknown): string | null {
+  if (value === undefined || value === null || String(value).trim() === "") return null;
+  return `${key}=${formatMetricValue(key, value)}`;
+}
+
+function metricPairs(source: Record<string, unknown>, entries: Array<[string, string[]]>): string {
+  return entries
+    .map(([label, keys]) => formatMetricPair(label, firstMetricValue(source, keys)))
+    .filter((value): value is string => Boolean(value))
+    .join(" ");
+}
+
+function collectMetricLogSources(latestJob: OpsJobRecord | null, adaptationTraining: AdaptationTrainingStatus | null): Record<string, unknown>[] {
+  const sources = collectTrainingMetricSources(asObj(latestJob), adaptationTraining);
+  const deduped: Record<string, unknown>[] = [];
+  const seen = new Set<string>();
+  for (const source of sources) {
+    if (!Object.keys(source).some((key) => TRAINING_METRIC_KEYS.includes(key))) continue;
+    const key = metricSourceKey(source);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    deduped.push(source);
+  }
+  return deduped.slice(0, 3);
+}
+
+export function formatTrainingMetricsAsLogLines(
+  latestJob: OpsJobRecord | null,
+  adaptationTraining: AdaptationTrainingStatus | null,
+): string[] {
+  const lines: string[] = [];
+  for (const source of collectMetricLogSources(latestJob, adaptationTraining)) {
+    const identity = metricPairs(source, [
+      ["stage", ["stage_name", "stage"]],
+      ["global_epoch", ["global_epoch"]],
+      ["epoch_in_stage", ["epoch_in_stage"]],
+    ]);
+    if (identity) lines.push(`[metrics] ${identity}`);
+    const losses = metricPairs(source, [
+      ["train_loss", ["train_loss"]],
+      ["val_loss", ["val_loss"]],
+      ["val_rollout_weighted_mse", ["val_rollout_weighted_mse"]],
+      ["val_direct_weighted_mse", ["val_direct_weighted_mse"]],
+    ]);
+    if (losses) lines.push(`[metrics] ${losses}`);
+    const rollout = metricPairs(source, [
+      ["val_rollout_mae", ["val_rollout_mae"]],
+      ["val_rollout_mass_abs_error", ["val_rollout_mass_abs_error"]],
+      ["val_rollout_peak_location_error", ["val_rollout_peak_location_error"]],
+    ]);
+    if (rollout) lines.push(`[metrics] ${rollout}`);
+    const selection = metricPairs(source, [
+      ["val_rollout_plume_iou", ["val_rollout_plume_iou"]],
+      ["val_free_rollout_gap", ["val_free_rollout_gap"]],
+      ["selection_score", ["selection_score"]],
+    ]);
+    if (selection) lines.push(`[metrics] ${selection}`);
+    const scheduler = metricPairs(source, [
+      ["lr", ["learning_rate", "lr"]],
+      ["teacher_forcing_prob", ["teacher_forcing_prob", "teacher_forcing_ratio"]],
+    ]);
+    if (scheduler) lines.push(`[metrics] ${scheduler}`);
+  }
+
+  const bestSource = collectTrainingMetricSources(asObj(latestJob), adaptationTraining).find((source) =>
+    ["best_score", "best_stage", "best_global_epoch", "best_checkpoint_path"].some((key) => source[key] !== undefined && source[key] !== null),
+  );
+  if (bestSource) {
+    const best = metricPairs(bestSource, [
+      ["score", ["best_score"]],
+      ["stage", ["best_stage"]],
+      ["global_epoch", ["best_global_epoch"]],
+      ["checkpoint", ["best_checkpoint_path"]],
+    ]);
+    if (best) lines.push(`[best] ${best}`);
+  }
+  return lines;
+}
+
+function combineTrainingLogs(rawLogs: string[], metricLogLines: string[]): string[] {
+  if (!metricLogLines.length) return rawLogs;
+  const rawMetricKeys = new Set(
+    rawLogs
+      .filter((line) => line.startsWith("[metrics]") || line.startsWith("[best]"))
+      .map((line) => line.trim()),
+  );
+  const generated = metricLogLines.filter((line) => !rawMetricKeys.has(line.trim()));
+  if (!generated.length) return rawLogs;
+  return rawLogs.length ? [...rawLogs, "", ...generated] : generated;
 }
 
 function formatDurationSeconds(totalSeconds: number): string {
