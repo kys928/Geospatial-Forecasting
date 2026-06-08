@@ -175,7 +175,7 @@ def check_adaptation_checkpoint_compatibility(
     try:
         import torch  # type: ignore
 
-        raw = torch.load(checkpoint_path, map_location="cpu")
+        raw = _load_torch_checkpoint_payload(torch, checkpoint_path)
     except Exception as exc:  # noqa: BLE001
         return CompatibilityResult(False, False, str(checkpoint_path), [f"checkpoint_torch_load_failed:{exc}"])
     if not isinstance(raw, dict):
@@ -249,6 +249,22 @@ def extract_promotion_metrics(record: dict[str, object] | None, *, training_summ
         if isinstance(value, (float, int)):
             metrics[key] = float(value)
     return metrics
+
+
+def _load_torch_checkpoint_payload(torch_module: Any, checkpoint_path: Path) -> object:
+    try:
+        return torch_module.load(checkpoint_path, map_location="cpu", weights_only=True)
+    except TypeError:  # Older torch versions do not support weights_only.
+        return torch_module.load(checkpoint_path, map_location="cpu")
+    except Exception as weights_only_error:  # noqa: BLE001
+        # Some legacy trusted checkpoints require pickle objects that are outside
+        # torch's weights-only allowlist. Preserve existing compatibility by
+        # falling back to the historical loader, while still surfacing corrupt
+        # checkpoint errors if both load paths fail.
+        try:
+            return torch_module.load(checkpoint_path, map_location="cpu")
+        except Exception:  # noqa: BLE001
+            raise weights_only_error
 
 
 def _validate_checkpoint_payload(payload: dict[str, object]) -> CompatibilityResult:
