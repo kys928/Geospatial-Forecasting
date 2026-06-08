@@ -641,3 +641,36 @@ def test_online_forecast_marks_old_artifacts_stale_after_active_model_changes(tm
     assert marked.execution_metadata["artifact_model_id"] == "active-convlstm"
     assert marked.execution_metadata["current_active_model_id"] == "new-active-convlstm"
     assert marked.forecast.metadata["model_id"] == "active-convlstm"
+
+
+def test_default_model_registry_points_to_robust_pretrained_baseline():
+    registry_path = Path("artifacts/convlstm_ops/model_registry.json")
+    payload = json.loads(registry_path.read_text(encoding="utf-8"))
+
+    active_model_id = "robust_pretrained_baseline_v3c_tiny_recall_lift"
+    expected_checkpoint = "artifacts/models/convlstm_multistep_three_stage_robust_v3c_tiny_recall_lift/v3b_final_baseline_full_checkpoint.pt"
+
+    assert payload["active_model_id"] == active_model_id
+    models = payload["models"]
+    active_records = [model for model in models if model.get("status") == "active"]
+    assert len(active_records) == 1
+    active_record = active_records[0]
+    assert active_record["model_id"] == active_model_id
+    assert active_record["approval_status"] == "approved_for_activation"
+    assert active_record["path"] == expected_checkpoint
+    assert active_record["model_family"] == "RobustMultiStepConvLSTMForecaster"
+    assert active_record["source"] == "pretrained_baseline"
+    assert active_record["model_contract"] == {
+        "model_name": "RobustMultiStepConvLSTMForecaster",
+        "forecast_mode": "direct_plus_autoregressive_multistep",
+        "input_shape": [3, 10, 64, 64],
+        "output_shape": [4, 1, 64, 64],
+        "has_direct_branch": True,
+        "has_autoregressive_branch": True,
+        "residual_rollout": True,
+    }
+    assert all(
+        model.get("status") != "active"
+        for model in models
+        if str(model.get("model_id", "")).startswith("candidate_retrain-job-")
+    )

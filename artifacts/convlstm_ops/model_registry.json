@@ -1,0 +1,57 @@
+{
+    "active_model_id": "robust_pretrained_baseline_v3c_tiny_recall_lift",
+    "approval_audit": [],
+    "events": [
+        {
+            "comment": "reset_to_pretrained_baseline",
+            "event_index": 0,
+            "event_type": "model_activated",
+            "model_id": "robust_pretrained_baseline_v3c_tiny_recall_lift",
+            "previous_active_model_id": "candidate_retrain-job-000405",
+            "source": "reset_to_pretrained_baseline",
+            "timestamp": "2026-06-08T00:00:00+00:00"
+        }
+    ],
+    "models": [
+        {
+            "approval_status": "approved_for_activation",
+            "contract_version": "robust_convlstm_adaptation_v1",
+            "model_contract": {
+                "forecast_mode": "direct_plus_autoregressive_multistep",
+                "has_autoregressive_branch": true,
+                "has_direct_branch": true,
+                "input_shape": [
+                    3,
+                    10,
+                    64,
+                    64
+                ],
+                "model_name": "RobustMultiStepConvLSTMForecaster",
+                "output_shape": [
+                    4,
+                    1,
+                    64,
+                    64
+                ],
+                "residual_rollout": true
+            },
+            "model_family": "RobustMultiStepConvLSTMForecaster",
+            "model_id": "robust_pretrained_baseline_v3c_tiny_recall_lift",
+            "normalization_mode": "robust_multistep",
+            "path": "artifacts/models/convlstm_multistep_three_stage_robust_v3c_tiny_recall_lift/v3b_final_baseline_full_checkpoint.pt",
+            "prediction_engine": "torch_robust_multistep",
+            "source": "pretrained_baseline",
+            "status": "active",
+            "target_policy": "plume_only"
+        },
+        {
+            "approval_status": "approved_for_activation",
+            "model_id": "candidate_retrain-job-000405",
+            "source": "historical_candidate",
+            "status": "archived"
+        }
+    ],
+    "next_event_index": 1,
+    "previous_active_model_id": "candidate_retrain-job-000405",
+    "revision": 1
+}

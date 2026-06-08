@@ -60,6 +60,7 @@ def make_lightweight_convlstm_config(tmp_path: Path):
     backend["convlstm_init_mode"] = "random_init"
     backend["convlstm_checkpoint_path"] = None
     backend["convlstm_device"] = "cpu"
+    backend["use_model_registry"] = False
     backend_yaml.write_text(yaml.safe_dump(backend), encoding="utf-8")
     return Config(config_dir=cfg_dir)
 
