@@ -58,6 +58,7 @@ from plume.services.convlstm_operations import (
     rollback_to_previous_model,
     submit_retraining_job,
     summarize_operational_status,
+    try_recover_stale_active_jobs,
 )
 
 from plume.services.model_candidate_context import build_model_candidate_context
@@ -369,7 +370,7 @@ def _adaptation_readiness(config: AdaptationReadinessConfig) -> dict[str, object
     paths = _ops_paths()
     registry_payload = ModelRegistry(paths["registry"]).load()
     jobs_store = RetrainingJobStore(paths["jobs"])
-    jobs_store.recover_stale_active_jobs()
+    recovery_result = try_recover_stale_active_jobs(jobs_store)
     jobs = _annotate_stale_jobs(jobs_store.list_jobs())
     active = _record_by_id(registry_payload.get("models", []), registry_payload.get("active_model_id"))
     active_checkpoint = active.get("path") if active else None
@@ -381,7 +382,7 @@ def _adaptation_readiness(config: AdaptationReadinessConfig) -> dict[str, object
         if str(job.get("effective_status") or job.get("status") or "").lower() in {"queued", "running", "starting", "claimed"}
         and not bool(job.get("is_stale"))
     ]
-    return AdaptationReadinessService(config).evaluate(
+    readiness_payload = AdaptationReadinessService(config).evaluate(
         active_checkpoint_path=str(active_checkpoint) if active_checkpoint else None,
         latest_best_checkpoint_path=latest_best,
         checkpoint_dir=Path(paths["registry"]).parent,
@@ -391,6 +392,16 @@ def _adaptation_readiness(config: AdaptationReadinessConfig) -> dict[str, object
         registry=registry_payload,
         last_adaptation_training_at=latest_adaptation_training_at,
     ).to_dict()
+    if recovery_result.get("job_store_busy"):
+        readiness_payload["job_store_busy"] = True
+        readiness_payload["recovery_skipped_reason"] = "lock_busy"
+        warnings = readiness_payload.get("warnings")
+        if isinstance(warnings, list):
+            warnings.append("Retraining job store busy; stale recovery skipped. Retry shortly.")
+    else:
+        readiness_payload.setdefault("job_store_busy", False)
+        readiness_payload.setdefault("recovery_skipped_reason", None)
+    return readiness_payload
 
 
 
@@ -687,7 +698,7 @@ def _candidate_response(record: dict[str, object]) -> dict[str, object]:
 
 def _adaptation_training_status() -> dict[str, object]:
     jobs_store = RetrainingJobStore(_ops_paths()["jobs"])
-    jobs_store.recover_stale_active_jobs()
+    recovery_result = try_recover_stale_active_jobs(jobs_store)
     jobs = jobs_store.list_jobs()
     counts = {status: 0 for status in ("queued", "running", "waiting", "failed", "succeeded", "cancelled")}
     for job in jobs:
@@ -779,6 +790,8 @@ def _adaptation_training_status() -> dict[str, object]:
         "final_checkpoint": str(final_checkpoint) if final_checkpoint else None,
         **cooldown,
         "error_message": None if latest is None else latest.get("error_message"),
+        "job_store_busy": bool(recovery_result.get("job_store_busy")),
+        "recovery_skipped_reason": recovery_result.get("recovery_skipped_reason"),
     }
 
 

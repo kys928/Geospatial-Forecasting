@@ -485,3 +485,136 @@ def test_decision_support_prediction_owner_uses_active_convlstm_provenance():
     answer = svc.chat("Who is doing the predictions?")["answer"]
     assert "active ConvLSTM model" in answer
     assert "ridge" not in answer.lower()
+
+
+def _write_job_payload(path: Path, jobs: list[dict[str, object]]) -> None:
+    path.write_text(json.dumps({"jobs": jobs, "next_sequence": len(jobs)}), encoding="utf-8")
+
+
+def _waiting_job(job_id: str, created_at: str, **overrides: object) -> dict[str, object]:
+    job: dict[str, object] = {
+        "job_id": job_id,
+        "status": "waiting",
+        "created_sequence": 0,
+        "created_at": created_at,
+        "dataset_snapshot_ref": "adaptation_readiness_green",
+        "run_config_ref": "automatic_adaptation",
+        "output_dir": "artifacts/runs/retrain-job-000000",
+        "metadata": {"automatic_trigger": True},
+    }
+    job.update(overrides)
+    return job
+
+
+def test_stale_automatic_waiting_job_cancelled_by_backlog_cleanup(tmp_path: Path):
+    from plume.services.convlstm_operations import cleanup_stale_automatic_retraining_backlog
+
+    now = datetime(2026, 1, 1, tzinfo=UTC)
+    store = RetrainingJobStore(tmp_path / "jobs.json")
+    _write_job_payload(store.path, [_waiting_job("stale-auto-wait", (now - timedelta(seconds=1000)).isoformat())])
+
+    first = cleanup_stale_automatic_retraining_backlog(job_store=store, now=now, stale_after_seconds=900)
+    second = cleanup_stale_automatic_retraining_backlog(job_store=store, now=now, stale_after_seconds=900)
+
+    job = store.latest_job()
+    assert first["cancelled_count"] == 1
+    assert second["cancelled_count"] == 0
+    assert job["status"] == "cancelled"
+    assert job["finished_at"] == now.isoformat()
+    assert job["updated_at"] == now.isoformat()
+    assert job["error_message"] == "auto-cancelled as stale automatic retraining backlog"
+    assert job["metadata"]["stale_waiting_backlog_recovered"] is True
+
+
+def test_stale_adaptation_waiting_job_with_weak_markers_cancelled(tmp_path: Path):
+    from plume.services.convlstm_operations import cleanup_stale_automatic_retraining_backlog
+
+    now = datetime(2026, 1, 1, tzinfo=UTC)
+    store = RetrainingJobStore(tmp_path / "jobs.json")
+    weak = _waiting_job(
+        "weak-adaptation-wait",
+        (now - timedelta(seconds=1000)).isoformat(),
+        metadata={},
+        run_config_ref="automatic_adaptation",
+        dataset_snapshot_ref="buffered_internal_dataset",
+    )
+    _write_job_payload(store.path, [weak])
+
+    result = cleanup_stale_automatic_retraining_backlog(job_store=store, now=now, stale_after_seconds=900)
+
+    assert result["cancelled_job_ids"] == ["weak-adaptation-wait"]
+    assert store.latest_job()["status"] == "cancelled"
+
+
+def test_waiting_backlog_cleanup_protects_fresh_manual_and_claimed_jobs(tmp_path: Path):
+    from plume.services.convlstm_operations import cleanup_stale_automatic_retraining_backlog
+
+    now = datetime(2026, 1, 1, tzinfo=UTC)
+    old = (now - timedelta(seconds=1000)).isoformat()
+    fresh = (now - timedelta(seconds=100)).isoformat()
+    store = RetrainingJobStore(tmp_path / "jobs.json")
+    manual = _waiting_job("manual-wait", old, metadata={"manual_trigger": True, "worker_claimed": False})
+    claimed = _waiting_job("claimed-wait", old, metadata={"automatic_trigger": True, "worker_claimed": True})
+    _write_job_payload(store.path, [_waiting_job("fresh-wait", fresh), manual, claimed])
+
+    result = cleanup_stale_automatic_retraining_backlog(job_store=store, now=now, stale_after_seconds=900)
+
+    assert result["cancelled_count"] == 0
+    statuses = {str(job["job_id"]): job["status"] for job in store.list_jobs()}
+    assert statuses == {"fresh-wait": "waiting", "manual-wait": "waiting", "claimed-wait": "waiting"}
+
+
+def test_stale_waiting_cleanup_unblocks_automatic_enqueue(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+    config_dir = tmp_path / "configs"
+    _write_adaptation_config(config_dir, cooldown=0)
+    monkeypatch.setattr("plume.services.convlstm_operations.AdaptationReadinessService.evaluate", lambda *_a, **_k: Ready())
+    now = datetime(2026, 1, 1, tzinfo=UTC)
+    store = RetrainingJobStore(tmp_path / "jobs.json")
+    _write_job_payload(store.path, [_waiting_job("stale-wait", (now - timedelta(seconds=1000)).isoformat())])
+
+    result = maybe_enqueue_automatic_adaptation_job(
+        job_store=store,
+        event_log=OperationalEventLog(tmp_path / "events.jsonl"),
+        config_dir=config_dir,
+        registry=_registry(tmp_path / "registry.json"),
+        now=now,
+    )
+
+    assert result["enqueued"] is True
+    assert result["backlog_cleanup"]["cancelled_job_ids"] == ["stale-wait"]
+    statuses = {str(job["job_id"]): job["status"] for job in store.list_jobs()}
+    assert statuses["stale-wait"] == "cancelled"
+    assert statuses["retrain-job-000001"] == "queued"
+
+
+def test_real_active_job_still_blocks_automatic_enqueue(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+    config_dir = tmp_path / "configs"
+    _write_adaptation_config(config_dir, cooldown=0)
+    monkeypatch.setattr("plume.services.convlstm_operations.AdaptationReadinessService.evaluate", lambda *_a, **_k: Ready())
+    now = datetime(2026, 1, 1, tzinfo=UTC)
+    store = RetrainingJobStore(tmp_path / "jobs.json")
+    _write_job_payload(
+        store.path,
+        [
+            {
+                "job_id": "active-running",
+                "status": "running",
+                "created_sequence": 0,
+                "created_at": now.isoformat(),
+                "started_at": now.isoformat(),
+                "metadata": {"automatic_trigger": True},
+            }
+        ],
+    )
+
+    result = maybe_enqueue_automatic_adaptation_job(
+        job_store=store,
+        event_log=OperationalEventLog(tmp_path / "events.jsonl"),
+        config_dir=config_dir,
+        registry=_registry(tmp_path / "registry.json"),
+        now=now,
+    )
+
+    assert result["enqueued"] is False
+    assert result["reason"] == "active_job"
+    assert result["active_job_count"] == 1

@@ -164,6 +164,8 @@ class AdaptationReadinessResponse(BaseModel):
     warnings: list[str]
     next_retry_at: str | None = None
     summary: dict[str, Any]
+    job_store_busy: bool = False
+    recovery_skipped_reason: str | None = None
 
 
 class AdaptationTrainingStatusResponse(BaseModel):
@@ -181,6 +183,8 @@ class AdaptationTrainingStatusResponse(BaseModel):
     next_automatic_training_eligible_at: str | None = None
     cooldown_source: str | None = None
     error_message: str | None = None
+    job_store_busy: bool = False
+    recovery_skipped_reason: str | None = None
 
 
 class AdaptationCandidateResponse(BaseModel):
