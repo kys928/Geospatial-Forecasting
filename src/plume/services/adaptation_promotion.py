@@ -257,14 +257,29 @@ def _load_torch_checkpoint_payload(torch_module: Any, checkpoint_path: Path) -> 
     except TypeError:  # Older torch versions do not support weights_only.
         return torch_module.load(checkpoint_path, map_location="cpu")
     except Exception as weights_only_error:  # noqa: BLE001
+        if not _is_weights_only_compatibility_error(weights_only_error):
+            raise
         # Some legacy trusted checkpoints require pickle objects that are outside
-        # torch's weights-only allowlist. Preserve existing compatibility by
-        # falling back to the historical loader, while still surfacing corrupt
-        # checkpoint errors if both load paths fail.
+        # torch's weights-only allowlist. Preserve existing compatibility only
+        # for known weights-only compatibility failures.
         try:
             return torch_module.load(checkpoint_path, map_location="cpu")
         except Exception:  # noqa: BLE001
             raise weights_only_error
+
+
+def _is_weights_only_compatibility_error(exc: Exception) -> bool:
+    message = str(exc)
+    return any(
+        marker in message
+        for marker in (
+            "Weights only load failed",
+            "weights_only",
+            "Unsupported global",
+            "add_safe_globals",
+            "WeightsUnpickler",
+        )
+    )
 
 
 def _validate_checkpoint_payload(payload: dict[str, object]) -> CompatibilityResult:
