@@ -60,8 +60,21 @@ export function OpsEventsTab() {
   return (
     <div className="activity-log-layout">
       <section className="panel activity-log-header">
-        <h3>Activity Log</h3>
-        <p className="muted">Recent operational activity from training, model registry, workers, and forecasts.</p>
+        <div className="activity-log-title-row">
+          <div>
+            <h3>Activity Log</h3>
+            <p className="muted">Recent operational activity from training, model registry, workers, and forecasts.</p>
+            <p className="muted">Last updated: {eventsState.lastUpdatedLabel ?? "Not yet refreshed"}</p>
+          </div>
+          <button
+            className="secondary-button"
+            type="button"
+            disabled={eventsState.loading || eventsState.refreshing}
+            onClick={() => void eventsState.refresh({ force: true })}
+          >
+            {eventsState.refreshing ? "Refreshing..." : "Refresh"}
+          </button>
+        </div>
         <div className="activity-toolbar">
           <input className="activity-search" aria-label="Search activity" placeholder="Search activity..." value={searchText} onChange={(e) => setSearchText(e.target.value)} />
           <select className="activity-select" value={category} onChange={(e) => setCategory(e.target.value as "all" | EventCategory)}>
