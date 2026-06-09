@@ -50,6 +50,11 @@ const CORE_DETAIL_LABELS = new Set([
   "Path",
   "Updated time",
 ]);
+const LIFECYCLE_DETAIL_LABELS = new Set([
+  "Parent / trained from",
+  "Gate / promotion",
+  "Checkpoint file",
+]);
 const MODEL_METRIC_KEYS = [
   "selection_score",
   "val_rollout_weighted_mse",
@@ -182,6 +187,68 @@ function checkpointFileExists(model: RegistryModelRecord): boolean | null {
   return typeof value === "boolean" ? value : null;
 }
 
+export function compactPathLabel(path: unknown): string {
+  if (typeof path !== "string" || !path.trim()) return "Not reported";
+  const cleaned = path.trim();
+  const parts = cleaned.split(/[\\/]+/).filter(Boolean);
+  return parts.length ? parts[parts.length - 1] : cleaned;
+}
+
+function selectedResumeCheckpoint(model: RegistryModelRecord): Record<string, unknown> | null {
+  return asRecord(
+    pickValue(model, [
+      ["selected_resume_checkpoint"],
+      ["adaptation_run", "selected_resume_checkpoint"],
+      ["metadata", "selected_resume_checkpoint"],
+    ]),
+  );
+}
+
+export function modelParentLabel(model: RegistryModelRecord): string {
+  const parentModelId = pickValue(model, [
+    ["parent_active_model_id"],
+    ["adaptation_run", "parent_active_model_id"],
+    ["metadata", "parent_active_model_id"],
+    ["trained_from_model_id"],
+    ["metadata", "trained_from_model_id"],
+  ]);
+  if (typeof parentModelId === "string" && parentModelId.trim()) return parentModelId.trim();
+
+  const resume = selectedResumeCheckpoint(model);
+  const source = resume?.source;
+  if (typeof source === "string" && source.trim()) return source.trim();
+  const checkpointPath = resume?.checkpoint_path ?? resume?.path;
+  const compactPath = compactPathLabel(checkpointPath);
+  return compactPath !== "Not reported" ? compactPath : "Not reported";
+}
+
+function selectionGateOutcome(model: RegistryModelRecord): Record<string, unknown> | null {
+  return asRecord(
+    pickValue(model, [
+      ["selection_gate_outcome"],
+      ["adaptation_run", "selection_gate_outcome"],
+      ["metadata", "selection_gate_outcome"],
+      ["last_adaptation_promotion_decision", "selection_gate_outcome"],
+      ["last_promotion_result", "selection_gate_outcome"],
+    ]),
+  );
+}
+
+export function modelGateLabel(model: RegistryModelRecord): string {
+  const outcome = selectionGateOutcome(model);
+  if (!outcome) return "Not reported";
+  if (outcome.stage3_rejected_by_gates === true) return "Stage 3 rejected; promoted Stage 2";
+  if (outcome.gates_enabled === true) return "Passed";
+  if (outcome.stage3_rejected_by_gates === false) return "No gate issue";
+  return "Not reported";
+}
+
+export function modelCheckpointHealthLabel(model: RegistryModelRecord): string {
+  const exists = checkpointFileExists(model);
+  if (exists === null) return "Not reported";
+  return exists ? "Yes" : "No";
+}
+
 function isModelActive(
   model: DisplayModel,
   activeModelId: string | null,
@@ -230,6 +297,14 @@ function coreRows(
     fieldRow("Path", model.path),
     fieldRow("Created time", model.created_at),
     fieldRow("Updated time", model.updated_at),
+  ];
+}
+
+function lifecycleRows(model: DisplayModel): DetailRow[] {
+  return [
+    fieldRow("Parent / trained from", modelParentLabel(model)),
+    fieldRow("Gate / promotion", modelGateLabel(model)),
+    fieldRow("Checkpoint file", modelCheckpointHealthLabel(model)),
   ];
 }
 
@@ -341,6 +416,7 @@ function adaptationRows(model: DisplayModel): DetailRow[] {
 
 function supplementalRows(model: DisplayModel): DetailRow[] {
   return [
+    fieldRow("Raw path", model.path),
     structuredRow(
       "Metrics / evidence",
       model.metrics ?? model.checkpoint_metric ?? model.checkpoint_metric_name,
@@ -517,7 +593,9 @@ export function OpsRegistryTab() {
                   <th>Model ID</th>
                   <th>Status</th>
                   <th>Approval</th>
-                  <th>Path</th>
+                  <th>Parent / Trained from</th>
+                  <th>Gate / Promotion</th>
+                  <th>Checkpoint</th>
                   <th>Updated</th>
                   <th>Active</th>
                   <th>Actions</th>
@@ -547,8 +625,18 @@ export function OpsRegistryTab() {
                       <td>{id}</td>
                       <td>{formatCellValue(model.status)}</td>
                       <td>{formatCellValue(model.approval_status)}</td>
-                      <td title={formatCellValue(model.path)}>
-                        {formatCellValue(model.path)}
+                      <td title={modelParentLabel(model)}>
+                        {modelParentLabel(model)}
+                      </td>
+                      <td>{modelGateLabel(model)}</td>
+                      <td
+                        title={
+                          active
+                            ? "Active model checkpoint deletion is not available from the row menu."
+                            : undefined
+                        }
+                      >
+                        {modelCheckpointHealthLabel(model)}
                       </td>
                       <td>
                         {formatCellValue(model.updated_at ?? model.created_at)}
@@ -688,6 +776,11 @@ export function OpsRegistryTab() {
               title="Core"
               rows={coreRows(inspectModel, activeModelId)}
               preserveLabels={CORE_DETAIL_LABELS}
+            />
+            <ModelDetailSection
+              title="Lifecycle"
+              rows={lifecycleRows(inspectModel)}
+              preserveLabels={LIFECYCLE_DETAIL_LABELS}
             />
             {isAdaptationRecord(inspectModel) ? (
               <ModelDetailSection
