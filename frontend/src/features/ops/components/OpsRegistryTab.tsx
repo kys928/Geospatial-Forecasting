@@ -274,6 +274,22 @@ function canActivateModel(
   );
 }
 
+function checkpointDeleteDisabledReason(
+  model: DisplayModel,
+  activeModelId: string | null,
+): string | null {
+  const modelId = typeof model.model_id === "string" ? model.model_id : "";
+  if (!modelId) return "Model ID is missing.";
+  if (!isAdaptationRecord(model)) return "Only adaptation checkpoint records can be deleted from this danger zone.";
+  if (isModelActive(model, activeModelId)) return "Active model checkpoints cannot be deleted.";
+  if (checkpointFileExists(model) === false) return "Checkpoint file is already missing.";
+  return null;
+}
+
+function canDeleteCheckpointFile(model: DisplayModel, activeModelId: string | null): boolean {
+  return checkpointDeleteDisabledReason(model, activeModelId) === null;
+}
+
 function decisionPayload(comment: string): CandidateDecisionRequest {
   return { actor: "ops-ui", comment };
 }
@@ -538,20 +554,19 @@ export function OpsRegistryTab() {
 
   async function handleDeleteCheckpointFile(model: DisplayModel) {
     const modelId = typeof model.model_id === "string" ? model.model_id : "";
-    if (
-      !modelId ||
-      !isAdaptationRecord(model) ||
-      isModelActive(model, activeModelId)
-    )
+    const disabledReason = checkpointDeleteDisabledReason(model, activeModelId);
+    if (disabledReason || !modelId) {
+      setActionError(disabledReason ?? "Checkpoint deletion is not available for this model.");
       return;
+    }
     const confirmed = window.confirm(
-      `Delete checkpoint file for ${modelId}? The model record and history stay visible. Only the .pt file is removed. This cannot be undone.`,
+      `Delete checkpoint .pt file for ${modelId}? Registry metadata and history remain visible. Active model checkpoints cannot be deleted. This action cannot be undone.`,
     );
     if (!confirmed) return;
     await runAction(modelId, "Delete checkpoint file", () =>
       opsClient.deleteAdaptationCheckpointFile(
         modelId,
-        decisionPayload("Checkpoint file deleted from Ops UI."),
+        decisionPayload("Checkpoint file deleted from Ops UI danger zone."),
       ),
     );
   }
@@ -609,14 +624,6 @@ export function OpsRegistryTab() {
                   const isDemo = Boolean(model.isDemo);
                   const active = isModelActive(model, activeModelId);
                   const canActivate = canActivateModel(model, activeModelId);
-                  const adaptation = isAdaptationRecord(model);
-                  const checkpointExists = checkpointFileExists(model);
-                  const canDeleteCheckpoint =
-                    adaptation &&
-                    !active &&
-                    !isDemo &&
-                    checkpointExists !== false &&
-                    modelId.length > 0;
                   const busy =
                     runningAction?.startsWith(`${modelId}:`) ?? false;
 
@@ -710,35 +717,6 @@ export function OpsRegistryTab() {
                                 >
                                   Inspect model
                                 </button>
-                                {adaptation ? (
-                                  <button
-                                    onClick={() =>
-                                      void handleDeleteCheckpointFile(model)
-                                    }
-                                    disabled={!canDeleteCheckpoint || busy}
-                                    title={
-                                      active
-                                        ? "Active model checkpoint files cannot be deleted from this UI."
-                                        : canDeleteCheckpoint
-                                          ? "Delete checkpoint file only; registry metadata remains."
-                                          : "Checkpoint deletion is not available for this record."
-                                    }
-                                  >
-                                    {busy &&
-                                    runningAction?.endsWith(
-                                      "Delete checkpoint file",
-                                    )
-                                      ? "Deleting..."
-                                      : "Delete checkpoint file"}
-                                  </button>
-                                ) : (
-                                  <button
-                                    disabled
-                                    title="Full model deletion is not available from this UI."
-                                  >
-                                    Delete not available
-                                  </button>
-                                )}
                               </div>,
                               document.body,
                             )
@@ -772,6 +750,8 @@ export function OpsRegistryTab() {
                 backend actions.
               </p>
             ) : null}
+            {actionError ? <p className="failure-text">{actionError}</p> : null}
+            {actionNotice ? <p className="muted">{actionNotice}</p> : null}
             <ModelDetailSection
               title="Core"
               rows={coreRows(inspectModel, activeModelId)}
@@ -791,6 +771,12 @@ export function OpsRegistryTab() {
             <ModelDetailSection
               title="Technical details"
               rows={supplementalRows(inspectModel)}
+            />
+            <CheckpointDangerZone
+              model={inspectModel}
+              activeModelId={activeModelId}
+              runningAction={runningAction}
+              onDelete={handleDeleteCheckpointFile}
             />
             <details className="advanced-section" open>
               <summary>Training Logs</summary>
@@ -817,6 +803,50 @@ export function OpsRegistryTab() {
         </div>
       ) : null}
     </div>
+  );
+}
+
+function CheckpointDangerZone({
+  model,
+  activeModelId,
+  runningAction,
+  onDelete,
+}: {
+  model: DisplayModel;
+  activeModelId: string | null;
+  runningAction: string | null;
+  onDelete: (model: DisplayModel) => Promise<void>;
+}) {
+  const modelId = typeof model.model_id === "string" ? model.model_id : "";
+  const disabledReason = checkpointDeleteDisabledReason(model, activeModelId);
+  const busy = Boolean(modelId && runningAction === `${modelId}:Delete checkpoint file`);
+  const deleteDisabled = !canDeleteCheckpointFile(model, activeModelId) || busy;
+
+  return (
+    <details className="advanced-section ops-danger-zone">
+      <summary>Danger zone</summary>
+      <div style={{ display: "grid", gap: 8, marginTop: 8 }}>
+        <p className="muted" style={{ margin: 0 }}>
+          Delete only the checkpoint .pt file for an adaptation record. Registry
+          metadata and history remain visible, active model checkpoints cannot be
+          deleted, and this action cannot be undone.
+        </p>
+        {disabledReason ? (
+          <p className="muted" style={{ margin: 0 }}>
+            Delete unavailable: {disabledReason}
+          </p>
+        ) : null}
+        <button
+          className="secondary-button"
+          type="button"
+          disabled={deleteDisabled}
+          title={disabledReason ?? "Delete checkpoint file only; registry metadata remains."}
+          onClick={() => void onDelete(model)}
+        >
+          {busy ? "Deleting checkpoint file..." : "Delete checkpoint file"}
+        </button>
+      </div>
+    </details>
   );
 }
 
