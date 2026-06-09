@@ -15,7 +15,7 @@ type ViewportMenuPositionOptions = {
   menuHeight?: number;
   gap?: number;
 };
-type DisplayModel = RegistryModelRecord & { isDemo?: boolean };
+type DisplayModel = RegistryModelRecord;
 
 const ROW_MENU_WIDTH = 190;
 const ROW_MENU_HEIGHT = 120;
@@ -103,16 +103,6 @@ function formatNumber(value: number): string {
   if (value !== 0 && Math.abs(value) < 0.001) return value.toExponential(3);
   return Number(value.toPrecision(4)).toString();
 }
-
-const demoRow: DisplayModel = {
-  model_id: "demo_convlstm_v0_1",
-  status: "ready",
-  approval_status: "approved",
-  path: "/models/demo_convlstm_v0_1.pt",
-  updated_at: "Demo",
-  metadata: { source: "Demo row" },
-  isDemo: true,
-};
 
 function formatCellValue(value: unknown, fallback = "Not reported") {
   if (value === null || value === undefined) return fallback;
@@ -253,7 +243,6 @@ function isModelActive(
   model: DisplayModel,
   activeModelId: string | null,
 ): boolean {
-  if (model.isDemo) return false;
   const modelId = typeof model.model_id === "string" ? model.model_id : "";
   return Boolean(
     (activeModelId && modelId === activeModelId) || model.status === "active",
@@ -264,7 +253,7 @@ function canActivateModel(
   model: DisplayModel,
   activeModelId: string | null,
 ): boolean {
-  if (model.isDemo || isModelActive(model, activeModelId)) return false;
+  if (isModelActive(model, activeModelId)) return false;
   const modelId = typeof model.model_id === "string" ? model.model_id : "";
   if (!modelId) return false;
   const approval = String(model.approval_status ?? "").toLowerCase();
@@ -493,11 +482,10 @@ export function OpsRegistryTab() {
   const menuRef = useRef<HTMLDivElement | null>(null);
 
   const models = registryState.registry?.models ?? [];
-  const displayModels = models.length ? models : [demoRow];
   const inspectModel = useMemo(
     () =>
-      displayModels.find((model) => model.model_id === inspectModelId) ?? null,
-    [displayModels, inspectModelId],
+      models.find((model) => model.model_id === inspectModelId) ?? null,
+    [models, inspectModelId],
   );
   const activeModelId = registryState.registry?.active_model_id ?? null;
 
@@ -578,11 +566,6 @@ export function OpsRegistryTab() {
         <p className="muted" style={{ margin: 0 }}>
           Auto-refresh every 5 minutes.
         </p>
-        {models.length === 0 ? (
-          <p className="muted" style={{ marginBottom: 0 }}>
-            Showing a demo row because the registry is empty.
-          </p>
-        ) : null}
       </section>
 
       <section className="panel" style={{ overflow: "visible" }}>
@@ -600,7 +583,10 @@ export function OpsRegistryTab() {
         {actionError ? <p className="failure-text">{actionError}</p> : null}
         {actionNotice ? <p className="muted">{actionNotice}</p> : null}
 
-        {!registryState.loading && !registryState.error ? (
+        {!registryState.loading && !registryState.error && models.length === 0 ? (
+          <p className="muted">No model records are currently registered.</p>
+        ) : null}
+        {!registryState.loading && !registryState.error && models.length > 0 ? (
           <div style={{ overflowX: "auto" }}>
             <table className="ops-model-table">
               <thead>
@@ -617,11 +603,10 @@ export function OpsRegistryTab() {
                 </tr>
               </thead>
               <tbody>
-                {displayModels.map((model) => {
+                {models.map((model) => {
                   const id = formatCellValue(model.model_id, "Not reported");
                   const modelId =
                     typeof model.model_id === "string" ? model.model_id : "";
-                  const isDemo = Boolean(model.isDemo);
                   const active = isModelActive(model, activeModelId);
                   const canActivate = canActivateModel(model, activeModelId);
                   const busy =
@@ -695,13 +680,11 @@ export function OpsRegistryTab() {
                                   }
                                   disabled={!canActivate || busy}
                                   title={
-                                    isDemo
-                                      ? "Demo row cannot be activated."
-                                      : active
-                                        ? "This model is already active."
-                                        : canActivate
-                                          ? "Activate model using backend validation."
-                                          : "Only approved or candidate models can be activated."
+                                    active
+                                      ? "This model is already active."
+                                      : canActivate
+                                        ? "Activate model using backend validation."
+                                        : "Only approved or candidate models can be activated."
                                   }
                                 >
                                   {busy &&
@@ -744,12 +727,6 @@ export function OpsRegistryTab() {
             onClick={(event) => event.stopPropagation()}
           >
             <h3 style={{ margin: 0 }}>Model Details</h3>
-            {inspectModel.isDemo ? (
-              <p className="muted" style={{ margin: 0 }}>
-                This is a demo row for UI verification and is not sent to
-                backend actions.
-              </p>
-            ) : null}
             {actionError ? <p className="failure-text">{actionError}</p> : null}
             {actionNotice ? <p className="muted">{actionNotice}</p> : null}
             <ModelDetailSection
