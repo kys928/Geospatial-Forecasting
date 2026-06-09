@@ -175,6 +175,85 @@ def _load_recent_events(path: Path, *, limit: int = 50) -> list[dict[str, object
     return OperationalEventLog(path=path).recent(limit=limit)
 
 
+
+def _parse_event_timestamp(value: object) -> datetime | None:
+    if not isinstance(value, str) or not value.strip():
+        return None
+    normalized = value.strip()
+    if normalized.endswith("Z"):
+        normalized = f"{normalized[:-1]}+00:00"
+    try:
+        parsed = datetime.fromisoformat(normalized)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _event_payload(payload: object) -> dict[str, object]:
+    return dict(payload) if isinstance(payload, dict) else {}
+
+
+def _normalize_registry_event(event: dict[str, object], *, original_index: int) -> dict[str, object]:
+    normalized = dict(event)
+    payload = _event_payload(event.get("payload"))
+    for key, value in event.items():
+        if key in {"timestamp", "event_type", "payload", "source", "event_id"}:
+            continue
+        payload.setdefault(key, value)
+    normalized.setdefault("timestamp", None)
+    normalized.setdefault("event_type", "registry_event")
+    normalized["payload"] = payload
+    normalized["source"] = "registry"
+    normalized.setdefault("event_id", f"registry:{event.get('event_index', original_index)}")
+    return normalized
+
+
+def _normalize_ops_stream_event(event: dict[str, object], *, original_index: int) -> dict[str, object]:
+    normalized = dict(event)
+    normalized.setdefault("timestamp", None)
+    normalized.setdefault("event_type", "ops_stream_event")
+    normalized["payload"] = _event_payload(event.get("payload"))
+    normalized["source"] = "ops_stream"
+    normalized.setdefault(
+        "event_id",
+        f"ops_stream:{event.get('timestamp', 'missing-timestamp')}:{event.get('event_type', 'ops_stream_event')}:{original_index}",
+    )
+    return normalized
+
+
+def _sorted_normalized_ops_events(
+    *,
+    registry_events: list[object],
+    stream_events: list[dict[str, object]],
+    limit: int,
+) -> list[dict[str, object]]:
+    normalized: list[tuple[dict[str, object], datetime | None, int]] = []
+    sequence = 0
+    for original_index, item in enumerate(registry_events):
+        if not isinstance(item, dict):
+            continue
+        event = _normalize_registry_event(dict(item), original_index=original_index)
+        normalized.append((event, _parse_event_timestamp(event.get("timestamp")), sequence))
+        sequence += 1
+    for original_index, item in enumerate(stream_events):
+        if not isinstance(item, dict):
+            continue
+        event = _normalize_ops_stream_event(dict(item), original_index=original_index)
+        normalized.append((event, _parse_event_timestamp(event.get("timestamp")), sequence))
+        sequence += 1
+
+    normalized.sort(
+        key=lambda item: (
+            item[1] is not None,
+            item[1] or datetime.min.replace(tzinfo=timezone.utc),
+            -item[2],
+        ),
+        reverse=True,
+    )
+    return [event for event, _timestamp, _sequence in normalized[: max(1, limit)]]
+
 def _pending_candidate_from_registry(registry_payload: dict[str, object]) -> dict[str, object] | None:
     for item in registry_payload.get("models", []):
         if not isinstance(item, dict):
@@ -1333,12 +1412,18 @@ def register_ops_routes(app: FastAPI, *, forecast_service, dispatch_worker=dispa
     def get_ops_events(limit: int = 50, _role: str = Depends(_require_ops_read_access)):
         paths = _ops_paths()
         try:
+            effective_limit = max(1, limit)
             registry_events = ModelRegistry(paths["registry"]).load().get("events", [])
-            stream_events = _load_recent_events(paths["events"], limit=limit)
-            merged: list[dict[str, object]] = []
-            merged.extend([dict(item) for item in registry_events if isinstance(item, dict)])
-            merged.extend(stream_events)
-            return {"events": merged[-limit:]}
+            stream_events = _load_recent_events(paths["events"], limit=max(effective_limit, 1000))
+            if not isinstance(registry_events, list):
+                registry_events = []
+            return {
+                "events": _sorted_normalized_ops_events(
+                    registry_events=registry_events,
+                    stream_events=stream_events,
+                    limit=effective_limit,
+                )
+            }
         except Exception as exc:
             raise HTTPException(status_code=400, detail=f"Unable to load operational events: {exc}") from exc
 

@@ -15,7 +15,7 @@ type ViewportMenuPositionOptions = {
   menuHeight?: number;
   gap?: number;
 };
-type DisplayModel = RegistryModelRecord & { isDemo?: boolean };
+type DisplayModel = RegistryModelRecord;
 
 const ROW_MENU_WIDTH = 190;
 const ROW_MENU_HEIGHT = 120;
@@ -49,6 +49,11 @@ const CORE_DETAIL_LABELS = new Set([
   "Active / current",
   "Path",
   "Updated time",
+]);
+const LIFECYCLE_DETAIL_LABELS = new Set([
+  "Parent / trained from",
+  "Gate / promotion",
+  "Checkpoint file",
 ]);
 const MODEL_METRIC_KEYS = [
   "selection_score",
@@ -98,16 +103,6 @@ function formatNumber(value: number): string {
   if (value !== 0 && Math.abs(value) < 0.001) return value.toExponential(3);
   return Number(value.toPrecision(4)).toString();
 }
-
-const demoRow: DisplayModel = {
-  model_id: "demo_convlstm_v0_1",
-  status: "ready",
-  approval_status: "approved",
-  path: "/models/demo_convlstm_v0_1.pt",
-  updated_at: "Demo",
-  metadata: { source: "Demo row" },
-  isDemo: true,
-};
 
 function formatCellValue(value: unknown, fallback = "Not reported") {
   if (value === null || value === undefined) return fallback;
@@ -174,6 +169,13 @@ function isAdaptationRecord(model: RegistryModelRecord): boolean {
 }
 
 function checkpointFileExists(model: RegistryModelRecord): boolean | null {
+  const deleted = pickValue(model, [
+    ["checkpoint_file_deleted"],
+    ["metadata", "checkpoint_file_deleted"],
+    ["adaptation_run", "checkpoint_file_deleted"],
+  ]);
+  if (deleted === true) return false;
+
   const value = pickValue(model, [
     ["checkpoint_file_exists"],
     ["metadata", "checkpoint_file_exists"],
@@ -182,11 +184,73 @@ function checkpointFileExists(model: RegistryModelRecord): boolean | null {
   return typeof value === "boolean" ? value : null;
 }
 
+export function compactPathLabel(path: unknown): string {
+  if (typeof path !== "string" || !path.trim()) return "Not reported";
+  const cleaned = path.trim();
+  const parts = cleaned.split(/[\\/]+/).filter(Boolean);
+  return parts.length ? parts[parts.length - 1] : cleaned;
+}
+
+function selectedResumeCheckpoint(model: RegistryModelRecord): Record<string, unknown> | null {
+  return asRecord(
+    pickValue(model, [
+      ["selected_resume_checkpoint"],
+      ["adaptation_run", "selected_resume_checkpoint"],
+      ["metadata", "selected_resume_checkpoint"],
+    ]),
+  );
+}
+
+export function modelParentLabel(model: RegistryModelRecord): string {
+  const parentModelId = pickValue(model, [
+    ["parent_active_model_id"],
+    ["adaptation_run", "parent_active_model_id"],
+    ["metadata", "parent_active_model_id"],
+    ["trained_from_model_id"],
+    ["metadata", "trained_from_model_id"],
+  ]);
+  if (typeof parentModelId === "string" && parentModelId.trim()) return parentModelId.trim();
+
+  const resume = selectedResumeCheckpoint(model);
+  const source = resume?.source;
+  if (typeof source === "string" && source.trim()) return source.trim();
+  const checkpointPath = resume?.checkpoint_path ?? resume?.path;
+  const compactPath = compactPathLabel(checkpointPath);
+  return compactPath !== "Not reported" ? compactPath : "Not reported";
+}
+
+function selectionGateOutcome(model: RegistryModelRecord): Record<string, unknown> | null {
+  return asRecord(
+    pickValue(model, [
+      ["selection_gate_outcome"],
+      ["adaptation_run", "selection_gate_outcome"],
+      ["metadata", "selection_gate_outcome"],
+      ["last_adaptation_promotion_decision", "selection_gate_outcome"],
+      ["last_promotion_result", "selection_gate_outcome"],
+    ]),
+  );
+}
+
+export function modelGateLabel(model: RegistryModelRecord): string {
+  const outcome = selectionGateOutcome(model);
+  if (!outcome) return "Not reported";
+  const gatesEnabled = outcome.enabled === true || outcome.gates_enabled === true;
+  if (outcome.stage3_rejected_by_gates === true) return "Stage 3 rejected; promoted Stage 2";
+  if (gatesEnabled) return "Passed";
+  if (outcome.stage3_rejected_by_gates === false) return "No gate issue";
+  return "Not reported";
+}
+
+export function modelCheckpointHealthLabel(model: RegistryModelRecord): string {
+  const exists = checkpointFileExists(model);
+  if (exists === null) return "Not reported";
+  return exists ? "Yes" : "No";
+}
+
 function isModelActive(
   model: DisplayModel,
   activeModelId: string | null,
 ): boolean {
-  if (model.isDemo) return false;
   const modelId = typeof model.model_id === "string" ? model.model_id : "";
   return Boolean(
     (activeModelId && modelId === activeModelId) || model.status === "active",
@@ -197,7 +261,7 @@ function canActivateModel(
   model: DisplayModel,
   activeModelId: string | null,
 ): boolean {
-  if (model.isDemo || isModelActive(model, activeModelId)) return false;
+  if (isModelActive(model, activeModelId)) return false;
   const modelId = typeof model.model_id === "string" ? model.model_id : "";
   if (!modelId) return false;
   const approval = String(model.approval_status ?? "").toLowerCase();
@@ -205,6 +269,22 @@ function canActivateModel(
   return (
     approval === "approved" || status === "candidate" || status === "approved"
   );
+}
+
+function checkpointDeleteDisabledReason(
+  model: DisplayModel,
+  activeModelId: string | null,
+): string | null {
+  const modelId = typeof model.model_id === "string" ? model.model_id : "";
+  if (!modelId) return "Model ID is missing.";
+  if (!isAdaptationRecord(model)) return "Only adaptation checkpoint records can be deleted from this danger zone.";
+  if (isModelActive(model, activeModelId)) return "Active model checkpoints cannot be deleted.";
+  if (checkpointFileExists(model) === false) return "Checkpoint file is already missing.";
+  return null;
+}
+
+function canDeleteCheckpointFile(model: DisplayModel, activeModelId: string | null): boolean {
+  return checkpointDeleteDisabledReason(model, activeModelId) === null;
 }
 
 function decisionPayload(comment: string): CandidateDecisionRequest {
@@ -230,6 +310,14 @@ function coreRows(
     fieldRow("Path", model.path),
     fieldRow("Created time", model.created_at),
     fieldRow("Updated time", model.updated_at),
+  ];
+}
+
+function lifecycleRows(model: DisplayModel): DetailRow[] {
+  return [
+    fieldRow("Parent / trained from", modelParentLabel(model)),
+    fieldRow("Gate / promotion", modelGateLabel(model)),
+    fieldRow("Checkpoint file", modelCheckpointHealthLabel(model)),
   ];
 }
 
@@ -341,6 +429,7 @@ function adaptationRows(model: DisplayModel): DetailRow[] {
 
 function supplementalRows(model: DisplayModel): DetailRow[] {
   return [
+    fieldRow("Raw path", model.path),
     structuredRow(
       "Metrics / evidence",
       model.metrics ?? model.checkpoint_metric ?? model.checkpoint_metric_name,
@@ -401,11 +490,10 @@ export function OpsRegistryTab() {
   const menuRef = useRef<HTMLDivElement | null>(null);
 
   const models = registryState.registry?.models ?? [];
-  const displayModels = models.length ? models : [demoRow];
   const inspectModel = useMemo(
     () =>
-      displayModels.find((model) => model.model_id === inspectModelId) ?? null,
-    [displayModels, inspectModelId],
+      models.find((model) => model.model_id === inspectModelId) ?? null,
+    [models, inspectModelId],
   );
   const activeModelId = registryState.registry?.active_model_id ?? null;
 
@@ -462,20 +550,19 @@ export function OpsRegistryTab() {
 
   async function handleDeleteCheckpointFile(model: DisplayModel) {
     const modelId = typeof model.model_id === "string" ? model.model_id : "";
-    if (
-      !modelId ||
-      !isAdaptationRecord(model) ||
-      isModelActive(model, activeModelId)
-    )
+    const disabledReason = checkpointDeleteDisabledReason(model, activeModelId);
+    if (disabledReason || !modelId) {
+      setActionError(disabledReason ?? "Checkpoint deletion is not available for this model.");
       return;
+    }
     const confirmed = window.confirm(
-      `Delete checkpoint file for ${modelId}? The model record and history stay visible. Only the .pt file is removed. This cannot be undone.`,
+      `Delete checkpoint .pt file for ${modelId}? Registry metadata and history remain visible. Active model checkpoints cannot be deleted. This action cannot be undone.`,
     );
     if (!confirmed) return;
     await runAction(modelId, "Delete checkpoint file", () =>
       opsClient.deleteAdaptationCheckpointFile(
         modelId,
-        decisionPayload("Checkpoint file deleted from Ops UI."),
+        decisionPayload("Checkpoint file deleted from Ops UI danger zone."),
       ),
     );
   }
@@ -487,11 +574,6 @@ export function OpsRegistryTab() {
         <p className="muted" style={{ margin: 0 }}>
           Auto-refresh every 5 minutes.
         </p>
-        {models.length === 0 ? (
-          <p className="muted" style={{ marginBottom: 0 }}>
-            Showing a demo row because the registry is empty.
-          </p>
-        ) : null}
       </section>
 
       <section className="panel" style={{ overflow: "visible" }}>
@@ -509,7 +591,10 @@ export function OpsRegistryTab() {
         {actionError ? <p className="failure-text">{actionError}</p> : null}
         {actionNotice ? <p className="muted">{actionNotice}</p> : null}
 
-        {!registryState.loading && !registryState.error ? (
+        {!registryState.loading && !registryState.error && models.length === 0 ? (
+          <p className="muted">No model records are currently registered.</p>
+        ) : null}
+        {!registryState.loading && !registryState.error && models.length > 0 ? (
           <div style={{ overflowX: "auto" }}>
             <table className="ops-model-table">
               <thead>
@@ -517,28 +602,21 @@ export function OpsRegistryTab() {
                   <th>Model ID</th>
                   <th>Status</th>
                   <th>Approval</th>
-                  <th>Path</th>
+                  <th>Parent / Trained from</th>
+                  <th>Gate / Promotion</th>
+                  <th>Checkpoint</th>
                   <th>Updated</th>
                   <th>Active</th>
                   <th>Actions</th>
                 </tr>
               </thead>
               <tbody>
-                {displayModels.map((model) => {
+                {models.map((model) => {
                   const id = formatCellValue(model.model_id, "Not reported");
                   const modelId =
                     typeof model.model_id === "string" ? model.model_id : "";
-                  const isDemo = Boolean(model.isDemo);
                   const active = isModelActive(model, activeModelId);
                   const canActivate = canActivateModel(model, activeModelId);
-                  const adaptation = isAdaptationRecord(model);
-                  const checkpointExists = checkpointFileExists(model);
-                  const canDeleteCheckpoint =
-                    adaptation &&
-                    !active &&
-                    !isDemo &&
-                    checkpointExists !== false &&
-                    modelId.length > 0;
                   const busy =
                     runningAction?.startsWith(`${modelId}:`) ?? false;
 
@@ -547,8 +625,18 @@ export function OpsRegistryTab() {
                       <td>{id}</td>
                       <td>{formatCellValue(model.status)}</td>
                       <td>{formatCellValue(model.approval_status)}</td>
-                      <td title={formatCellValue(model.path)}>
-                        {formatCellValue(model.path)}
+                      <td title={modelParentLabel(model)}>
+                        {modelParentLabel(model)}
+                      </td>
+                      <td>{modelGateLabel(model)}</td>
+                      <td
+                        title={
+                          active
+                            ? "Active model checkpoint deletion is not available from the row menu."
+                            : undefined
+                        }
+                      >
+                        {modelCheckpointHealthLabel(model)}
                       </td>
                       <td>
                         {formatCellValue(model.updated_at ?? model.created_at)}
@@ -600,13 +688,11 @@ export function OpsRegistryTab() {
                                   }
                                   disabled={!canActivate || busy}
                                   title={
-                                    isDemo
-                                      ? "Demo row cannot be activated."
-                                      : active
-                                        ? "This model is already active."
-                                        : canActivate
-                                          ? "Activate model using backend validation."
-                                          : "Only approved or candidate models can be activated."
+                                    active
+                                      ? "This model is already active."
+                                      : canActivate
+                                        ? "Activate model using backend validation."
+                                        : "Only approved or candidate models can be activated."
                                   }
                                 >
                                   {busy &&
@@ -622,35 +708,6 @@ export function OpsRegistryTab() {
                                 >
                                   Inspect model
                                 </button>
-                                {adaptation ? (
-                                  <button
-                                    onClick={() =>
-                                      void handleDeleteCheckpointFile(model)
-                                    }
-                                    disabled={!canDeleteCheckpoint || busy}
-                                    title={
-                                      active
-                                        ? "Active model checkpoint files cannot be deleted from this UI."
-                                        : canDeleteCheckpoint
-                                          ? "Delete checkpoint file only; registry metadata remains."
-                                          : "Checkpoint deletion is not available for this record."
-                                    }
-                                  >
-                                    {busy &&
-                                    runningAction?.endsWith(
-                                      "Delete checkpoint file",
-                                    )
-                                      ? "Deleting..."
-                                      : "Delete checkpoint file"}
-                                  </button>
-                                ) : (
-                                  <button
-                                    disabled
-                                    title="Full model deletion is not available from this UI."
-                                  >
-                                    Delete not available
-                                  </button>
-                                )}
                               </div>,
                               document.body,
                             )
@@ -678,16 +735,17 @@ export function OpsRegistryTab() {
             onClick={(event) => event.stopPropagation()}
           >
             <h3 style={{ margin: 0 }}>Model Details</h3>
-            {inspectModel.isDemo ? (
-              <p className="muted" style={{ margin: 0 }}>
-                This is a demo row for UI verification and is not sent to
-                backend actions.
-              </p>
-            ) : null}
+            {actionError ? <p className="failure-text">{actionError}</p> : null}
+            {actionNotice ? <p className="muted">{actionNotice}</p> : null}
             <ModelDetailSection
               title="Core"
               rows={coreRows(inspectModel, activeModelId)}
               preserveLabels={CORE_DETAIL_LABELS}
+            />
+            <ModelDetailSection
+              title="Lifecycle"
+              rows={lifecycleRows(inspectModel)}
+              preserveLabels={LIFECYCLE_DETAIL_LABELS}
             />
             {isAdaptationRecord(inspectModel) ? (
               <ModelDetailSection
@@ -698,6 +756,12 @@ export function OpsRegistryTab() {
             <ModelDetailSection
               title="Technical details"
               rows={supplementalRows(inspectModel)}
+            />
+            <CheckpointDangerZone
+              model={inspectModel}
+              activeModelId={activeModelId}
+              runningAction={runningAction}
+              onDelete={handleDeleteCheckpointFile}
             />
             <details className="advanced-section" open>
               <summary>Training Logs</summary>
@@ -724,6 +788,50 @@ export function OpsRegistryTab() {
         </div>
       ) : null}
     </div>
+  );
+}
+
+function CheckpointDangerZone({
+  model,
+  activeModelId,
+  runningAction,
+  onDelete,
+}: {
+  model: DisplayModel;
+  activeModelId: string | null;
+  runningAction: string | null;
+  onDelete: (model: DisplayModel) => Promise<void>;
+}) {
+  const modelId = typeof model.model_id === "string" ? model.model_id : "";
+  const disabledReason = checkpointDeleteDisabledReason(model, activeModelId);
+  const busy = Boolean(modelId && runningAction === `${modelId}:Delete checkpoint file`);
+  const deleteDisabled = !canDeleteCheckpointFile(model, activeModelId) || busy;
+
+  return (
+    <details className="advanced-section ops-danger-zone">
+      <summary>Danger zone</summary>
+      <div style={{ display: "grid", gap: 8, marginTop: 8 }}>
+        <p className="muted" style={{ margin: 0 }}>
+          Delete only the checkpoint .pt file for an adaptation record. Registry
+          metadata and history remain visible, active model checkpoints cannot be
+          deleted, and this action cannot be undone.
+        </p>
+        {disabledReason ? (
+          <p className="muted" style={{ margin: 0 }}>
+            Delete unavailable: {disabledReason}
+          </p>
+        ) : null}
+        <button
+          className="secondary-button"
+          type="button"
+          disabled={deleteDisabled}
+          title={disabledReason ?? "Delete checkpoint file only; registry metadata remains."}
+          onClick={() => void onDelete(model)}
+        >
+          {busy ? "Deleting checkpoint file..." : "Delete checkpoint file"}
+        </button>
+      </div>
+    </details>
   );
 }
 

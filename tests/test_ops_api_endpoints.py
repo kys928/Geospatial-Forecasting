@@ -154,6 +154,124 @@ def test_ops_read_endpoints(monkeypatch, tmp_path: Path):
 
 
 
+def test_ops_events_normalizes_sources_sorts_and_limits(monkeypatch, tmp_path: Path):
+    env = _seed_ops_files(tmp_path)
+    registry_path = Path(env["PLUME_OPS_REGISTRY_PATH"])
+    events_path = Path(env["PLUME_OPS_EVENTS_PATH"])
+
+    registry = json.loads(registry_path.read_text(encoding="utf-8"))
+    registry["events"] = [
+        {
+            "timestamp": "2026-01-01T03:00:00+00:00",
+            "event_type": "model_activated",
+            "model_id": "candidate-new",
+            "previous_active_model_id": "active-old",
+            "actor": "ops-ui",
+            "event_index": 7,
+        },
+        {
+            "timestamp": "not-a-timestamp",
+            "event_type": "candidate_rejected_by_operator",
+            "model_id": "candidate-invalid-time",
+            "event_index": 8,
+        },
+    ]
+    registry_path.write_text(json.dumps(registry), encoding="utf-8")
+    events_path.write_text(
+        "\n".join(
+            [
+                json.dumps(
+                    {
+                        "timestamp": "2026-01-01T04:00:00+00:00",
+                        "event_type": "retraining_job_completed",
+                        "payload": {"job_id": "retrain-job-2"},
+                        "worker_id": "worker-a",
+                    }
+                ),
+                json.dumps(
+                    {
+                        "timestamp": "2026-01-01T02:00:00+00:00",
+                        "event_type": "retraining_job_started",
+                        "payload": {"job_id": "retrain-job-1"},
+                    }
+                ),
+                json.dumps({"event_type": "worker_heartbeat", "payload": {"worker_id": "worker-b"}}),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    for key, value in env.items():
+        monkeypatch.setenv(key, value)
+    monkeypatch.setenv("PLUME_OPS_AUTH_ENABLED", "false")
+
+    client = TestClient(create_app())
+    response = client.get("/ops/events?limit=3")
+
+    assert response.status_code == 200
+    events = response.json()["events"]
+    assert [event["event_type"] for event in events] == [
+        "retraining_job_completed",
+        "model_activated",
+        "retraining_job_started",
+    ]
+    assert [event["source"] for event in events] == ["ops_stream", "registry", "ops_stream"]
+    assert all("event_id" in event for event in events)
+
+    stream_event = events[0]
+    assert stream_event["payload"] == {"job_id": "retrain-job-2"}
+    assert stream_event["worker_id"] == "worker-a"
+
+    registry_event = events[1]
+    assert registry_event["model_id"] == "candidate-new"
+    assert registry_event["payload"]["model_id"] == "candidate-new"
+    assert registry_event["payload"]["previous_active_model_id"] == "active-old"
+
+
+def test_ops_events_retains_invalid_timestamps_after_valid_events(monkeypatch, tmp_path: Path):
+    env = _seed_ops_files(tmp_path)
+    registry_path = Path(env["PLUME_OPS_REGISTRY_PATH"])
+    events_path = Path(env["PLUME_OPS_EVENTS_PATH"])
+
+    registry = json.loads(registry_path.read_text(encoding="utf-8"))
+    registry["events"] = [
+        {"timestamp": "bad-time", "event_type": "model_activated", "model_id": "bad-registry", "event_index": 2},
+        {"timestamp": "2026-01-01T05:00:00+00:00", "event_type": "candidate_approved_by_operator", "model_id": "valid-registry", "event_index": 3},
+    ]
+    registry_path.write_text(json.dumps(registry), encoding="utf-8")
+    events_path.write_text(
+        "\n".join(
+            [
+                json.dumps({"timestamp": "2026-01-01T04:00:00+00:00", "event_type": "forecast_created"}),
+                json.dumps({"event_type": "worker_heartbeat", "payload": {"worker_id": "worker-missing-time"}}),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    for key, value in env.items():
+        monkeypatch.setenv(key, value)
+    monkeypatch.setenv("PLUME_OPS_AUTH_ENABLED", "false")
+
+    client = TestClient(create_app())
+    response = client.get("/ops/events?limit=10")
+
+    assert response.status_code == 200
+    events = response.json()["events"]
+    assert [event["event_type"] for event in events] == [
+        "candidate_approved_by_operator",
+        "forecast_created",
+        "model_activated",
+        "worker_heartbeat",
+    ]
+    assert events[2]["timestamp"] == "bad-time"
+    assert events[3]["timestamp"] is None
+    assert events[3]["payload"] == {"worker_id": "worker-missing-time"}
+    assert events[2]["source"] == "registry"
+    assert events[3]["source"] == "ops_stream"
+    assert all(set(["timestamp", "event_type", "payload", "source", "event_id"]).issubset(event) for event in events)
+
+
 def test_ops_model_candidate_context_endpoint(monkeypatch, tmp_path: Path):
     for key, value in _seed_ops_files(tmp_path).items():
         monkeypatch.setenv(key, value)
@@ -406,6 +524,119 @@ def test_ops_endpoints_support_sqlite_metadata_store(monkeypatch, tmp_path: Path
     events = client.get("/ops/events")
     assert events.status_code == 200
     assert any(item["event_type"] == "sqlite_seed" for item in events.json()["events"])
+
+
+def test_sqlite_operational_event_log_recent_returns_newest_limit(tmp_path: Path):
+    from plume.services.convlstm_operations import OperationalEventLog
+
+    db_path = tmp_path / "ops.sqlite3"
+    event_log = OperationalEventLog(path=db_path)
+    for index in range(5):
+        event_log.append(event_type=f"event-{index}", payload={"index": index})
+
+    recent = event_log.recent(limit=2)
+
+    assert [event["event_type"] for event in recent] == ["event-3", "event-4"]
+    assert [event["payload"]["index"] for event in recent] == [3, 4]
+    assert set(recent[0].keys()) == {"timestamp", "event_type", "payload"}
+
+
+def test_delete_adaptation_checkpoint_file_records_missing_checkpoint_health(tmp_path: Path):
+    from plume.services.convlstm_operations import ModelRegistry, delete_adaptation_checkpoint_file
+
+    checkpoint_path = tmp_path / "candidate.pt"
+    checkpoint_path.write_bytes(b"checkpoint")
+    registry = ModelRegistry(tmp_path / "registry.json")
+    registry.save(
+        {
+            "active_model_id": "active-model",
+            "previous_active_model_id": None,
+            "models": [
+                {
+                    "model_id": "active-model",
+                    "status": "active",
+                    "path": str(tmp_path / "active.pt"),
+                    "contract_version": CONVLSTM_CONTRACT_VERSION,
+                },
+                {
+                    "model_id": "candidate-model",
+                    "status": "candidate",
+                    "path": str(checkpoint_path),
+                    "contract_version": "robust_convlstm_adaptation_v1",
+                    "checkpoint_file_exists": True,
+                },
+            ],
+            "events": [],
+            "approval_audit": [],
+            "revision": 0,
+            "next_event_index": 0,
+        }
+    )
+
+    result = delete_adaptation_checkpoint_file(
+        registry=registry,
+        model_id="candidate-model",
+        actor="ops-ui",
+        comment="cleanup",
+    )
+
+    payload = registry.load()
+    record = next(model for model in payload["models"] if model["model_id"] == "candidate-model")
+    assert result["deleted"] is True
+    assert checkpoint_path.exists() is False
+    assert record["checkpoint_file_exists"] is False
+    assert record["checkpoint_file_deleted"] is True
+    assert record["checkpoint_file_delete_reason"] == "cleanup"
+    assert record["checkpoint_file_deleted_by"] == "ops-ui"
+    assert record["checkpoint_file_deleted_at"]
+
+
+def test_delete_adaptation_checkpoint_file_records_already_missing_checkpoint_health(tmp_path: Path):
+    from plume.services.convlstm_operations import ModelRegistry, delete_adaptation_checkpoint_file
+
+    missing_checkpoint_path = tmp_path / "missing-candidate.pt"
+    registry = ModelRegistry(tmp_path / "registry.json")
+    registry.save(
+        {
+            "active_model_id": "active-model",
+            "previous_active_model_id": None,
+            "models": [
+                {
+                    "model_id": "active-model",
+                    "status": "active",
+                    "path": str(tmp_path / "active.pt"),
+                    "contract_version": CONVLSTM_CONTRACT_VERSION,
+                },
+                {
+                    "model_id": "missing-candidate",
+                    "status": "candidate",
+                    "path": str(missing_checkpoint_path),
+                    "contract_version": "robust_convlstm_adaptation_v1",
+                    "checkpoint_file_exists": True,
+                },
+            ],
+            "events": [],
+            "approval_audit": [],
+            "revision": 0,
+            "next_event_index": 0,
+        }
+    )
+
+    result = delete_adaptation_checkpoint_file(
+        registry=registry,
+        model_id="missing-candidate",
+        actor="ops-ui",
+        comment="already missing",
+    )
+
+    payload = registry.load()
+    record = next(model for model in payload["models"] if model["model_id"] == "missing-candidate")
+    assert result["deleted"] is False
+    assert result["file_existed_before"] is False
+    assert record["checkpoint_file_exists"] is False
+    assert record["checkpoint_file_deleted"] is True
+    assert record["checkpoint_file_delete_reason"] == "already missing"
+    assert record["checkpoint_file_deleted_by"] == "ops-ui"
 
 
 def test_ops_retraining_recommendation_endpoint(monkeypatch, tmp_path: Path):
