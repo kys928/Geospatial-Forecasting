@@ -526,6 +526,119 @@ def test_ops_endpoints_support_sqlite_metadata_store(monkeypatch, tmp_path: Path
     assert any(item["event_type"] == "sqlite_seed" for item in events.json()["events"])
 
 
+def test_sqlite_operational_event_log_recent_returns_newest_limit(tmp_path: Path):
+    from plume.services.convlstm_operations import OperationalEventLog
+
+    db_path = tmp_path / "ops.sqlite3"
+    event_log = OperationalEventLog(path=db_path)
+    for index in range(5):
+        event_log.append(event_type=f"event-{index}", payload={"index": index})
+
+    recent = event_log.recent(limit=2)
+
+    assert [event["event_type"] for event in recent] == ["event-3", "event-4"]
+    assert [event["payload"]["index"] for event in recent] == [3, 4]
+    assert set(recent[0].keys()) == {"timestamp", "event_type", "payload"}
+
+
+def test_delete_adaptation_checkpoint_file_records_missing_checkpoint_health(tmp_path: Path):
+    from plume.services.convlstm_operations import ModelRegistry, delete_adaptation_checkpoint_file
+
+    checkpoint_path = tmp_path / "candidate.pt"
+    checkpoint_path.write_bytes(b"checkpoint")
+    registry = ModelRegistry(tmp_path / "registry.json")
+    registry.save(
+        {
+            "active_model_id": "active-model",
+            "previous_active_model_id": None,
+            "models": [
+                {
+                    "model_id": "active-model",
+                    "status": "active",
+                    "path": str(tmp_path / "active.pt"),
+                    "contract_version": CONVLSTM_CONTRACT_VERSION,
+                },
+                {
+                    "model_id": "candidate-model",
+                    "status": "candidate",
+                    "path": str(checkpoint_path),
+                    "contract_version": "robust_convlstm_adaptation_v1",
+                    "checkpoint_file_exists": True,
+                },
+            ],
+            "events": [],
+            "approval_audit": [],
+            "revision": 0,
+            "next_event_index": 0,
+        }
+    )
+
+    result = delete_adaptation_checkpoint_file(
+        registry=registry,
+        model_id="candidate-model",
+        actor="ops-ui",
+        comment="cleanup",
+    )
+
+    payload = registry.load()
+    record = next(model for model in payload["models"] if model["model_id"] == "candidate-model")
+    assert result["deleted"] is True
+    assert checkpoint_path.exists() is False
+    assert record["checkpoint_file_exists"] is False
+    assert record["checkpoint_file_deleted"] is True
+    assert record["checkpoint_file_delete_reason"] == "cleanup"
+    assert record["checkpoint_file_deleted_by"] == "ops-ui"
+    assert record["checkpoint_file_deleted_at"]
+
+
+def test_delete_adaptation_checkpoint_file_records_already_missing_checkpoint_health(tmp_path: Path):
+    from plume.services.convlstm_operations import ModelRegistry, delete_adaptation_checkpoint_file
+
+    missing_checkpoint_path = tmp_path / "missing-candidate.pt"
+    registry = ModelRegistry(tmp_path / "registry.json")
+    registry.save(
+        {
+            "active_model_id": "active-model",
+            "previous_active_model_id": None,
+            "models": [
+                {
+                    "model_id": "active-model",
+                    "status": "active",
+                    "path": str(tmp_path / "active.pt"),
+                    "contract_version": CONVLSTM_CONTRACT_VERSION,
+                },
+                {
+                    "model_id": "missing-candidate",
+                    "status": "candidate",
+                    "path": str(missing_checkpoint_path),
+                    "contract_version": "robust_convlstm_adaptation_v1",
+                    "checkpoint_file_exists": True,
+                },
+            ],
+            "events": [],
+            "approval_audit": [],
+            "revision": 0,
+            "next_event_index": 0,
+        }
+    )
+
+    result = delete_adaptation_checkpoint_file(
+        registry=registry,
+        model_id="missing-candidate",
+        actor="ops-ui",
+        comment="already missing",
+    )
+
+    payload = registry.load()
+    record = next(model for model in payload["models"] if model["model_id"] == "missing-candidate")
+    assert result["deleted"] is False
+    assert result["file_existed_before"] is False
+    assert record["checkpoint_file_exists"] is False
+    assert record["checkpoint_file_deleted"] is True
+    assert record["checkpoint_file_delete_reason"] == "already missing"
+    assert record["checkpoint_file_deleted_by"] == "ops-ui"
+
+
 def test_ops_retraining_recommendation_endpoint(monkeypatch, tmp_path: Path):
     env = _seed_ops_files(tmp_path)
     state_path = Path(env["PLUME_OPS_STATE_PATH"])

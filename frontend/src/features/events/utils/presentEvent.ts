@@ -73,8 +73,13 @@ function sentenceCase(value: string): string {
   return cleaned ? cleaned.charAt(0).toUpperCase() + cleaned.slice(1) : "Operational event";
 }
 
+function hasMeaningfulValue(value: unknown): boolean {
+  return value !== undefined && value !== null && !(typeof value === "string" && value.trim() === "");
+}
+
 function eventField(event: EventRecord, payload: Record<string, unknown>, key: string): unknown {
-  return payload[key] ?? event[key];
+  const payloadValue = payload[key];
+  return hasMeaningfulValue(payloadValue) ? payloadValue : event[key];
 }
 
 function eventString(event: EventRecord, payload: Record<string, unknown>, key: string): string | null {

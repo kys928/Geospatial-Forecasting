@@ -13,3 +13,7 @@ assert.match(tabSource, /Last updated:/, "Activity Log renders the last updated 
 assert.match(tabSource, /eventsState\.refresh\(\{ force: true \}\)/, "manual refresh forces a cache-bypassing events load");
 assert.match(tabSource, /eventsState\.refreshing \? "Refreshing\.\.\." : "Refresh"/, "manual refresh button reflects refreshing state");
 assert.match(tabSource, /hasRealEvents && filteredEvents\.length === 0/, "filtered empty state still requires real events");
+
+assert.match(tabSource, /const canShowActivityFeed = !eventsState\.loading && \(!eventsState\.error \|\| hasRealEvents\)/, "ActivityFeed can remain visible for stale real events after refresh errors");
+assert.match(tabSource, /\{canShowActivityFeed \? \(/, "ActivityFeed rendering uses explicit canShowActivityFeed guard");
+assert.doesNotMatch(tabSource, /!eventsState\.loading && !eventsState\.error \? \(\s*<ActivityFeed/s, "ActivityFeed is not hard-gated on absence of errors");

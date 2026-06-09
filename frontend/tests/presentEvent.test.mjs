@@ -102,3 +102,17 @@ assertPresented(
     objectLabel: "top-level-candidate"
   }
 );
+
+
+assertPresented(
+  {
+    event_type: "model_activated",
+    model_id: "candidate_123",
+    payload: { model_id: "", previous_active_model_id: "active_456" }
+  },
+  {
+    title: "Model activated",
+    summary: "Model candidate_123 was activated; previous active model was active_456.",
+    objectLabel: "candidate_123"
+  }
+);

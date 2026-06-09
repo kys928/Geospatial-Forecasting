@@ -37,6 +37,7 @@ export function OpsEventsTab() {
 
   const presentedEvents = useMemo(() => eventsState.events.map((event, index) => presentEvent(event, index)), [eventsState.events]);
   const hasRealEvents = presentedEvents.length > 0;
+  const canShowActivityFeed = !eventsState.loading && (!eventsState.error || hasRealEvents);
 
   const filteredEvents = useMemo(() => {
     const sourceEvents = hasRealEvents ? presentedEvents : PREVIEW_EVENTS;
@@ -89,7 +90,7 @@ export function OpsEventsTab() {
       {eventsState.loading ? <section className="panel muted">Loading activity...</section> : null}
       {eventsState.error ? <section className="panel muted">Unable to load activity: {eventsState.error}</section> : null}
       {!eventsState.loading && !eventsState.error && hasRealEvents && filteredEvents.length === 0 ? <section className="panel muted">No activity matches the current filters.</section> : null}
-      {!eventsState.loading && !eventsState.error ? (
+      {canShowActivityFeed ? (
         <ActivityFeed
           events={visibleEvents}
           selectedEventId={selectedEventId}

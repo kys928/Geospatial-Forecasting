@@ -30,3 +30,6 @@ assert.match(deleteHandlerSource, /opsClient\.deleteAdaptationCheckpointFile/, "
 assert.match(deleteHandlerSource, /runAction\(modelId, "Delete checkpoint file"/, "delete handler refreshes through the existing action runner");
 assert.doesNotMatch(deleteHandlerSource, /setInspectModelId\(null\)/, "delete handler does not close Inspect Model modal");
 assert.match(source, /\{actionNotice \? <p className="muted">\{actionNotice\}<\/p> : null\}/, "modal shows action notices while staying open");
+
+assert.match(source, /if \(deleted === true\) return false;/, "checkpoint_file_deleted true makes checkpoint health missing");
+assert.match(source, /checkpointFileExists\(model\) === false/, "deleted or missing checkpoint keeps danger-zone deletion unavailable");

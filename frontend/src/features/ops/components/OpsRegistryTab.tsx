@@ -169,6 +169,13 @@ function isAdaptationRecord(model: RegistryModelRecord): boolean {
 }
 
 function checkpointFileExists(model: RegistryModelRecord): boolean | null {
+  const deleted = pickValue(model, [
+    ["checkpoint_file_deleted"],
+    ["metadata", "checkpoint_file_deleted"],
+    ["adaptation_run", "checkpoint_file_deleted"],
+  ]);
+  if (deleted === true) return false;
+
   const value = pickValue(model, [
     ["checkpoint_file_exists"],
     ["metadata", "checkpoint_file_exists"],
@@ -227,8 +234,9 @@ function selectionGateOutcome(model: RegistryModelRecord): Record<string, unknow
 export function modelGateLabel(model: RegistryModelRecord): string {
   const outcome = selectionGateOutcome(model);
   if (!outcome) return "Not reported";
+  const gatesEnabled = outcome.enabled === true || outcome.gates_enabled === true;
   if (outcome.stage3_rejected_by_gates === true) return "Stage 3 rejected; promoted Stage 2";
-  if (outcome.gates_enabled === true) return "Passed";
+  if (gatesEnabled) return "Passed";
   if (outcome.stage3_rejected_by_gates === false) return "No gate issue";
   return "Not reported";
 }

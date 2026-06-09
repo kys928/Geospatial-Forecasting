@@ -1585,6 +1585,7 @@ def delete_adaptation_checkpoint_file(
         checkpoint_path.unlink()
         deleted = True
     now = _utc_now_iso()
+    record["checkpoint_file_exists"] = False
     record["checkpoint_file_deleted"] = True
     record["checkpoint_file_deleted_at"] = now
     record["checkpoint_file_delete_reason"] = comment or "manual_ops_cleanup"
@@ -1839,9 +1840,10 @@ class OperationalEventLog:
         if _is_sqlite_path(self.path):
             with self._sqlite_conn() as conn:
                 rows = conn.execute(
-                    "SELECT timestamp, event_type, payload_json FROM operational_events ORDER BY event_id ASC LIMIT ?",
+                    "SELECT timestamp, event_type, payload_json FROM operational_events ORDER BY event_id DESC LIMIT ?",
                     (max(1, limit),),
                 ).fetchall()
+            rows = list(reversed(rows))
             events: list[dict[str, object]] = []
             for row in rows:
                 payload = json.loads(str(row["payload_json"]))
