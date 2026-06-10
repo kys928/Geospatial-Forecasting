@@ -53,7 +53,7 @@ const CORE_DETAIL_LABELS = new Set([
 const LIFECYCLE_DETAIL_LABELS = new Set([
   "Parent / trained from",
   "Gate / promotion",
-  "Checkpoint file",
+  "Checkpoint status",
 ]);
 const MODEL_METRIC_KEYS = [
   "selection_score",
@@ -241,10 +241,18 @@ export function modelGateLabel(model: RegistryModelRecord): string {
   return "Not reported";
 }
 
+function checkpointFileDeletedMetadataPresent(model: RegistryModelRecord): boolean {
+  return pickValue(model, [
+    ["checkpoint_file_deleted"],
+    ["metadata", "checkpoint_file_deleted"],
+    ["adaptation_run", "checkpoint_file_deleted"],
+  ]) === true;
+}
+
 export function modelCheckpointHealthLabel(model: RegistryModelRecord): string {
   const exists = checkpointFileExists(model);
   if (exists === null) return "Not reported";
-  return exists ? "Yes" : "No";
+  return exists ? "Exists" : "Missing";
 }
 
 function isModelActive(
@@ -279,7 +287,9 @@ function checkpointDeleteDisabledReason(
   if (!modelId) return "Model ID is missing.";
   if (!isAdaptationRecord(model)) return "Only adaptation checkpoint records can be deleted from this danger zone.";
   if (isModelActive(model, activeModelId)) return "Active model checkpoints cannot be deleted.";
-  if (checkpointFileExists(model) === false) return "Checkpoint file is already missing.";
+  const exists = checkpointFileExists(model);
+  if (exists === null) return "Checkpoint status is not reported.";
+  if (exists === false) return "Checkpoint file is already missing.";
   return null;
 }
 
@@ -317,7 +327,7 @@ function lifecycleRows(model: DisplayModel): DetailRow[] {
   return [
     fieldRow("Parent / trained from", modelParentLabel(model)),
     fieldRow("Gate / promotion", modelGateLabel(model)),
-    fieldRow("Checkpoint file", modelCheckpointHealthLabel(model)),
+    fieldRow("Checkpoint status", modelCheckpointHealthLabel(model)),
   ];
 }
 
@@ -420,10 +430,7 @@ function adaptationRows(model: DisplayModel): DetailRow[] {
       model.last_adaptation_promotion_decision,
     ),
     structuredRow("Last promotion result", model.last_promotion_result),
-    fieldRow(
-      "Checkpoint file exists",
-      exists === null ? undefined : exists ? "Yes" : "No",
-    ),
+    fieldRow("Checkpoint file status", exists === null ? undefined : modelCheckpointHealthLabel(model)),
   ];
 }
 
@@ -706,7 +713,7 @@ export function OpsRegistryTab() {
                                     setMenuOpen(null);
                                   }}
                                 >
-                                  Inspect model
+                                  Inspect / manage
                                 </button>
                               </div>,
                               document.body,
@@ -757,6 +764,10 @@ export function OpsRegistryTab() {
               title="Technical details"
               rows={supplementalRows(inspectModel)}
             />
+            <CheckpointStatusSection
+              model={inspectModel}
+              activeModelId={activeModelId}
+            />
             <CheckpointDangerZone
               model={inspectModel}
               activeModelId={activeModelId}
@@ -791,6 +802,43 @@ export function OpsRegistryTab() {
   );
 }
 
+function CheckpointStatusSection({
+  model,
+  activeModelId,
+}: {
+  model: DisplayModel;
+  activeModelId: string | null;
+}) {
+  const status = modelCheckpointHealthLabel(model);
+  const active = isModelActive(model, activeModelId);
+  const adaptation = isAdaptationRecord(model);
+
+  return (
+    <section className="ops-modal-section">
+      <h4>Checkpoint status</h4>
+      <dl className="ops-model-details-list">
+        <div>
+          <dt>Checkpoint status</dt>
+          <dd>{status}</dd>
+        </div>
+      </dl>
+      {checkpointFileDeletedMetadataPresent(model) ? (
+        <p className="muted">
+          Checkpoint file was deleted; registry metadata is preserved.
+        </p>
+      ) : null}
+      {active ? (
+        <p className="muted">Active model checkpoints cannot be deleted.</p>
+      ) : null}
+      {!adaptation ? (
+        <p className="muted">
+          Checkpoint deletion is only available for adaptation records.
+        </p>
+      ) : null}
+    </section>
+  );
+}
+
 function CheckpointDangerZone({
   model,
   activeModelId,
@@ -812,9 +860,9 @@ function CheckpointDangerZone({
       <summary>Danger zone</summary>
       <div style={{ display: "grid", gap: 8, marginTop: 8 }}>
         <p className="muted" style={{ margin: 0 }}>
-          Delete only the checkpoint .pt file for an adaptation record. Registry
-          metadata and history remain visible, active model checkpoints cannot be
-          deleted, and this action cannot be undone.
+          Delete checkpoint file only. Registry record/history remains. Registry
+          metadata and history remain visible, and the model row remains visible.
+          Active model checkpoints cannot be deleted. This action cannot be undone.
         </p>
         {disabledReason ? (
           <p className="muted" style={{ margin: 0 }}>

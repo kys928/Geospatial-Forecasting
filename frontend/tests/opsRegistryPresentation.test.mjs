@@ -9,9 +9,11 @@ assert.match(source, /\["selected_resume_checkpoint"\]/, "parent helper falls ba
 assert.match(source, /export function modelGateLabel/, "modelGateLabel helper is present");
 assert.match(source, /Stage 3 rejected; promoted Stage 2/, "gate helper reports stage-gate rejection with stage-2 promotion");
 assert.match(source, /export function modelCheckpointHealthLabel/, "checkpoint health helper is present");
-assert.match(source, /return exists \? "Yes" : "No";/, "checkpoint health helper reports yes/no");
+assert.match(source, /return exists \? "Exists" : "Missing";/, "checkpoint health helper reports Exists/Missing");
 assert.match(source, /outcome\.enabled === true \|\| outcome\.gates_enabled === true/, "gate helper supports backend enabled and legacy gates_enabled fields");
 assert.match(source, /if \(deleted === true\) return false;/, "checkpoint health treats deleted checkpoint metadata as missing");
+assert.match(source, /if \(exists === null\) return "Not reported";/, "unknown checkpoint health remains Not reported");
+assert.match(source, /\["checkpoint_file_exists"\]/, "checkpoint health reads checkpoint_file_exists metadata");
 assert.match(source, /export function compactPathLabel/, "compact path helper is present");
 
 assert.match(source, /<th>Parent \/ Trained from<\/th>/, "table includes parent lineage column");
