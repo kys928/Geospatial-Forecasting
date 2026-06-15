@@ -296,8 +296,6 @@ function checkpointDeleteDisabledReason(
   if (!isAdaptationRecord(model)) return "Only eligible adaptation checkpoint records can be deleted.";
   if (isModelActive(model, activeModelId)) return "Active model checkpoints cannot be deleted.";
   if (checkpointFileDeletedMetadataPresent(model)) return "Checkpoint file is already deleted.";
-  const exists = checkpointFileExists(model);
-  if (exists === false) return "Checkpoint file is already missing.";
   return null;
 }
 
@@ -732,9 +730,11 @@ export function OpsRegistryTab() {
                                   }
                                   title={
                                     checkpointDeleteDisabledReason(model, activeModelId) ??
-                                    (checkpointFileExists(model) === null
-                                      ? "Checkpoint status is not reported; backend will verify before deletion."
-                                      : "Delete checkpoint record; backend will remove the file if present.")
+                                    (checkpointFileExists(model) === false
+                                      ? "Checkpoint file is already missing; backend will remove the registry record."
+                                      : checkpointFileExists(model) === null
+                                        ? "Checkpoint status is not reported; backend will verify before deletion."
+                                        : "Delete checkpoint record; backend will remove the file if present.")
                                   }
                                 >
                                   {busy &&
