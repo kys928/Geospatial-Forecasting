@@ -39,7 +39,8 @@ assert.match(rowMenuSource, /Only candidate, approved, or archived previously-ap
 
 assert.match(deleteHandlerSource, /window\.confirm/, "delete handler requires explicit confirmation");
 assert.match(deleteHandlerSource, /opsClient\.deleteAdaptationCheckpointFile/, "delete handler calls backend checkpoint-file delete API");
-assert.match(deleteHandlerSource, /runAction\(modelId, "Delete checkpoint file"/, "delete handler refreshes through the existing action runner");
+assert.match(deleteHandlerSource, /runAction\(modelId, "Delete checkpoint record"/, "delete handler refreshes through the existing action runner with updated label");
+assert.match(deleteHandlerSource, /model version will disappear from the table/, "delete confirmation explains the model version disappears from the table");
 assert.doesNotMatch(deleteHandlerSource, /setInspectModelId\(null\)/, "delete handler does not close Inspect Model modal");
 
 assert.match(source, /if \(deleted === true\) return false;/, "checkpoint_file_deleted true makes checkpoint health missing");
@@ -47,5 +48,5 @@ assert.match(source, /checkpointFileDeletedMetadataPresent\(model\)\) return "Ch
 assert.match(source, /if \(exists === false\) return "Checkpoint file is already missing\.";/, "missing checkpoint keeps deletion unavailable");
 assert.match(source, /return exists \? "Exists" : "Missing";/, "checkpoint_file_exists true can present as Exists and false as Missing");
 assert.match(source, /return checkpointDeleteDisabledReason\(model, activeModelId\) === null;/, "delete can be available only when all disabled reasons are clear");
-assert.match(source, /Checkpoint file was deleted; registry metadata is preserved\./, "Inspect Model explains deleted checkpoint metadata state");
+assert.match(source, /Checkpoint file was previously deleted; legacy registry metadata is preserved\./, "Inspect Model explains legacy deleted checkpoint metadata state");
 assert.match(source, /Checkpoint deletion is only available for adaptation records\./, "Inspect Model explains non-adaptation deletion unavailability");

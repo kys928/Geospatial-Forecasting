@@ -572,10 +572,10 @@ export function OpsRegistryTab() {
       return;
     }
     const confirmed = window.confirm(
-      `Delete checkpoint .pt file for ${modelId}? Registry metadata and history remain visible. Active model checkpoints cannot be deleted. This action cannot be undone.`,
+      `Delete checkpoint record for ${modelId}? The checkpoint file will be removed if present, and this model version will disappear from the table. Active model checkpoints cannot be deleted. This action cannot be undone.`,
     );
     if (!confirmed) return;
-    await runAction(modelId, "Delete checkpoint file", () =>
+    await runAction(modelId, "Delete checkpoint record", () =>
       opsClient.deleteAdaptationCheckpointFile(
         modelId,
         decisionPayload("Checkpoint file deleted from Ops UI row actions menu."),
@@ -728,17 +728,17 @@ export function OpsRegistryTab() {
                                   onClick={() => void handleDeleteCheckpointFile(model)}
                                   disabled={
                                     !canDeleteCheckpointFile(model, activeModelId) ||
-                                    (busy && runningAction?.endsWith("Delete checkpoint file"))
+                                    (busy && runningAction?.endsWith("Delete checkpoint record"))
                                   }
                                   title={
                                     checkpointDeleteDisabledReason(model, activeModelId) ??
                                     (checkpointFileExists(model) === null
                                       ? "Checkpoint status is not reported; backend will verify before deletion."
-                                      : "Delete checkpoint file only; registry metadata remains.")
+                                      : "Delete checkpoint record; backend will remove the file if present.")
                                   }
                                 >
                                   {busy &&
-                                  runningAction?.endsWith("Delete checkpoint file")
+                                  runningAction?.endsWith("Delete checkpoint record")
                                     ? "Deleting..."
                                     : "Delete"}
                                 </button>
@@ -845,7 +845,7 @@ function CheckpointStatusSection({
       </dl>
       {checkpointFileDeletedMetadataPresent(model) ? (
         <p className="muted">
-          Checkpoint file was deleted; registry metadata is preserved.
+          Checkpoint file was previously deleted; legacy registry metadata is preserved.
         </p>
       ) : null}
       {active ? (

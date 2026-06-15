@@ -541,7 +541,7 @@ def test_sqlite_operational_event_log_recent_returns_newest_limit(tmp_path: Path
     assert set(recent[0].keys()) == {"timestamp", "event_type", "payload"}
 
 
-def test_delete_adaptation_checkpoint_file_records_missing_checkpoint_health(tmp_path: Path):
+def test_delete_adaptation_checkpoint_file_removes_existing_checkpoint_record(tmp_path: Path):
     from plume.services.convlstm_operations import ModelRegistry, delete_adaptation_checkpoint_file
 
     checkpoint_path = tmp_path / "candidate.pt"
@@ -581,17 +581,23 @@ def test_delete_adaptation_checkpoint_file_records_missing_checkpoint_health(tmp
     )
 
     payload = registry.load()
-    record = next(model for model in payload["models"] if model["model_id"] == "candidate-model")
     assert result["deleted"] is True
+    assert result["record_removed"] is True
+    assert result["event_type"] == "adaptation_checkpoint_record_deleted"
     assert checkpoint_path.exists() is False
-    assert record["checkpoint_file_exists"] is False
-    assert record["checkpoint_file_deleted"] is True
-    assert record["checkpoint_file_delete_reason"] == "cleanup"
-    assert record["checkpoint_file_deleted_by"] == "ops-ui"
-    assert record["checkpoint_file_deleted_at"]
+    assert all(model["model_id"] != "candidate-model" for model in payload["models"])
+    event = payload["events"][-1]
+    assert event["event_type"] == "adaptation_checkpoint_record_deleted"
+    assert event["model_id"] == "candidate-model"
+    assert event["checkpoint_path"] == str(checkpoint_path)
+    assert event["actor"] == "ops-ui"
+    assert event["comment"] == "cleanup"
+    assert event["file_deleted"] is True
+    assert event["file_existed_before"] is True
+    assert event["record_removed"] is True
 
 
-def test_delete_adaptation_checkpoint_file_records_already_missing_checkpoint_health(tmp_path: Path):
+def test_delete_adaptation_checkpoint_file_removes_already_missing_checkpoint_record(tmp_path: Path):
     from plume.services.convlstm_operations import ModelRegistry, delete_adaptation_checkpoint_file
 
     missing_checkpoint_path = tmp_path / "missing-candidate.pt"
@@ -630,13 +636,81 @@ def test_delete_adaptation_checkpoint_file_records_already_missing_checkpoint_he
     )
 
     payload = registry.load()
-    record = next(model for model in payload["models"] if model["model_id"] == "missing-candidate")
     assert result["deleted"] is False
     assert result["file_existed_before"] is False
-    assert record["checkpoint_file_exists"] is False
-    assert record["checkpoint_file_deleted"] is True
-    assert record["checkpoint_file_delete_reason"] == "already missing"
-    assert record["checkpoint_file_deleted_by"] == "ops-ui"
+    assert result["record_removed"] is True
+    assert all(model["model_id"] != "missing-candidate" for model in payload["models"])
+    event = payload["events"][-1]
+    assert event["event_type"] == "adaptation_checkpoint_record_deleted"
+    assert event["file_deleted"] is False
+    assert event["file_existed_before"] is False
+    assert event["record_removed"] is True
+
+
+def test_delete_adaptation_checkpoint_file_rejects_active_and_keeps_registry_row(tmp_path: Path):
+    import pytest
+    from plume.services.convlstm_operations import ModelRegistry, delete_adaptation_checkpoint_file
+
+    checkpoint_path = tmp_path / "active.pt"
+    checkpoint_path.write_bytes(b"checkpoint")
+    registry = ModelRegistry(tmp_path / "registry.json")
+    registry.save(
+        {
+            "active_model_id": "active-model",
+            "previous_active_model_id": None,
+            "models": [
+                {
+                    "model_id": "active-model",
+                    "status": "active",
+                    "path": str(checkpoint_path),
+                    "contract_version": "robust_convlstm_adaptation_v1",
+                },
+            ],
+            "events": [],
+            "approval_audit": [],
+            "revision": 0,
+            "next_event_index": 0,
+        }
+    )
+
+    with pytest.raises(ValueError, match="Refusing to delete checkpoint file for active model"):
+        delete_adaptation_checkpoint_file(registry=registry, model_id="active-model")
+
+    payload = registry.load()
+    assert checkpoint_path.exists() is True
+    assert any(model["model_id"] == "active-model" for model in payload["models"])
+    assert payload["events"] == []
+
+
+def test_delete_adaptation_checkpoint_file_rejects_non_adaptation_and_keeps_registry_row(tmp_path: Path):
+    import pytest
+    from plume.services.convlstm_operations import ModelRegistry, delete_adaptation_checkpoint_file
+
+    checkpoint_path = tmp_path / "baseline.pt"
+    checkpoint_path.write_bytes(b"checkpoint")
+    registry = ModelRegistry(tmp_path / "registry.json")
+    registry.save(
+        {
+            "active_model_id": "active-model",
+            "previous_active_model_id": None,
+            "models": [
+                {"model_id": "active-model", "status": "active", "path": str(tmp_path / "active.pt"), "contract_version": CONVLSTM_CONTRACT_VERSION},
+                {"model_id": "baseline-model", "status": "archived", "path": str(checkpoint_path), "contract_version": CONVLSTM_CONTRACT_VERSION},
+            ],
+            "events": [],
+            "approval_audit": [],
+            "revision": 0,
+            "next_event_index": 0,
+        }
+    )
+
+    with pytest.raises(ValueError, match="Model is not an adaptation record: baseline-model"):
+        delete_adaptation_checkpoint_file(registry=registry, model_id="baseline-model")
+
+    payload = registry.load()
+    assert checkpoint_path.exists() is True
+    assert any(model["model_id"] == "baseline-model" for model in payload["models"])
+    assert payload["events"] == []
 
 
 def test_ops_retraining_recommendation_endpoint(monkeypatch, tmp_path: Path):
