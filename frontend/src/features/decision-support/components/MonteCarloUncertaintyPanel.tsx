@@ -106,9 +106,9 @@ export function MonteCarloUncertaintyPanel({ uncertainty }: Props) {
           </div>
         </div>
         <div className="uncertainty-axis-ticks" aria-hidden="true">
-          <span>{formatTick(chartMin)}</span>
-          <span>{formatTick(midpoint)}</span>
-          <span>{formatTick(chartMax)}</span>
+          <span>50</span>
+          <span>100</span>
+          <span>150</span>
         </div>
         <div className="uncertainty-axis-label">Predicted affected area (ha)</div>
       </div>
