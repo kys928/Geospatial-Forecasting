@@ -16,6 +16,7 @@ from plume.schemas.grid import GridSpec
 from plume.schemas.prediction_request import PredictionRequest
 from plume.schemas.scenario import Scenario
 from plume.services.convlstm_operations import load_dataset_window_runtime_context
+from plume.services import forecast_context_service as forecast_context_module
 from plume.services.forecast_context_service import ForecastContextService
 from plume.services.forecast_service import ForecastRunResult
 from plume.utils.config import Config
@@ -73,6 +74,11 @@ class _Explain:
 
 def _context(result: ForecastRunResult) -> dict[str, object]:
     return ForecastContextService(runtime_client=_Runtime(result), explain_service=_Explain()).latest(source="session").payload
+
+
+def _context_with_explanation_payload(monkeypatch, result: ForecastRunResult, explanation_payload: dict[str, object]) -> dict[str, object]:
+    monkeypatch.setattr(forecast_context_module, "build_explanation_payload", lambda _result, _explanation: explanation_payload)
+    return _context(result)
 
 
 def test_forecast_metadata_only_exposes_current_conditions():
@@ -237,7 +243,7 @@ def test_convlstm_dataset_window_prediction_preserves_non_null_conditions(monkey
     json.dumps(forecast.metadata, allow_nan=False)
 
 
-def test_context_runtime_mode_preserves_payload_and_flat_fields():
+def test_context_runtime_mode_preserves_payload_and_flat_fields(monkeypatch):
     runtime_mode = {
         "mode": "convlstm_active",
         "is_active_convlstm": True,
@@ -257,9 +263,19 @@ def test_context_runtime_mode_preserves_payload_and_flat_fields():
         }
     )
 
+    expected_runtime_note = "Active ConvLSTM runtime note."
+    monkeypatch.setattr(
+        forecast_context_module,
+        "build_explanation_payload",
+        lambda _result, _explanation: {"runtime_note": expected_runtime_note},
+    )
+
     payload = _context(result)
     runtime = payload["runtime"]
 
+    assert runtime["runtime_note"] == expected_runtime_note
+    assert "decision_support" not in payload
+    assert "runtime_note" not in payload["raw"]["decision_support"]
     assert runtime["runtime_mode"] == runtime_mode
     assert runtime["runtime_mode_name"] == "convlstm_active"
     assert runtime["is_active_convlstm"] is True
@@ -271,6 +287,26 @@ def test_context_runtime_mode_preserves_payload_and_flat_fields():
     assert runtime["prediction_engine"] == "torch_multistep"
     assert runtime["fallback_used"] is False
     assert runtime["input_source"] == "dataset_window"
+
+
+def test_context_runtime_note_defaults_when_missing_from_explanation_payload(monkeypatch):
+    result = _result(execution_metadata={"model_backend": "gaussian_fallback"})
+
+    payload = _context_with_explanation_payload(monkeypatch, result, {"explanation": {"risk_level": "low"}})
+
+    assert payload["runtime"]["runtime_note"] == "Runtime mode is unknown or unavailable."
+    assert "decision_support" not in payload
+    assert "runtime_note" not in payload["raw"]["decision_support"]
+
+
+def test_context_runtime_note_defaults_when_blank_in_explanation_payload(monkeypatch):
+    result = _result(execution_metadata={"model_backend": "gaussian_fallback"})
+
+    payload = _context_with_explanation_payload(monkeypatch, result, {"runtime_note": "   \t\n  "})
+
+    assert payload["runtime"]["runtime_note"] == "Runtime mode is unknown or unavailable."
+    assert "decision_support" not in payload
+    assert "runtime_note" not in payload["raw"]["decision_support"]
 
 
 def test_context_runtime_mode_defaults_when_missing_or_invalid():
@@ -304,6 +340,7 @@ def test_empty_context_includes_runtime_mode_defaults():
     runtime = payload["runtime"]
 
     assert runtime["runtime_mode"] == {}
+    assert runtime["runtime_note"] == "Runtime mode is unknown or unavailable."
     assert runtime["runtime_mode_name"] is None
     assert runtime["is_active_convlstm"] is False
     assert runtime["is_fallback"] is False
