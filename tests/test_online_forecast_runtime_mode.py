@@ -142,6 +142,27 @@ def test_dataset_window_metadata_receives_dataset_window(monkeypatch):
     assert runtime_mode["is_active_convlstm"] is False
 
 
+def test_dataset_window_metadata_is_case_and_whitespace_tolerant(monkeypatch):
+    result = _predict_with_backend(
+        monkeypatch,
+        metadata={
+            "model_family": "ConvLSTM",
+            "prediction_engine": "torch_multistep",
+            "input_source": " Dataset_Window ",
+            "input_window_source": " DATASET_WINDOW ",
+            "raw_reference": {
+                "target_usage": " INPUT_WINDOW_FOR_CONVLSTM_INFERENCE ",
+                "source_file": "/tmp/window.nc",
+            },
+        },
+    )
+
+    runtime_mode = result.execution_metadata["runtime_mode"]
+    assert runtime_mode["mode"] == "dataset_window"
+    assert runtime_mode["is_dataset_window"] is True
+    assert runtime_mode["is_active_convlstm"] is False
+
+
 def test_runtime_mode_key_preserves_existing_execution_metadata_fields(monkeypatch):
     result = _predict_with_backend(
         monkeypatch,
