@@ -5,6 +5,7 @@ from typing import Any, Literal
 
 from plume.services.explanation_payloads import build_explanation_payload
 from plume.services.metadata_utils import CONDITION_FIELDS, json_safe, normalize_conditions, normalize_source
+from plume.services.uncertainty_service import build_impact_extent_uncertainty
 
 
 @dataclass
@@ -215,6 +216,8 @@ class ForecastContextService:
             "grid_rows": self._first(self._nested(summary, "grid.rows"), self._nested(explanation_payload, "summary.grid_rows")),
             "grid_columns": self._first(self._nested(summary, "grid.columns"), self._nested(explanation_payload, "summary.grid_columns")),
         }
+        uncertainty_payload = build_impact_extent_uncertainty(context["plume_metrics"])
+        context["uncertainty"] = uncertainty_payload
 
         input_completeness = self._as_dict(self._nested(session_state, "input_completeness"))
         missing_channels = input_completeness.get("missing_channels") if isinstance(input_completeness.get("missing_channels"), list) else []
@@ -273,6 +276,7 @@ class ForecastContextService:
             "execution_metadata": execution_metadata,
             "forecast_metadata": forecast_metadata,
             "raw_reference": raw_reference_summary,
+            "uncertainty": uncertainty_payload,
         }
         return ForecastContextResponse(payload=json_safe(context))
 
@@ -305,8 +309,9 @@ class ForecastContextService:
             "source": {"latitude": None, "longitude": None, "pollutant": None, "emission_rate": None, "release_height_m": None, "duration_minutes": None, "start_time": None, "end_time": None},
             "plume_metrics": {"max_concentration": None, "mean_concentration": None, "affected_cells_above_threshold": None, "affected_area_m2": None, "affected_area_hectares": None, "dominant_spread_direction": None, "threshold_used": None, "grid_rows": None, "grid_columns": None},
             "runtime": {"backend": None, "model_name": None, "model_source": None, "model_version": None, "forecast_source": None, "model_id": None, "model_family": "Unknown", "model_backend": None, "checkpoint_path": None, "inference_mode": "unknown", "fallback_used": False, "dataset_playback_enabled": False, "input_window_source": None, "output_source": None, "temporary_model_substitution": False, "prediction_engine": None, "output_space": None, "input_mode": None, "prediction_trust": None, "missing_channels": [], "missing_frame_indices": [], "missing_condition_fields": [], "meteorology_available": None, "observations_available": None, "limitations": [], "fallback_reason": "forecast unavailable", "active_registry_model_id": None, "input_source": "unknown", "generated_at": None, "runtime_mode": {}, "runtime_note": "Runtime mode is unknown or unavailable.", "runtime_mode_name": None, "is_active_convlstm": False, "is_fallback": False, "is_dataset_window": False, "is_demo_backend": False, "is_temporary_substitution": False},
+            "uncertainty": {},
             "provenance": {"forecast_source": "fallback", "model_id": None, "model_family": "Unknown", "model_backend": None, "checkpoint_path": None, "inference_mode": "unknown", "fallback_used": True, "fallback_reason": "forecast unavailable", "dataset_playback_enabled": False, "input_window_source": None, "output_source": None, "temporary_model_substitution": False, "prediction_engine": None, "active_registry_model_id": None, "input_source": "unknown", "generated_at": None},
-            "raw": {"summary": {}, "explanation": {}, "session_state": {}, "decision_support": {}, "execution_metadata": {}, "raw_reference": {}},
+            "raw": {"summary": {}, "explanation": {}, "session_state": {}, "decision_support": {}, "execution_metadata": {}, "raw_reference": {}, "uncertainty": {}},
         }
 
     @staticmethod

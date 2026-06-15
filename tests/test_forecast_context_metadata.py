@@ -45,7 +45,7 @@ def _result(*, forecast_metadata=None, execution_metadata=None) -> ForecastRunRe
         model_name="convlstm_online",
         model_version="active-1",
         forecast=forecast,
-        summary_statistics={"max_concentration": 1.0, "mean_concentration": 1.0},
+        summary_statistics={"max_concentration": 1.0, "mean_concentration": 1.0, "affected_area_hectares": 94.1},
         execution_metadata=execution_metadata or {},
     )
 
@@ -347,3 +347,30 @@ def test_empty_context_includes_runtime_mode_defaults():
     assert runtime["is_dataset_window"] is False
     assert runtime["is_demo_backend"] is False
     assert runtime["is_temporary_substitution"] is False
+
+
+def test_context_includes_uncertainty_from_plume_metrics():
+    payload = _context(_result())
+
+    assert "uncertainty" in payload
+    assert payload["uncertainty"]["central_estimate"] == pytest.approx(payload["plume_metrics"]["affected_area_hectares"])
+    assert payload["raw"]["uncertainty"] == payload["uncertainty"]
+
+
+def test_empty_context_includes_empty_uncertainty_payload():
+    payload = ForecastContextService(runtime_client=type("Runtime", (), {"list_sessions": lambda self: []})(), explain_service=_Explain()).latest(source="session").payload
+
+    assert payload["uncertainty"] == {}
+    assert payload["raw"]["uncertainty"] == {}
+
+
+def test_context_preserves_runtime_and_provenance_raw_fields_with_uncertainty():
+    payload = _context(_result())
+    runtime = payload["runtime"]
+
+    for key in ("runtime", "provenance", "raw"):
+        assert key in payload
+    for key in ("runtime_mode", "runtime_note", "runtime_mode_name", "is_dataset_window", "is_fallback"):
+        assert key in runtime
+    for key in ("summary", "explanation", "session_state", "decision_support", "execution_metadata", "forecast_metadata", "raw_reference"):
+        assert key in payload["raw"]
