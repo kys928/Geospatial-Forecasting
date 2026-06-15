@@ -238,6 +238,7 @@ class CheckpointFileDeleteResponse(BaseModel):
     file_existed_before: bool
     checkpoint_path: str | None = None
     metadata_updated: bool
+    record_removed: bool = False
     active_model_id: str | None = None
     event_type: str | None = None
     message: str

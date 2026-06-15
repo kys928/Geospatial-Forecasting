@@ -427,7 +427,7 @@ def test_storage_warnings(monkeypatch, tmp_path: Path):
     assert response.json()["automatic_deletion"] is False
 
 
-def test_delete_checkpoint_file_keeps_metadata(monkeypatch, tmp_path: Path):
+def test_delete_checkpoint_file_removes_registry_record(monkeypatch, tmp_path: Path):
     client, paths = _client(monkeypatch, tmp_path)
     ckpt = _write_json_checkpoint(tmp_path / "candidate.pt")
     run_dir = tmp_path / "run"
@@ -440,13 +440,13 @@ def test_delete_checkpoint_file_keeps_metadata(monkeypatch, tmp_path: Path):
     response = client.post("/ops/adaptation/checkpoints/candidate/delete-file", json={"actor": "ops-test", "comment": "cleanup"})
 
     payload = ModelRegistry(paths["registry"]).load()
-    candidate = next(item for item in payload["models"] if item["model_id"] == "candidate")
     assert response.status_code == 200
     assert response.json()["deleted"] is True
+    assert response.json()["record_removed"] is True
     assert not ckpt.exists()
     assert (run_dir / "training_summary.json").exists()
-    assert candidate["checkpoint_file_deleted"] is True
-    assert any(event["event_type"] == "adaptation_checkpoint_file_deleted" for event in payload["events"])
+    assert all(item["model_id"] != "candidate" for item in payload["models"])
+    assert any(event["event_type"] == "adaptation_checkpoint_record_deleted" for event in payload["events"])
 
 
 def test_delete_checkpoint_file_refuses_active_model(monkeypatch, tmp_path: Path):
