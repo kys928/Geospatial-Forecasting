@@ -6,6 +6,7 @@ import type { SessionDetail, SessionStateSummary } from "../features/sessions/ty
 import { httpGet, httpPost } from "../services/api/http";
 import { DecisionChatPanel } from "../features/decision-support/components/DecisionChatPanel";
 import { ConditionsPanel } from "../features/decision-support/components/ConditionsPanel";
+import { MonteCarloUncertaintyPanel } from "../features/decision-support/components/MonteCarloUncertaintyPanel";
 import { CHAT_STORAGE_KEY } from "../features/decision-support/constants";
 import {
   cleanAssistantText,
@@ -142,6 +143,7 @@ export function DecisionSupportPage() {
   const ctxSource = context?.source ?? {};
   const ctxPlume = context?.plume_metrics ?? {};
   const ctxRuntime = context?.runtime ?? {};
+  const ctxUncertainty = context?.uncertainty ?? context?.raw?.uncertainty ?? {};
 
   const contextReadiness = isUsableForecastContext(context);
   const isContextReady = contextReadiness.ready;
@@ -242,6 +244,7 @@ export function DecisionSupportPage() {
     source: ctxSource,
     plume_metrics: ctxPlume,
     runtime: ctxRuntime,
+    uncertainty: ctxUncertainty,
     weather_context: weatherContext,
     model_inference: getNestedValue(context, "raw.model_inference", "raw.model_inference") ?? getNestedValue(context, "raw.model_inference"),
     overlay_summary: {
@@ -342,7 +345,10 @@ export function DecisionSupportPage() {
   return <AppShell title="Forecast Overview" subtitle="Forecast interpretation, current conditions, and plume result.">
     {error ? <section className="panel"><p>{error}</p></section> : null}
     <div className="decision-support-layout">
-      <DecisionChatPanel hasContext={hasContext && !isContextLoading} llmWarning={llmWarning} messages={messages} chatQuestion={chatQuestion} setChatQuestion={setChatQuestion} sendQuestion={sendQuestion} threadRef={threadRef} loadingMessage={isContextLoading ? "Loading forecast context..." : undefined} />
+      <div className="decision-support-main-column">
+        <DecisionChatPanel hasContext={hasContext && !isContextLoading} llmWarning={llmWarning} messages={messages} chatQuestion={chatQuestion} setChatQuestion={setChatQuestion} sendQuestion={sendQuestion} threadRef={threadRef} loadingMessage={isContextLoading ? "Loading forecast context..." : undefined} />
+        <MonteCarloUncertaintyPanel uncertainty={ctxUncertainty as Record<string, unknown>} />
+      </div>
       <ConditionsPanel datasetScenarios={[]} activeScenario={activeScenario} activateDatasetScenario={activateDatasetScenario} currentConditionsRows={currentConditionsRows} currentForecastRows={currentForecastRows} plumePresent={plumePresent} plumeDetailRows={plumeDetailRows} detailsRows={detailsRows} filterAvailableRows={filterAvailableRows} rawContext={rawContext} />
     </div>
   </AppShell>;
