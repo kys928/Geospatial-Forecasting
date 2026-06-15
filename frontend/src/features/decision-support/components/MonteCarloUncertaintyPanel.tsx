@@ -71,17 +71,17 @@ export function MonteCarloUncertaintyPanel({ uncertainty }: Props) {
 
     {histogram.length === 0 || maxCount <= 0 || chartSpan <= 0 ? <p className="uncertainty-empty-state">Monte Carlo uncertainty data is not available for this forecast.</p> : <>
       <div className="uncertainty-summary-grid" aria-label="Monte Carlo uncertainty summary">
-        <div className="uncertainty-stat">
+        <div className="uncertainty-stat uncertainty-stat-central">
           <span className="uncertainty-stat-icon" aria-hidden="true">◎</span>
           <span className="uncertainty-stat-label">Central estimate</span>
           <strong className="uncertainty-stat-value">{formatHectares(centralEstimate)}</strong>
         </div>
-        <div className="uncertainty-stat">
+        <div className="uncertainty-stat uncertainty-stat-range">
           <span className="uncertainty-stat-icon" aria-hidden="true">↔</span>
           <span className="uncertainty-stat-label">Likely range</span>
           <strong className="uncertainty-stat-value">{likelyLow === null || likelyHigh === null ? "Unavailable" : `${likelyLow.toFixed(1)}–${likelyHigh.toFixed(1)} ha`}</strong>
         </div>
-        <div className="uncertainty-stat">
+        <div className="uncertainty-stat uncertainty-stat-samples">
           <span className="uncertainty-stat-icon" aria-hidden="true">▥</span>
           <span className="uncertainty-stat-label">Uncertainty samples</span>
           <strong className="uncertainty-stat-value">{sampleCount === null ? "Unavailable" : sampleCount.toLocaleString()}</strong>
@@ -100,7 +100,7 @@ export function MonteCarloUncertaintyPanel({ uncertainty }: Props) {
           </> : null}
           <div className="uncertainty-bars" aria-hidden="true">
             {histogram.map((bin, index) => {
-              const height = Math.max(3, (bin.count / maxCount) * 100);
+              const height = bin.count === 0 ? 0 : Math.max(2, (bin.count / maxCount) * 100);
               return <span key={`${bin.bin_start}-${bin.bin_end}-${index}`} className="uncertainty-bar" title={`${bin.bin_start.toFixed(1)}–${bin.bin_end.toFixed(1)} ha: ${bin.count} samples`} style={{ height: `${height}%` }} />;
             })}
           </div>

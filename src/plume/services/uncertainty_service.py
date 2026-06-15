@@ -112,7 +112,7 @@ def _percentile(values: list[float], percentile: float) -> float:
     return ordered[lower] + (ordered[upper] - ordered[lower]) * fraction
 
 
-def _histogram(samples: list[float], *, bin_count: int = 10) -> list[dict[str, float | int]]:
+def _histogram(samples: list[float], *, bin_count: int = 24) -> list[dict[str, float | int]]:
     if not samples:
         return []
     minimum = min(samples)

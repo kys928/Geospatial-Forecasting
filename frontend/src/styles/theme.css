@@ -971,12 +971,13 @@ textarea {
 
 .monte-carlo-uncertainty-panel {
   display: grid;
-  gap: 16px;
+  gap: 18px;
   min-width: 0;
   overflow: hidden;
   border-color: #dbe3ee;
   background: linear-gradient(180deg, #ffffff 0%, #fbfdff 100%);
-  box-shadow: 0 14px 36px rgba(15, 23, 42, 0.08);
+  padding: 18px;
+  box-shadow: 0 16px 34px rgba(15, 23, 42, 0.06);
 }
 
 .uncertainty-panel-header {
@@ -989,7 +990,7 @@ textarea {
 .uncertainty-panel-header h3 {
   margin: 0;
   color: #0f172a;
-  font-size: 1.08rem;
+  font-size: 1.1rem;
   letter-spacing: -0.02em;
 }
 
@@ -1016,7 +1017,7 @@ textarea {
   border: 1px solid #dfe7f1;
   border-radius: 16px;
   background: linear-gradient(180deg, #ffffff 0%, #f8fbff 100%);
-  padding: 13px 14px;
+  padding: 14px 15px;
   min-width: 0;
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.9);
 }
@@ -1044,29 +1045,29 @@ textarea {
 .uncertainty-stat-value {
   grid-area: value;
   color: #0f172a;
-  font-size: 1.08rem;
+  font-size: 1.1rem;
   line-height: 1.35;
   white-space: nowrap;
 }
 
 .uncertainty-chart-wrap {
   display: grid;
-  gap: 7px;
+  gap: 8px;
   min-width: 0;
 }
 
 .uncertainty-histogram {
   position: relative;
-  height: 184px;
+  height: 204px;
   max-width: 100%;
   overflow: hidden;
   border: 1px solid #dbe3ee;
   border-radius: 16px;
   background:
     linear-gradient(180deg, rgba(255, 255, 255, 0) 0%, #ffffff 100%),
-    repeating-linear-gradient(0deg, transparent 0, transparent 35px, rgba(148, 163, 184, 0.18) 36px),
+    repeating-linear-gradient(0deg, transparent 0, transparent 39px, rgba(148, 163, 184, 0.16) 40px),
     #f8fafc;
-  padding: 42px 12px 12px;
+  padding: 54px 14px 18px;
 }
 
 .uncertainty-bars {
@@ -1074,30 +1075,57 @@ textarea {
   z-index: 2;
   display: flex;
   align-items: end;
-  gap: 3px;
+  gap: 2px;
   height: 100%;
   width: 100%;
 }
 
 .uncertainty-bar {
   display: block;
-  flex: 1 1 5px;
-  min-width: 3px;
+  flex: 1 1 3px;
+  min-width: 2px;
   border: 1px solid rgba(37, 99, 235, 0.42);
   border-bottom-color: rgba(37, 99, 235, 0.58);
-  border-radius: 7px 7px 2px 2px;
+  border-radius: 6px 6px 2px 2px;
   background: linear-gradient(180deg, rgba(96, 165, 250, 0.68) 0%, rgba(191, 219, 254, 0.82) 100%);
   box-shadow: 0 1px 0 rgba(255, 255, 255, 0.8) inset;
+}
+
+.uncertainty-stat-central .uncertainty-stat-icon {
+  background: #eff6ff;
+  color: #2563eb;
+}
+
+.uncertainty-stat-central .uncertainty-stat-value {
+  color: #1d4ed8;
+}
+
+.uncertainty-stat-range .uncertainty-stat-icon {
+  background: #ecfdf5;
+  color: #16a34a;
+}
+
+.uncertainty-stat-range .uncertainty-stat-value {
+  color: #15803d;
+}
+
+.uncertainty-stat-samples .uncertainty-stat-icon {
+  background: #f5f3ff;
+  color: #7c3aed;
+}
+
+.uncertainty-stat-samples .uncertainty-stat-value {
+  color: #6d28d9;
 }
 
 .uncertainty-likely-band {
   position: absolute;
   z-index: 1;
-  top: 42px;
-  bottom: 12px;
+  top: 54px;
+  bottom: 18px;
   border-left: 1px dashed rgba(22, 163, 74, 0.72);
   border-right: 1px dashed rgba(22, 163, 74, 0.72);
-  background: linear-gradient(90deg, rgba(220, 252, 231, 0.2), rgba(219, 234, 254, 0.42), rgba(220, 252, 231, 0.2));
+  background: linear-gradient(90deg, rgba(220, 252, 231, 0.24), rgba(219, 234, 254, 0.36), rgba(220, 252, 231, 0.24));
   transform: translateX(0);
   pointer-events: none;
 }
@@ -1105,8 +1133,8 @@ textarea {
 .uncertainty-central-marker {
   position: absolute;
   z-index: 3;
-  top: 39px;
-  bottom: 12px;
+  top: 50px;
+  bottom: 18px;
   width: 3px;
   border-radius: 999px;
   background: #2563eb;
@@ -1121,7 +1149,7 @@ textarea {
   top: 12px;
   transform: translateX(-50%);
   border-radius: 999px;
-  background: rgba(255, 255, 255, 0.86);
+  background: rgba(255, 255, 255, 0.92);
   padding: 2px 7px;
   font-size: 0.75rem;
   font-weight: 700;
@@ -1135,7 +1163,7 @@ textarea {
 }
 
 .uncertainty-likely-label {
-  top: 30px;
+  top: 34px;
   color: #16a34a;
 }
 
@@ -1147,11 +1175,22 @@ textarea {
 }
 
 .uncertainty-axis-ticks {
+  position: relative;
   display: flex;
   justify-content: space-between;
   color: #64748b;
   font-size: 0.74rem;
-  padding: 0 3px;
+  padding: 7px 3px 0;
+}
+
+.uncertainty-axis-ticks::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 3px;
+  right: 3px;
+  height: 1px;
+  background: #cbd5e1;
 }
 
 .uncertainty-note,
@@ -1187,6 +1226,6 @@ textarea {
   }
 
   .uncertainty-histogram {
-    height: 164px;
+    height: 176px;
   }
 }
