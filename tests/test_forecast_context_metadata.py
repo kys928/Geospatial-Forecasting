@@ -235,3 +235,78 @@ def test_convlstm_dataset_window_prediction_preserves_non_null_conditions(monkey
     assert forecast.metadata["conditions"]["humidity_pct"] == 51.0
     assert forecast.metadata["input_source"] == "dataset_window"
     json.dumps(forecast.metadata, allow_nan=False)
+
+
+def test_context_runtime_mode_preserves_payload_and_flat_fields():
+    runtime_mode = {
+        "mode": "convlstm_active",
+        "is_active_convlstm": True,
+        "is_fallback": False,
+        "is_dataset_window": True,
+        "is_demo_backend": False,
+        "is_temporary_substitution": True,
+        "extra": {"reason": "test"},
+    }
+    result = _result(
+        execution_metadata={
+            "runtime_mode": runtime_mode,
+            "model_backend": "convlstm",
+            "prediction_engine": "torch_multistep",
+            "fallback_used": False,
+            "input_source": "dataset_window",
+        }
+    )
+
+    payload = _context(result)
+    runtime = payload["runtime"]
+
+    assert runtime["runtime_mode"] == runtime_mode
+    assert runtime["runtime_mode_name"] == "convlstm_active"
+    assert runtime["is_active_convlstm"] is True
+    assert runtime["is_fallback"] is False
+    assert runtime["is_dataset_window"] is True
+    assert runtime["is_demo_backend"] is False
+    assert runtime["is_temporary_substitution"] is True
+    assert runtime["model_backend"] == "convlstm"
+    assert runtime["prediction_engine"] == "torch_multistep"
+    assert runtime["fallback_used"] is False
+    assert runtime["input_source"] == "dataset_window"
+
+
+def test_context_runtime_mode_defaults_when_missing_or_invalid():
+    missing_result = _result(execution_metadata={"model_backend": "gaussian_fallback"})
+    missing_payload = _context(missing_result)
+    missing_runtime = missing_payload["runtime"]
+
+    assert missing_runtime["runtime_mode"] == {}
+    assert missing_runtime["runtime_mode_name"] is None
+    assert missing_runtime["is_active_convlstm"] is False
+    assert missing_runtime["is_fallback"] is False
+    assert missing_runtime["is_dataset_window"] is False
+    assert missing_runtime["is_demo_backend"] is False
+    assert missing_runtime["is_temporary_substitution"] is False
+
+    invalid_result = _result(execution_metadata={"runtime_mode": "convlstm_active"})
+    invalid_payload = _context(invalid_result)
+    invalid_runtime = invalid_payload["runtime"]
+
+    assert invalid_runtime["runtime_mode"] == {}
+    assert invalid_runtime["runtime_mode_name"] is None
+    assert invalid_runtime["is_active_convlstm"] is False
+    assert invalid_runtime["is_fallback"] is False
+    assert invalid_runtime["is_dataset_window"] is False
+    assert invalid_runtime["is_demo_backend"] is False
+    assert invalid_runtime["is_temporary_substitution"] is False
+
+
+def test_empty_context_includes_runtime_mode_defaults():
+    payload = ForecastContextService(runtime_client=type("Runtime", (), {"list_sessions": lambda self: []})(), explain_service=_Explain()).latest(source="session").payload
+    runtime = payload["runtime"]
+
+    assert runtime["runtime_mode"] == {}
+    assert runtime["runtime_mode_name"] is None
+    assert runtime["is_active_convlstm"] is False
+    assert runtime["is_fallback"] is False
+    assert runtime["is_dataset_window"] is False
+    assert runtime["is_demo_backend"] is False
+    assert runtime["is_temporary_substitution"] is False
