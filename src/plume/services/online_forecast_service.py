@@ -14,6 +14,7 @@ from plume.schemas.update_result import UpdateResult
 from plume.services.forecast_service import ForecastRunResult
 from plume.services.convlstm_operations import ModelRegistry
 from plume.services.metadata_utils import json_safe, normalize_conditions, normalize_source
+from plume.services.runtime_mode import build_runtime_mode
 from plume.services.observation_service import ObservationService
 from plume.state.base import BaseStateStore
 from plume.utils.config import Config
@@ -200,6 +201,42 @@ class OnlineForecastService:
             "input_source": forecast_metadata.get("input_source") or request.metadata.get("input_source") or "unknown",
             "generated_at": now.isoformat(),
         }
+        input_source = provenance.get("input_source")
+        input_window_source = provenance.get("input_window_source")
+        raw_reference_target_usage = raw_reference.get("target_usage") if isinstance(raw_reference, dict) else None
+        raw_reference_source_file = raw_reference.get("source_file") if isinstance(raw_reference, dict) else None
+
+        def _normalized_runtime_string(value: object) -> str:
+            return value.strip().lower() if isinstance(value, str) else ""
+
+        normalized_input_source = _normalized_runtime_string(input_source)
+        normalized_input_window_source = _normalized_runtime_string(input_window_source)
+        normalized_raw_reference_target_usage = _normalized_runtime_string(raw_reference_target_usage)
+        dataset_window_used = (
+            normalized_input_source == "dataset_window"
+            or normalized_input_window_source == "dataset_window"
+            or normalized_raw_reference_target_usage == "input_window_for_convlstm_inference"
+            or (
+                bool(raw_reference_source_file)
+                and normalized_input_source not in {"live", "sensor", "sensors", "live_sensor", "sensor_stream"}
+            )
+        )
+        runtime_mode_source_metadata = {
+            "backend_name": execution_backend_name or provenance.get("model_backend"),
+            "model_backend": provenance.get("model_backend"),
+            "primary_backend_name": session.backend_name,
+            "model_family": provenance.get("model_family"),
+            "prediction_engine": provenance.get("prediction_engine"),
+            "input_source": input_source,
+            "input_window_source": input_window_source,
+            "output_source": provenance.get("output_source"),
+            "active_model_id": provenance.get("active_registry_model_id") or provenance.get("model_id"),
+            "checkpoint_path": provenance.get("checkpoint_path"),
+            "fallback_used": fallback_metadata.get("fallback_used", provenance.get("fallback_used")),
+            "fallback_backend_name": fallback_metadata.get("fallback_backend_name"),
+            "fallback_reason": fallback_metadata.get("fallback_reason") or provenance.get("fallback_reason"),
+            "dataset_window_used": dataset_window_used,
+        }
         result = ForecastRunResult(
             forecast_id=request.session_id,
             issued_at=now,
@@ -225,6 +262,7 @@ class OnlineForecastService:
                 "temporary_model_substitution": provenance.get("temporary_model_substitution", False),
                 "prediction_engine": provenance.get("prediction_engine"),
                 "request_metadata": json_safe(request.metadata),
+                "runtime_mode": build_runtime_mode(runtime_mode_source_metadata),
             },
         )
         self._latest_forecast_by_session[request.session_id] = result
