@@ -56,6 +56,7 @@ class ForecastContextService:
             explanation_payload = {}
 
         execution_metadata = self._as_dict(json_safe(getattr(result, "execution_metadata", {})))
+        runtime_mode = self._as_dict(execution_metadata.get("runtime_mode"))
         forecast_object = getattr(result, "forecast", None)
         forecast_object_metadata = self._as_dict(json_safe(getattr(forecast_object, "metadata", {})))
 
@@ -233,6 +234,13 @@ class ForecastContextService:
             "active_registry_model_id": provenance_summary.get("active_registry_model_id"),
             "input_source": provenance_summary.get("input_source"),
             "generated_at": provenance_summary.get("generated_at"),
+            "runtime_mode": runtime_mode,
+            "runtime_mode_name": runtime_mode.get("mode"),
+            "is_active_convlstm": bool(runtime_mode.get("is_active_convlstm", False)),
+            "is_fallback": bool(runtime_mode.get("is_fallback", False)),
+            "is_dataset_window": bool(runtime_mode.get("is_dataset_window", False)),
+            "is_demo_backend": bool(runtime_mode.get("is_demo_backend", False)),
+            "is_temporary_substitution": bool(runtime_mode.get("is_temporary_substitution", False)),
             "stale_model": provenance_summary.get("stale_model"),
             "active_model_mismatch": provenance_summary.get("active_model_mismatch"),
             "current_active_model_id": provenance_summary.get("current_active_model_id"),
@@ -289,7 +297,7 @@ class ForecastContextService:
             "conditions": {"wind_speed_ms": None, "wind_direction_deg": None, "wind_direction_label": None, "u10m_ms": None, "v10m_ms": None, "temperature_c": None, "humidity_pct": None, "surface_pressure_hpa": None, "pbl_height_m": None, "meteorology_source": None, "meteorology_timestamp": None},
             "source": {"latitude": None, "longitude": None, "pollutant": None, "emission_rate": None, "release_height_m": None, "duration_minutes": None, "start_time": None, "end_time": None},
             "plume_metrics": {"max_concentration": None, "mean_concentration": None, "affected_cells_above_threshold": None, "affected_area_m2": None, "affected_area_hectares": None, "dominant_spread_direction": None, "threshold_used": None, "grid_rows": None, "grid_columns": None},
-            "runtime": {"backend": None, "model_name": None, "model_source": None, "model_version": None, "forecast_source": None, "model_id": None, "model_family": "Unknown", "model_backend": None, "checkpoint_path": None, "inference_mode": "unknown", "fallback_used": False, "dataset_playback_enabled": False, "input_window_source": None, "output_source": None, "temporary_model_substitution": False, "prediction_engine": None, "output_space": None, "input_mode": None, "prediction_trust": None, "missing_channels": [], "missing_frame_indices": [], "missing_condition_fields": [], "meteorology_available": None, "observations_available": None, "limitations": [], "fallback_reason": "forecast unavailable", "active_registry_model_id": None, "input_source": "unknown", "generated_at": None},
+            "runtime": {"backend": None, "model_name": None, "model_source": None, "model_version": None, "forecast_source": None, "model_id": None, "model_family": "Unknown", "model_backend": None, "checkpoint_path": None, "inference_mode": "unknown", "fallback_used": False, "dataset_playback_enabled": False, "input_window_source": None, "output_source": None, "temporary_model_substitution": False, "prediction_engine": None, "output_space": None, "input_mode": None, "prediction_trust": None, "missing_channels": [], "missing_frame_indices": [], "missing_condition_fields": [], "meteorology_available": None, "observations_available": None, "limitations": [], "fallback_reason": "forecast unavailable", "active_registry_model_id": None, "input_source": "unknown", "generated_at": None, "runtime_mode": {}, "runtime_mode_name": None, "is_active_convlstm": False, "is_fallback": False, "is_dataset_window": False, "is_demo_backend": False, "is_temporary_substitution": False},
             "provenance": {"forecast_source": "fallback", "model_id": None, "model_family": "Unknown", "model_backend": None, "checkpoint_path": None, "inference_mode": "unknown", "fallback_used": True, "fallback_reason": "forecast unavailable", "dataset_playback_enabled": False, "input_window_source": None, "output_source": None, "temporary_model_substitution": False, "prediction_engine": None, "active_registry_model_id": None, "input_source": "unknown", "generated_at": None},
             "raw": {"summary": {}, "explanation": {}, "session_state": {}, "decision_support": {}, "execution_metadata": {}, "raw_reference": {}},
         }
