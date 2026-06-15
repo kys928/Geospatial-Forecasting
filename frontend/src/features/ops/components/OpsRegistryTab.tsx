@@ -265,6 +265,12 @@ function isModelActive(
   );
 }
 
+const ARCHIVED_ACTIVATION_APPROVAL_STATUSES = new Set([
+  "approved_for_activation",
+  "approved",
+  "not_required",
+]);
+
 function canActivateModel(
   model: DisplayModel,
   activeModelId: string | null,
@@ -275,7 +281,9 @@ function canActivateModel(
   const approval = String(model.approval_status ?? "").toLowerCase();
   const status = String(model.status ?? "").toLowerCase();
   return (
-    approval === "approved" || status === "candidate" || status === "approved"
+    status === "candidate" ||
+    status === "approved" ||
+    (status === "archived" && ARCHIVED_ACTIVATION_APPROVAL_STATUSES.has(approval))
   );
 }
 
@@ -287,8 +295,8 @@ function checkpointDeleteDisabledReason(
   if (!modelId) return "Model ID is missing.";
   if (!isAdaptationRecord(model)) return "Only eligible adaptation checkpoint records can be deleted.";
   if (isModelActive(model, activeModelId)) return "Active model checkpoints cannot be deleted.";
+  if (checkpointFileDeletedMetadataPresent(model)) return "Checkpoint file is already deleted.";
   const exists = checkpointFileExists(model);
-  if (exists === null) return "Checkpoint status is not reported.";
   if (exists === false) return "Checkpoint file is already missing.";
   return null;
 }
@@ -545,7 +553,8 @@ export function OpsRegistryTab() {
   async function handleActivateModel(model: DisplayModel) {
     if (!canActivateModel(model, activeModelId)) return;
     const modelId = String(model.model_id);
-    const activation = isAdaptationRecord(model)
+    const status = String(model.status ?? "").toLowerCase();
+    const activation = isAdaptationRecord(model) && status === "candidate"
       ? () =>
           opsClient.approveAdaptationCandidate(
             modelId,
@@ -699,7 +708,7 @@ export function OpsRegistryTab() {
                                       ? "This model is already active."
                                       : canActivate
                                         ? "Activate model using backend validation."
-                                        : "Only approved or candidate models can be activated."
+                                        : "Only candidate, approved, or archived previously-approved models can be activated."
                                   }
                                 >
                                   {busy &&
@@ -723,7 +732,9 @@ export function OpsRegistryTab() {
                                   }
                                   title={
                                     checkpointDeleteDisabledReason(model, activeModelId) ??
-                                    "Delete checkpoint file only; registry metadata remains."
+                                    (checkpointFileExists(model) === null
+                                      ? "Checkpoint status is not reported; backend will verify before deletion."
+                                      : "Delete checkpoint file only; registry metadata remains.")
                                   }
                                 >
                                   {busy &&

@@ -332,7 +332,7 @@ def test_ops_approve_reject_activate_rollback_and_errors(monkeypatch, tmp_path: 
 
     activate_invalid = client.post("/ops/models/activate", json={"model_id": "active-1"}, headers=_auth_header("operator-token"))
     assert activate_invalid.status_code == 409
-    assert "Only approved candidate models may be activated" in activate_invalid.json()["detail"]
+    assert "Only approved or previously approved archived models may be activated" in activate_invalid.json()["detail"]
 
     activate = client.post("/ops/models/activate", json={"model_id": "cand-approved"}, headers=_auth_header("operator-token"))
     assert activate.status_code == 200
