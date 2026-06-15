@@ -36,6 +36,12 @@ def test_histogram_exists_and_counts_sum_to_sample_count():
     assert all(isinstance(item["count"], int) for item in payload["histogram"])
 
 
+def test_default_histogram_uses_24_bins_when_sample_count_allows():
+    payload = build_impact_extent_uncertainty({"affected_area_hectares": 94.1})
+
+    assert len(payload["histogram"]) == 24
+
+
 def test_likely_range_exists_with_low_high_and_coverage():
     payload = build_impact_extent_uncertainty({"affected_area_hectares": 12.5})
 
