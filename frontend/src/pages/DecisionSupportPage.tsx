@@ -141,6 +141,7 @@ export function DecisionSupportPage() {
   const ctxConditions = context?.conditions ?? {};
   const ctxSource = context?.source ?? {};
   const ctxPlume = context?.plume_metrics ?? {};
+  const ctxRuntime = context?.runtime ?? {};
 
   const contextReadiness = isUsableForecastContext(context);
   const isContextReady = contextReadiness.ready;
@@ -240,6 +241,7 @@ export function DecisionSupportPage() {
     conditions: ctxConditions,
     source: ctxSource,
     plume_metrics: ctxPlume,
+    runtime: ctxRuntime,
     weather_context: weatherContext,
     model_inference: getNestedValue(context, "raw.model_inference", "raw.model_inference") ?? getNestedValue(context, "raw.model_inference"),
     overlay_summary: {
