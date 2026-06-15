@@ -1726,8 +1726,14 @@ def activate_approved_model(*, registry: ModelRegistry, model_id: str) -> dict[s
     record = next((m for m in models if m.get("model_id") == model_id), None)
     if record is None:
         raise ValueError(f"Unknown model id: {model_id}")
-    if record.get("status") != "approved":
-        raise ValueError("Only approved candidate models may be activated")
+    status = record.get("status")
+    approval_status = record.get("approval_status")
+    archived_activation_approval_statuses = {"approved_for_activation", "approved", "not_required"}
+    if not (
+        status == "approved"
+        or (status == "archived" and approval_status in archived_activation_approval_statuses)
+    ):
+        raise ValueError("Only approved or previously approved archived models may be activated")
     if _is_adaptation_candidate_record(record):
         compatibility = validate_adaptation_checkpoint_for_activation(record)
         if not compatibility.compatible:

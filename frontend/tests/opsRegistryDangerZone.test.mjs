@@ -24,12 +24,18 @@ assert.match(inspectModalSource, /<summary>Training Logs<\/summary>/, "Inspect m
 assert.match(source, /if \(!modelId\) return "Model ID is missing\.";/, "delete disabled if model_id is missing");
 assert.match(source, /Only eligible adaptation checkpoint records can be deleted/, "delete disabled for non-adaptation records");
 assert.match(source, /Active model checkpoints cannot be deleted\./, "delete disabled for active models");
-assert.match(source, /Checkpoint status is not reported\./, "delete disabled when checkpoint state is unknown");
+assert.match(source, /Checkpoint status is not reported; backend will verify before deletion\./, "delete tooltip explains unknown checkpoint state uses backend verification");
 assert.match(source, /Checkpoint file is already missing\./, "delete disabled when checkpoint file is missing");
-assert.match(source, /if \(exists === null\) return "Checkpoint status is not reported\.";/, "unknown checkpoint state disables deletion");
+assert.doesNotMatch(source, /if \(exists === null\) return "Checkpoint status is not reported\.";/, "unknown checkpoint state does not disable deletion");
 assert.match(rowMenuSource, /disabled=\{\s*!canDeleteCheckpointFile\(model, activeModelId\)/s, "row-menu delete is disabled when deletion is unavailable");
 assert.match(rowMenuSource, /checkpointDeleteDisabledReason\(model, activeModelId\)/, "row-menu delete shows the unavailable reason");
 assert.match(rowMenuSource, /onClick=\{\(\) => void handleDeleteCheckpointFile\(model\)\}/, "row-menu delete calls the delete handler");
+
+
+assert.match(source, /ARCHIVED_ACTIVATION_APPROVAL_STATUSES = new Set\(\[\s*"approved_for_activation",\s*"approved",\s*"not_required",/s, "archived activation allows previously approved approval states");
+assert.match(source, /status === "candidate" \|\|\s*status === "approved" \|\|\s*\(status === "archived" && ARCHIVED_ACTIVATION_APPROVAL_STATUSES\.has\(approval\)\)/s, "activate gating allows candidate, approved, and previously approved archived models");
+assert.match(source, /isAdaptationRecord\(model\) && status === "candidate"/, "only candidate adaptation records use candidate approval activation flow");
+assert.match(rowMenuSource, /Only candidate, approved, or archived previously-approved models can be activated\./, "disabled activate tooltip mentions archived previously-approved models");
 
 assert.match(deleteHandlerSource, /window\.confirm/, "delete handler requires explicit confirmation");
 assert.match(deleteHandlerSource, /opsClient\.deleteAdaptationCheckpointFile/, "delete handler calls backend checkpoint-file delete API");
@@ -37,7 +43,8 @@ assert.match(deleteHandlerSource, /runAction\(modelId, "Delete checkpoint file"/
 assert.doesNotMatch(deleteHandlerSource, /setInspectModelId\(null\)/, "delete handler does not close Inspect Model modal");
 
 assert.match(source, /if \(deleted === true\) return false;/, "checkpoint_file_deleted true makes checkpoint health missing");
-assert.match(source, /if \(exists === false\) return "Checkpoint file is already missing\.";/, "deleted or missing checkpoint keeps deletion unavailable");
+assert.match(source, /checkpointFileDeletedMetadataPresent\(model\)\) return "Checkpoint file is already deleted\.";/, "checkpoint_file_deleted true keeps deletion unavailable");
+assert.match(source, /if \(exists === false\) return "Checkpoint file is already missing\.";/, "missing checkpoint keeps deletion unavailable");
 assert.match(source, /return exists \? "Exists" : "Missing";/, "checkpoint_file_exists true can present as Exists and false as Missing");
 assert.match(source, /return checkpointDeleteDisabledReason\(model, activeModelId\) === null;/, "delete can be available only when all disabled reasons are clear");
 assert.match(source, /Checkpoint file was deleted; registry metadata is preserved\./, "Inspect Model explains deleted checkpoint metadata state");

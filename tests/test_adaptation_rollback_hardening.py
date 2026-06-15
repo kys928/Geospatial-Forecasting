@@ -110,3 +110,136 @@ def test_rollback_to_previous_robust_adaptation_checkpoint_uses_robust_validatio
     assert records["robust"]["status"] == "active"
     assert records["legacy"]["status"] == "archived"
     assert any(event["event_type"] == "rollback_performed" and event["model_id"] == "robust" for event in payload["events"])
+
+
+def test_activate_archived_approved_adaptation_checkpoint_uses_validation(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    robust_checkpoint = tmp_path / "robust.pt"
+    robust_checkpoint.write_bytes(b"robust checkpoint")
+    legacy_checkpoint = _write_npz_checkpoint(tmp_path / "legacy.npz")
+    registry = ModelRegistry(tmp_path / "registry.json")
+    registry.save(
+        {
+            "active_model_id": "legacy",
+            "previous_active_model_id": None,
+            "models": [
+                _legacy_record("legacy", legacy_checkpoint, status="active"),
+                {
+                    **_robust_record("robust", robust_checkpoint, status="archived"),
+                    "approval_status": "approved_for_activation",
+                },
+            ],
+            "events": [],
+        }
+    )
+    checked: list[str] = []
+
+    def robust_validation(record: dict[str, object]) -> CompatibilityResult:
+        checked.append(str(record["model_id"]))
+        return _compatible(Path(str(record["path"])))
+
+    monkeypatch.setattr(ops, "validate_adaptation_checkpoint_for_activation", robust_validation)
+
+    activation = activate_approved_model(registry=registry, model_id="robust")
+    payload = registry.load()
+    records = {item["model_id"]: item for item in payload["models"]}
+
+    assert activation["activated"] is True
+    assert checked == ["robust"]
+    assert payload["active_model_id"] == "robust"
+    assert payload["previous_active_model_id"] == "legacy"
+    assert records["robust"]["status"] == "active"
+    assert records["legacy"]["status"] == "archived"
+    assert any(event["event_type"] == "model_activated" and event["model_id"] == "robust" for event in payload["events"])
+
+
+@pytest.mark.parametrize("approval_status", ["approved", "not_required"])
+def test_activate_archived_approved_legacy_checkpoint_allows_supported_approval_statuses(
+    approval_status: str, tmp_path: Path
+):
+    archived_checkpoint = _write_npz_checkpoint(tmp_path / f"{approval_status}.npz")
+    registry = ModelRegistry(tmp_path / f"registry-{approval_status}.json")
+    registry.save(
+        {
+            "active_model_id": None,
+            "previous_active_model_id": None,
+            "models": [
+                {
+                    **_legacy_record("archived", archived_checkpoint, status="archived"),
+                    "approval_status": approval_status,
+                }
+            ],
+            "events": [],
+        }
+    )
+
+    activation = activate_approved_model(registry=registry, model_id="archived")
+
+    assert activation["activated"] is True
+    assert registry.load()["active_model_id"] == "archived"
+
+
+def test_activate_rejects_rejected_adaptation_checkpoint(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    robust_checkpoint = tmp_path / "robust.pt"
+    robust_checkpoint.write_bytes(b"robust checkpoint")
+    registry = ModelRegistry(tmp_path / "registry.json")
+    registry.save(
+        {
+            "active_model_id": None,
+            "previous_active_model_id": None,
+            "models": [
+                {
+                    **_robust_record("robust", robust_checkpoint, status="rejected"),
+                    "approval_status": "rejected_by_operator",
+                }
+            ],
+            "events": [],
+        }
+    )
+
+    def fail_if_called(_record: dict[str, object]) -> CompatibilityResult:
+        raise AssertionError("rejected records must fail before activation validation")
+
+    monkeypatch.setattr(ops, "validate_adaptation_checkpoint_for_activation", fail_if_called)
+
+    with pytest.raises(ValueError, match="Only approved or previously approved archived models may be activated"):
+        activate_approved_model(registry=registry, model_id="robust")
+
+
+def test_activate_archived_adaptation_checkpoint_still_rejects_incompatible_checkpoint(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    robust_checkpoint = tmp_path / "robust.pt"
+    robust_checkpoint.write_bytes(b"robust checkpoint")
+    registry = ModelRegistry(tmp_path / "registry.json")
+    registry.save(
+        {
+            "active_model_id": None,
+            "previous_active_model_id": None,
+            "models": [
+                {
+                    **_robust_record("robust", robust_checkpoint, status="archived"),
+                    "approval_status": "approved_for_activation",
+                }
+            ],
+            "events": [],
+        }
+    )
+
+    def incompatible(_record: dict[str, object]) -> CompatibilityResult:
+        return CompatibilityResult(
+            compatible=False,
+            auto_activation_allowed=False,
+            checkpoint_path=str(robust_checkpoint),
+            reasons=["missing checkpoint file"],
+            strict_torch_check_performed=True,
+            contract={},
+        )
+
+    monkeypatch.setattr(ops, "validate_adaptation_checkpoint_for_activation", incompatible)
+
+    with pytest.raises(ValueError, match="final compatibility check"):
+        activate_approved_model(registry=registry, model_id="robust")
