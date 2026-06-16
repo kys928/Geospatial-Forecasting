@@ -19,7 +19,7 @@ assert.ok(
 assert.doesNotMatch(source, /function CheckpointDangerZone/, "Inspect modal no longer includes a danger zone component");
 assert.doesNotMatch(inspectModalSource, /Danger zone/, "Inspect modal does not show a Danger zone heading");
 assert.doesNotMatch(inspectModalSource, /Delete checkpoint file/, "Inspect modal does not show checkpoint delete controls");
-assert.match(inspectModalSource, /<summary>Training Logs<\/summary>/, "Inspect modal preserves training logs section");
+assert.match(inspectModalSource, /<summary>Raw training log<\/summary>/, "Inspect modal preserves raw training log section");
 
 assert.match(source, /if \(!modelId\) return "Model ID is missing\.";/, "delete disabled if model_id is missing");
 assert.match(source, /Only eligible adaptation checkpoint records can be deleted/, "delete disabled for non-adaptation records");
