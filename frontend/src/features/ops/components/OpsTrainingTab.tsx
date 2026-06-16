@@ -180,6 +180,7 @@ export function OpsTrainingTab({ active = true }: { active?: boolean }) {
   const [stopSubmitting, setStopSubmitting] = useState(false);
   const [manualNotice, setManualNotice] = useState<string | null>(null);
   const [followLogs, setFollowLogs] = useState(true);
+  const [pinnedLogJob, setPinnedLogJob] = useState<OpsJobRecord | null>(null);
   const [adaptationTraining, setAdaptationTraining] =
     useState<AdaptationTrainingStatus | null>(() =>
       opsClient.peekAdaptationTrainingStatus(),
@@ -235,7 +236,7 @@ export function OpsTrainingTab({ active = true }: { active?: boolean }) {
     statusState.status?.current_retraining_jobs,
     statusState.status?.latest_retraining_job,
   ]);
-  const jobForLogs = activeJobForDisplay ?? latestJob;
+  const jobForLogs = pinnedLogJob ?? activeJobForDisplay ?? latestJob;
   const checklist = useMemo(
     () =>
       buildChecklist({
@@ -289,8 +290,8 @@ export function OpsTrainingTab({ active = true }: { active?: boolean }) {
     [jobForLogs, adaptationTraining],
   );
   const logs = useMemo(
-    () => combineTrainingLogs(rawLogs, metricLogLines),
-    [rawLogs, metricLogLines],
+    () => combineTrainingLogs(rawLogs, metricLogLines, jobForLogs),
+    [rawLogs, metricLogLines, jobForLogs],
   );
   const visibleLogs = logs.filter(
     (line) =>
@@ -304,6 +305,17 @@ export function OpsTrainingTab({ active = true }: { active?: boolean }) {
     if (followLogs && logRef.current)
       logRef.current.scrollTop = logRef.current.scrollHeight;
   }, [logs, followLogs]);
+  useEffect(() => {
+    if (!pinnedLogJob) return;
+    const replacement = activeJobForDisplay ?? latestJob;
+    if (
+      replacement?.job_id &&
+      replacement.job_id !== pinnedLogJob.job_id &&
+      compareJobsNewestFirst(replacement, pinnedLogJob) < 0
+    ) {
+      setPinnedLogJob(null);
+    }
+  }, [activeJobForDisplay, latestJob, pinnedLogJob]);
   useEffect(() => {
     if (!active) return;
     void refreshAdaptationTraining(false);
@@ -368,6 +380,7 @@ export function OpsTrainingTab({ active = true }: { active?: boolean }) {
     setManualNotice(null);
     try {
       const r = await opsClient.triggerRetraining(payload);
+      if (r.job?.job_id) setPinnedLogJob(r.job);
       setManualNotice(
         r.submitted
           ? "Manual training job submitted."
@@ -826,6 +839,22 @@ function primaryReadinessReason(
   );
 }
 
+function sourceJobId(source: Record<string, unknown>): string | null {
+  return asStr(
+    pick(source, ["job_id", "training_job_id", "retraining_job_id", "run_id"]),
+  );
+}
+
+function sourceMatchesSelectedJob(
+  source: Record<string, unknown>,
+  selectedJobId: string | null,
+  allowUnidentified = false,
+): boolean {
+  if (!selectedJobId) return true;
+  const id = sourceJobId(source);
+  return id ? id === selectedJobId : allowUnidentified;
+}
+
 function collectTrainingMetricSources(
   jobObj: Record<string, unknown>,
   adaptationTraining?: AdaptationTrainingStatus | null,
@@ -896,9 +925,14 @@ function collectMetricLogSources(
   latestJob: OpsJobRecord | null,
   adaptationTraining: AdaptationTrainingStatus | null,
 ): Record<string, unknown>[] {
+  const jobObj = asObj(latestJob);
+  const selectedJobId = asStr(latestJob?.job_id);
   const sources = collectTrainingMetricSources(
-    asObj(latestJob),
+    jobObj,
     adaptationTraining,
+  ).filter(
+    (source) =>
+      source === jobObj || sourceMatchesSelectedJob(source, selectedJobId),
   );
   const deduped: Record<string, unknown>[] = [];
   const seen = new Set<string>();
@@ -954,17 +988,21 @@ export function formatTrainingMetricsAsLogLines(
     if (scheduler) lines.push(`[metrics] ${scheduler}`);
   }
 
-  const bestSource = collectTrainingMetricSources(
-    asObj(latestJob),
-    adaptationTraining,
-  ).find((source) =>
-    [
-      "best_score",
-      "best_stage",
-      "best_global_epoch",
-      "best_checkpoint_path",
-    ].some((key) => source[key] !== undefined && source[key] !== null),
-  );
+  const jobObj = asObj(latestJob);
+  const selectedJobId = asStr(latestJob?.job_id);
+  const bestSource = collectTrainingMetricSources(jobObj, adaptationTraining)
+    .filter(
+      (source) =>
+        source === jobObj || sourceMatchesSelectedJob(source, selectedJobId),
+    )
+    .find((source) =>
+      [
+        "best_score",
+        "best_stage",
+        "best_global_epoch",
+        "best_checkpoint_path",
+      ].some((key) => source[key] !== undefined && source[key] !== null),
+    );
   if (bestSource) {
     const best = metricPairs(bestSource, [
       ["score", ["best_score"]],
@@ -980,7 +1018,14 @@ export function formatTrainingMetricsAsLogLines(
 function combineTrainingLogs(
   rawLogs: string[],
   metricLogLines: string[],
+  selectedJob: OpsJobRecord | null,
 ): string[] {
+  const selectedJobId = asStr(selectedJob?.job_id);
+  const waitingLine = selectedJobId
+    ? `Training job ${selectedJobId} was submitted. Waiting for worker logs...`
+    : null;
+  const rawHasOnlyWaiting =
+    Boolean(waitingLine) && rawLogs.length === 1 && rawLogs[0] === waitingLine;
   if (!metricLogLines.length) return rawLogs;
   const rawMetricKeys = new Set(
     rawLogs
@@ -993,6 +1038,7 @@ function combineTrainingLogs(
     (line) => !rawMetricKeys.has(line.trim()),
   );
   if (!generated.length) return rawLogs;
+  if (rawHasOnlyWaiting) return generated;
   return rawLogs.length ? [...rawLogs, "", ...generated] : generated;
 }
 
@@ -1032,15 +1078,18 @@ function collectLogs(
     | OpsJobRecord
     | null
     | undefined;
+  const selectedJobId = asStr(latestJob?.job_id);
   const adaptationLatestMatchesSelected =
-    !latestJob?.job_id || adaptationLatestJob?.job_id === latestJob.job_id;
+    !selectedJobId || adaptationLatestJob?.job_id === selectedJobId;
   const latestLogTail =
     adaptationLatestMatchesSelected &&
     Array.isArray(adaptationLatestJob?.log_tail)
       ? adaptationLatestJob.log_tail
       : [];
   if (latestLogTail.length) return latestLogTail.map((line) => String(line));
-  const logs = pick(jobObj, ["logs", "log_lines", "events"]);
+  const logs = sourceMatchesSelectedJob(jobObj, selectedJobId, true)
+    ? pick(jobObj, ["logs", "log_lines", "events"])
+    : undefined;
   if (Array.isArray(logs))
     logs.forEach((l) =>
       lines.push(typeof l === "string" ? l : JSON.stringify(l)),
@@ -1104,6 +1153,10 @@ function collectLogs(
   if (failure)
     lines.push(
       isManual ? `Manual training job failed: ${failure}` : `ERROR: ${failure}`,
+    );
+  if (!lines.length && selectedJobId)
+    lines.push(
+      `Training job ${selectedJobId} was submitted. Waiting for worker logs...`,
     );
   return lines;
 }
