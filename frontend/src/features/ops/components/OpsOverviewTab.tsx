@@ -60,6 +60,12 @@ export function OpsOverviewTab({ active = true }: { active?: boolean }) {
   const vramPercent = gpu.available ? percent(gpu.vram_percent) : null;
 
   const retraining = (jobs.retraining as Record<string, unknown>) ?? {};
+  const forecastWorkerStatus = formatWorkerStatus(
+    worker.forecast_worker_status,
+  );
+  const retrainingWorkerStatus = formatWorkerStatus(
+    worker.retraining_worker_status,
+  );
 
   return (
     <div className="ops-dashboard">
@@ -158,14 +164,14 @@ export function OpsOverviewTab({ active = true }: { active?: boolean }) {
           <div className="ops-service-grid" style={{ marginTop: 10 }}>
             <div>
               <p>{workerSummary(worker)}</p>
-              <p className="muted">
-                Forecast worker:{" "}
-                {String(worker.forecast_worker_status ?? "Not reported")}
-              </p>
-              <p className="muted">
-                Retraining worker:{" "}
-                {String(worker.retraining_worker_status ?? "Not reported")}
-              </p>
+              {forecastWorkerStatus ? (
+                <p className="muted">Forecast worker: {forecastWorkerStatus}</p>
+              ) : null}
+              {retrainingWorkerStatus ? (
+                <p className="muted">
+                  Retraining worker: {retrainingWorkerStatus}
+                </p>
+              ) : null}
             </div>
             <div>
               <p>Queued: {formatCount(retraining.queued)}</p>
@@ -251,6 +257,10 @@ function BarCard({
       <p className="muted">{detail}</p>
     </article>
   );
+}
+
+function formatWorkerStatus(value: unknown): string | null {
+  return typeof value === "string" && value.trim() ? value : null;
 }
 
 function formatCount(value: unknown): string {
