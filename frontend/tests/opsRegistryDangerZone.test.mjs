@@ -19,7 +19,8 @@ assert.ok(
 assert.doesNotMatch(source, /function CheckpointDangerZone/, "Inspect modal no longer includes a danger zone component");
 assert.doesNotMatch(inspectModalSource, /Danger zone/, "Inspect modal does not show a Danger zone heading");
 assert.doesNotMatch(inspectModalSource, /Delete checkpoint file/, "Inspect modal does not show checkpoint delete controls");
-assert.match(inspectModalSource, /<summary>Raw training log<\/summary>/, "Inspect modal preserves collapsed raw training log section");
+assert.doesNotMatch(inspectModalSource, /<summary>Raw training log<\/summary>/, "Inspect modal does not show the raw training log section");
+assert.doesNotMatch(inspectModalSource, /Raw training log was not available for this model\./, "Inspect modal does not show the raw training log unavailable message");
 assert.match(inspectModalSource, /<summary>Technical details<\/summary>/, "Inspect modal keeps technical details collapsed by default");
 
 assert.match(source, /if \(!modelId\) return "Model ID is missing\.";/, "delete disabled if model_id is missing");
