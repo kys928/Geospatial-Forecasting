@@ -157,6 +157,10 @@ function fieldRow(label: string, value: unknown): DetailRow {
   return { label, value: formatCellValue(value) };
 }
 
+function compactPathRow(label: string, value: unknown): DetailRow {
+  return { label, value: compactPathLabel(value) };
+}
+
 function structuredRow(label: string, value: unknown): DetailRow {
   return { label, value: formatStructuredValue(value) };
 }
@@ -346,9 +350,10 @@ function formatResumeCheckpoint(value: unknown): unknown {
   return parts.length ? parts.join("; ") : undefined;
 }
 
-function adaptationRows(model: DisplayModel): DetailRow[] {
+function adaptationRows(model: DisplayModel, compactPaths = true): DetailRow[] {
   if (!isAdaptationRecord(model)) return [];
   const exists = checkpointFileExists(model);
+  const pathRow = compactPaths ? compactPathRow : fieldRow;
   return [
     fieldRow(
       "Run ID",
@@ -358,7 +363,7 @@ function adaptationRows(model: DisplayModel): DetailRow[] {
         ["metadata", "run_id"],
       ]),
     ),
-    fieldRow(
+    pathRow(
       "Output dir / result run dir",
       pickValue(model, [
         ["output_dir"],
@@ -369,7 +374,7 @@ function adaptationRows(model: DisplayModel): DetailRow[] {
         ["metadata", "result_run_dir"],
       ]),
     ),
-    fieldRow(
+    pathRow(
       "Best overall checkpoint",
       pickValue(model, [
         ["best_overall_checkpoint"],
@@ -377,7 +382,7 @@ function adaptationRows(model: DisplayModel): DetailRow[] {
         ["metadata", "best_overall_checkpoint"],
       ]),
     ),
-    fieldRow(
+    pathRow(
       "Final checkpoint",
       pickValue(model, [
         ["final_checkpoint"],
@@ -450,6 +455,41 @@ function supplementalRows(model: DisplayModel): DetailRow[] {
     fieldRow("Training log path", model.training_log_path),
     fieldRow("Training log available", typeof model.training_log_available === "boolean" ? (model.training_log_available ? "Yes" : "No") : undefined),
     structuredRow("Notes", model.notes),
+  ];
+}
+
+
+function modelScoreSummary(model: DisplayModel): string {
+  const rows = collectModelMetricRows(model);
+  const preferred = rows.find((row) =>
+    [
+      "Internal checkpoint selection score",
+      "Checkpoint Metric",
+      "Best Overall Score",
+      "Final Score",
+      "Score",
+    ].includes(row.label),
+  );
+  const row = preferred ?? rows[0];
+  return row ? `${row.label}: ${row.value}` : "Not reported";
+}
+
+function summaryRows(model: DisplayModel, activeModelId: string | null): DetailRow[] {
+  return [
+    fieldRow("Model ID", model.model_id),
+    fieldRow("Status", model.status),
+    fieldRow("Active / current", isModelActive(model, activeModelId) ? "Yes" : "No"),
+    fieldRow("Selection / best metric", modelScoreSummary(model)),
+    fieldRow("Parent / trained from", modelParentLabel(model)),
+  ];
+}
+
+function technicalDetailRows(model: DisplayModel, activeModelId: string | null): DetailRow[] {
+  return [
+    ...coreRows(model, activeModelId),
+    ...lifecycleRows(model),
+    ...adaptationRows(model, false),
+    ...supplementalRows(model),
   ];
 }
 
@@ -771,11 +811,8 @@ export function OpsRegistryTab() {
             <h3 style={{ margin: 0 }}>Model Details</h3>
             {actionError ? <p className="failure-text">{actionError}</p> : null}
             {actionNotice ? <p className="muted">{actionNotice}</p> : null}
-            <ModelDetailSection
-              title="Core"
-              rows={coreRows(inspectModel, activeModelId)}
-              preserveLabels={CORE_DETAIL_LABELS}
-            />
+            <ModelSummarySection rows={summaryRows(inspectModel, activeModelId)} />
+            <EvaluationMetricsSection rows={collectModelMetricRows(inspectModel)} />
             <ModelDetailSection
               title="Lifecycle"
               rows={lifecycleRows(inspectModel)}
@@ -783,28 +820,31 @@ export function OpsRegistryTab() {
             />
             {isAdaptationRecord(inspectModel) ? (
               <ModelDetailSection
-                title="Adaptation"
+                title="Adaptation / training provenance"
                 rows={adaptationRows(inspectModel)}
               />
             ) : null}
-            <ModelDetailSection
-              title="Technical details"
-              rows={supplementalRows(inspectModel)}
-            />
             <CheckpointStatusSection
               model={inspectModel}
               activeModelId={activeModelId}
             />
-            <details className="advanced-section" open>
-              <summary>Training Logs</summary>
+            <details className="advanced-section ops-technical-details">
+              <summary>Technical details</summary>
+              <ModelDetailSection
+                title="Raw registry details"
+                rows={technicalDetailRows(inspectModel, activeModelId)}
+                preserveLabels={new Set([...CORE_DETAIL_LABELS, ...LIFECYCLE_DETAIL_LABELS])}
+              />
+            </details>
+            <details className="advanced-section" open={collectTrainingLogLines(inspectModel).length > 0}>
+              <summary>Raw training log</summary>
               {collectTrainingLogLines(inspectModel).length ? (
                 <pre className="ops-log-window">
                   {collectTrainingLogLines(inspectModel).join("\n")}
                 </pre>
               ) : (
                 <p className="muted">
-                  Training log unavailable for this model
-                  {inspectModel.training_log_path ? ` (attempted ${String(inspectModel.training_log_path)})` : ""}.
+                  Raw training log file was not available for this model. Evaluation metrics above are shown from the registry/training summary when available.
                 </p>
               )}
             </details>
@@ -820,6 +860,39 @@ export function OpsRegistryTab() {
         </div>
       ) : null}
     </div>
+  );
+}
+
+function ModelSummarySection({ rows }: { rows: DetailRow[] }) {
+  return (
+    <section className="ops-summary-strip" aria-label="Model summary">
+      {rows.map((row) => (
+        <div key={row.label} className="ops-summary-card">
+          <span>{row.label}</span>
+          <strong title={row.value}>{row.value}</strong>
+        </div>
+      ))}
+    </section>
+  );
+}
+
+function EvaluationMetricsSection({ rows }: { rows: MetricRow[] }) {
+  return (
+    <section className="ops-modal-section">
+      <h4>Evaluation metrics</h4>
+      {rows.length ? (
+        <dl className="ops-metric-details-grid">
+          {rows.map((row) => (
+            <div key={row.label}>
+              <dt>{row.label}</dt>
+              <dd>{row.value}</dd>
+            </div>
+          ))}
+        </dl>
+      ) : (
+        <p className="muted">No evaluation metrics were reported for this model.</p>
+      )}
+    </section>
   );
 }
 
