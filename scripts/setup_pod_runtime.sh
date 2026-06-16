@@ -84,7 +84,7 @@ python3 -m pip install \
   shapely==2.1.2 \
   pyproj==3.7.2 \
   PyYAML==6.0.3 \
-  scikit-learn==1.8.0 \
+  scikit-learn==1.7.2 \
   psutil==7.2.2 \
   pandas==2.2.3 \
   kagglehub==1.0.1 \
@@ -133,7 +133,7 @@ expected = {
     "llama-cpp-python": "0.3.22",
     "huggingface-hub": "0.36.2",
     "openai": "1.109.1",
-    "scikit-learn": "1.8.0",
+    "scikit-learn": "1.7.2",
     "pandas": "2.2.3",
 }
 
