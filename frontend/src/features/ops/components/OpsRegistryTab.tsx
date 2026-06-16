@@ -238,7 +238,8 @@ function selectionGateOutcome(
 export function modelGateLabel(model: RegistryModelRecord): string {
   const outcome = selectionGateOutcome(model);
   if (!outcome) return "Not reported";
-  const gatesEnabled = outcome.enabled === true || outcome.gates_enabled === true;
+  const gatesEnabled =
+    outcome.enabled === true || outcome.gates_enabled === true;
   if (outcome.stage3_rejected_by_gates === true)
     return "Stage 3 rejected; promoted Stage 2";
   if (gatesEnabled) return "Passed";
@@ -396,14 +397,6 @@ function modelSummaryRows(
     ),
     fieldRow("Training data", trainingDataSummary(model)),
     fieldRow("Best score", bestScoreLabel(model)),
-  ];
-}
-
-function lifecycleRows(model: DisplayModel): DetailRow[] {
-  return [
-    fieldRow("Parent / trained from", modelParentLabel(model)),
-    fieldRow("Gate / promotion", modelGateLabel(model)),
-    fieldRow("Checkpoint status", modelCheckpointHealthLabel(model)),
   ];
 }
 
@@ -920,10 +913,6 @@ export function OpsRegistryTab() {
             />
             <details className="advanced-section">
               <summary>Technical details</summary>
-              <ModelDetailSection
-                title="Lifecycle"
-                rows={lifecycleRows(inspectModel)}
-              />
               <ModelDetailSection
                 title="Raw registry details"
                 rows={technicalDetailRows(inspectModel, activeModelId)}
