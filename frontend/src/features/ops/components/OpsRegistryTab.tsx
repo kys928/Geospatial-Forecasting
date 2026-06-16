@@ -32,9 +32,13 @@ export function computeViewportMenuPosition({
   const maxLeft = Math.max(gap, viewportWidth - menuWidth - gap);
   const preferredTop = rect.bottom + gap;
   const upwardTop = rect.top - menuHeight - gap;
-  const rawTop = preferredTop + menuHeight > viewportHeight ? upwardTop : preferredTop;
+  const rawTop =
+    preferredTop + menuHeight > viewportHeight ? upwardTop : preferredTop;
   return {
-    top: Math.max(gap, Math.min(rawTop, Math.max(gap, viewportHeight - menuHeight - gap))),
+    top: Math.max(
+      gap,
+      Math.min(rawTop, Math.max(gap, viewportHeight - menuHeight - gap)),
+    ),
     left: Math.max(gap, Math.min(rect.right - menuWidth, maxLeft)),
   };
 }
@@ -42,49 +46,20 @@ type DetailRow = { label: string; value: string };
 type MetricRow = { label: string; value: string };
 
 const ADAPTATION_CONTRACT_VERSION = "robust_convlstm_adaptation_v1";
-const CORE_DETAIL_LABELS = new Set([
-  "Model ID",
-  "Status",
-  "Approval",
-  "Active / current",
-  "Path",
-  "Updated time",
-]);
-const LIFECYCLE_DETAIL_LABELS = new Set([
-  "Parent / trained from",
-  "Gate / promotion",
-  "Checkpoint status",
-]);
 const MODEL_METRIC_KEYS = [
   "selection_score",
   "val_rollout_weighted_mse",
-  "val_rollout_weighted_mse_t3",
-  "val_rollout_weighted_mse_t4",
   "val_rollout_mae",
   "val_rollout_mass_abs_error",
   "val_rollout_peak_location_error",
   "plume_iou",
-  "weighted_mse",
-  "mae",
-  "mass_abs_error",
-  "peak_location_error",
-  "checkpoint_metric",
-  "checkpoint_metric_name",
-  "best_validation_loss",
-  "validation_loss",
   "val_loss",
   "train_loss",
-  "training_loss",
-  "best_overall_score",
-  "final_score",
-  "score",
 ];
 
 const METRIC_LABELS: Record<string, string> = {
-  selection_score: "Internal checkpoint selection score",
-  val_rollout_weighted_mse: "Rollout weighted MSE",
-  val_rollout_weighted_mse_t3: "Rollout weighted MSE T+3",
-  val_rollout_weighted_mse_t4: "Rollout weighted MSE T+4",
+  selection_score: "selection_score",
+  val_rollout_weighted_mse: "val_rollout_weighted_mse",
   val_rollout_mae: "Rollout MAE",
   plume_iou: "Plume IoU",
   weighted_mse: "Weighted MSE",
@@ -96,7 +71,10 @@ const METRIC_LABELS: Record<string, string> = {
 };
 
 function metricLabel(key: string): string {
-  return METRIC_LABELS[key] ?? key.replace(/_/g, " ").replace(/\b\w/g, (char) => char.toUpperCase());
+  return (
+    METRIC_LABELS[key] ??
+    key.replace(/_/g, " ").replace(/\b\w/g, (char) => char.toUpperCase())
+  );
 }
 
 function formatNumber(value: number): string {
@@ -114,7 +92,8 @@ function formatStructuredValue(value: unknown): string {
   if (value === null || value === undefined || value === "")
     return "Not reported";
   if (typeof value === "number") return formatNumber(value);
-  if (typeof value === "string" || typeof value === "boolean") return String(value);
+  if (typeof value === "string" || typeof value === "boolean")
+    return String(value);
   if (Array.isArray(value)) {
     const lines = value
       .map((item) => formatStructuredValue(item))
@@ -157,12 +136,28 @@ function fieldRow(label: string, value: unknown): DetailRow {
   return { label, value: formatCellValue(value) };
 }
 
-function compactPathRow(label: string, value: unknown): DetailRow {
-  return { label, value: compactPathLabel(value) };
-}
-
 function structuredRow(label: string, value: unknown): DetailRow {
   return { label, value: formatStructuredValue(value) };
+}
+
+export function formatCheckpointMetric(value: unknown): string {
+  const record = asRecord(value);
+  if (record) {
+    const name =
+      typeof record.name === "string" && record.name.trim()
+        ? record.name.trim()
+        : undefined;
+    const metricValue = record.value;
+    if (
+      name &&
+      metricValue !== null &&
+      metricValue !== undefined &&
+      metricValue !== ""
+    ) {
+      return `${name} = ${formatStructuredValue(metricValue)}`;
+    }
+  }
+  return formatStructuredValue(value);
 }
 
 function isAdaptationRecord(model: RegistryModelRecord): boolean {
@@ -195,7 +190,9 @@ export function compactPathLabel(path: unknown): string {
   return parts.length ? parts[parts.length - 1] : cleaned;
 }
 
-function selectedResumeCheckpoint(model: RegistryModelRecord): Record<string, unknown> | null {
+function selectedResumeCheckpoint(
+  model: RegistryModelRecord,
+): Record<string, unknown> | null {
   return asRecord(
     pickValue(model, [
       ["selected_resume_checkpoint"],
@@ -213,7 +210,8 @@ export function modelParentLabel(model: RegistryModelRecord): string {
     ["trained_from_model_id"],
     ["metadata", "trained_from_model_id"],
   ]);
-  if (typeof parentModelId === "string" && parentModelId.trim()) return parentModelId.trim();
+  if (typeof parentModelId === "string" && parentModelId.trim())
+    return parentModelId.trim();
 
   const resume = selectedResumeCheckpoint(model);
   const source = resume?.source;
@@ -223,7 +221,9 @@ export function modelParentLabel(model: RegistryModelRecord): string {
   return compactPath !== "Not reported" ? compactPath : "Not reported";
 }
 
-function selectionGateOutcome(model: RegistryModelRecord): Record<string, unknown> | null {
+function selectionGateOutcome(
+  model: RegistryModelRecord,
+): Record<string, unknown> | null {
   return asRecord(
     pickValue(model, [
       ["selection_gate_outcome"],
@@ -238,19 +238,25 @@ function selectionGateOutcome(model: RegistryModelRecord): Record<string, unknow
 export function modelGateLabel(model: RegistryModelRecord): string {
   const outcome = selectionGateOutcome(model);
   if (!outcome) return "Not reported";
-  const gatesEnabled = outcome.enabled === true || outcome.gates_enabled === true;
-  if (outcome.stage3_rejected_by_gates === true) return "Stage 3 rejected; promoted Stage 2";
+  const gatesEnabled =
+    outcome.enabled === true || outcome.gates_enabled === true;
+  if (outcome.stage3_rejected_by_gates === true)
+    return "Stage 3 rejected; promoted Stage 2";
   if (gatesEnabled) return "Passed";
   if (outcome.stage3_rejected_by_gates === false) return "No gate issue";
   return "Not reported";
 }
 
-function checkpointFileDeletedMetadataPresent(model: RegistryModelRecord): boolean {
-  return pickValue(model, [
-    ["checkpoint_file_deleted"],
-    ["metadata", "checkpoint_file_deleted"],
-    ["adaptation_run", "checkpoint_file_deleted"],
-  ]) === true;
+function checkpointFileDeletedMetadataPresent(
+  model: RegistryModelRecord,
+): boolean {
+  return (
+    pickValue(model, [
+      ["checkpoint_file_deleted"],
+      ["metadata", "checkpoint_file_deleted"],
+      ["adaptation_run", "checkpoint_file_deleted"],
+    ]) === true
+  );
 }
 
 export function modelCheckpointHealthLabel(model: RegistryModelRecord): string {
@@ -287,7 +293,8 @@ function canActivateModel(
   return (
     status === "candidate" ||
     status === "approved" ||
-    (status === "archived" && ARCHIVED_ACTIVATION_APPROVAL_STATUSES.has(approval))
+    (status === "archived" &&
+      ARCHIVED_ACTIVATION_APPROVAL_STATUSES.has(approval))
   );
 }
 
@@ -297,13 +304,19 @@ function checkpointDeleteDisabledReason(
 ): string | null {
   const modelId = typeof model.model_id === "string" ? model.model_id : "";
   if (!modelId) return "Model ID is missing.";
-  if (!isAdaptationRecord(model)) return "Only eligible adaptation checkpoint records can be deleted.";
-  if (isModelActive(model, activeModelId)) return "Active model checkpoints cannot be deleted.";
-  if (checkpointFileDeletedMetadataPresent(model)) return "Checkpoint file is already deleted.";
+  if (!isAdaptationRecord(model))
+    return "Only eligible adaptation checkpoint records can be deleted.";
+  if (isModelActive(model, activeModelId))
+    return "Active model checkpoints cannot be deleted.";
+  if (checkpointFileDeletedMetadataPresent(model))
+    return "Checkpoint file is already deleted.";
   return null;
 }
 
-function canDeleteCheckpointFile(model: DisplayModel, activeModelId: string | null): boolean {
+function canDeleteCheckpointFile(
+  model: DisplayModel,
+  activeModelId: string | null,
+): boolean {
   return checkpointDeleteDisabledReason(model, activeModelId) === null;
 }
 
@@ -311,7 +324,149 @@ function decisionPayload(comment: string): CandidateDecisionRequest {
   return { actor: "ops-ui", comment };
 }
 
-function coreRows(
+function trainingDataSummary(model: DisplayModel): string {
+  const counts = asRecord(
+    pickValue(model, [
+      ["dataset_counts"],
+      ["adaptation_run", "dataset_counts"],
+      ["metadata", "dataset_counts"],
+      ["latest_readiness_snapshot", "summary"],
+      ["adaptation_run", "readiness_snapshot", "summary"],
+    ]),
+  );
+  const train =
+    counts?.train_total ??
+    counts?.train ??
+    counts?.train_count ??
+    counts?.training ??
+    counts?.training_count;
+  const validation =
+    counts?.val_total ??
+    counts?.validation ??
+    counts?.val ??
+    counts?.validation_count ??
+    counts?.val_count;
+  if (train !== undefined && validation !== undefined)
+    return `${formatStructuredValue(train)} train / ${formatStructuredValue(validation)} validation`;
+  return "Not reported";
+}
+
+function bestScoreLabel(model: DisplayModel): string {
+  const metric = pickValue(model, [
+    ["checkpoint_metric"],
+    ["metrics", "selection_score"],
+    ["best_metrics", "selection_score"],
+    ["metadata", "checkpoint_metric"],
+    ["metadata", "metrics", "selection_score"],
+    ["metadata", "best_metrics", "selection_score"],
+    ["adaptation_run", "checkpoint_metric"],
+    ["adaptation_run", "best_metrics", "selection_score"],
+  ]);
+  if (metric === undefined || metric === null || metric === "")
+    return "Not reported";
+  if (typeof metric === "number") {
+    const name = pickValue(model, [
+      ["checkpoint_metric_name"],
+      ["metadata", "checkpoint_metric_name"],
+      ["adaptation_run", "checkpoint_metric_name"],
+    ]);
+    return `${typeof name === "string" && name.trim() ? name.trim() : "selection_score"} = ${formatNumber(metric)}`;
+  }
+  return formatCheckpointMetric(metric);
+}
+
+function modelSummaryRows(
+  model: DisplayModel,
+  activeModelId: string | null,
+): DetailRow[] {
+  return [
+    fieldRow("Status", model.status),
+    fieldRow(
+      "Active model",
+      isModelActive(model, activeModelId) ? "Yes" : "No",
+    ),
+    fieldRow("Parent model", modelParentLabel(model)),
+    fieldRow("Promotion result", modelGateLabel(model)),
+    fieldRow(
+      "Training status",
+      pickValue(model, [
+        ["training_summary_status"],
+        ["training_summary", "status"],
+        ["adaptation_run", "training_summary", "status"],
+        ["adaptation_run", "status"],
+        ["metadata", "training_summary", "status"],
+      ]),
+    ),
+    fieldRow("Training data", trainingDataSummary(model)),
+    fieldRow("Best score", bestScoreLabel(model)),
+  ];
+}
+
+function resumeCheckpointSummary(model: DisplayModel): DetailRow[] {
+  const resume = selectedResumeCheckpoint(model);
+  return [
+    fieldRow(
+      "Run ID",
+      pickValue(model, [
+        ["run_id"],
+        ["adaptation_run", "run_id"],
+        ["metadata", "run_id"],
+      ]),
+    ),
+    fieldRow(
+      "Resume mode",
+      resume?.resume_mode ??
+        pickValue(model, [
+          ["resume_mode"],
+          ["adaptation_run", "resume_mode"],
+          ["metadata", "resume_mode"],
+        ]),
+    ),
+    fieldRow(
+      "Resume source",
+      resume?.source ??
+        pickValue(model, [
+          ["resume_source"],
+          ["adaptation_run", "resume_source"],
+          ["metadata", "resume_source"],
+        ]),
+    ),
+    fieldRow(
+      "Base checkpoint",
+      compactPathLabel(
+        resume?.checkpoint_path ??
+          resume?.path ??
+          pickValue(model, [
+            ["base_checkpoint"],
+            ["adaptation_run", "base_checkpoint"],
+            ["metadata", "base_checkpoint"],
+          ]),
+      ),
+    ),
+    fieldRow(
+      "Best checkpoint",
+      compactPathLabel(
+        pickValue(model, [
+          ["best_overall_checkpoint"],
+          ["adaptation_run", "best_overall_checkpoint"],
+          ["metadata", "best_overall_checkpoint"],
+        ]),
+      ),
+    ),
+    fieldRow(
+      "Final checkpoint",
+      compactPathLabel(
+        pickValue(model, [
+          ["final_checkpoint"],
+          ["adaptation_run", "final_checkpoint"],
+          ["metadata", "final_checkpoint"],
+        ]),
+      ),
+    ),
+  ];
+}
+
+function technicalDetailRows(
   model: DisplayModel,
   activeModelId: string | null,
 ): DetailRow[] {
@@ -327,43 +482,35 @@ function coreRows(
       "Active / current",
       isModelActive(model, activeModelId) ? "Yes" : "No",
     ),
-    fieldRow("Path", model.path),
-    fieldRow("Created time", model.created_at),
-    fieldRow("Updated time", model.updated_at),
-  ];
-}
-
-function lifecycleRows(model: DisplayModel): DetailRow[] {
-  return [
-    fieldRow("Parent / trained from", modelParentLabel(model)),
-    fieldRow("Gate / promotion", modelGateLabel(model)),
-    fieldRow("Checkpoint status", modelCheckpointHealthLabel(model)),
-  ];
-}
-
-function formatResumeCheckpoint(value: unknown): unknown {
-  const record = asRecord(value);
-  if (!record) return value;
-  const parts = ["checkpoint_path", "source", "resume_mode"]
-    .map((key) => (record[key] ? `${key}: ${formatStructuredValue(record[key])}` : null))
-    .filter(Boolean);
-  return parts.length ? parts.join("; ") : undefined;
-}
-
-function adaptationRows(model: DisplayModel, compactPaths = true): DetailRow[] {
-  if (!isAdaptationRecord(model)) return [];
-  const exists = checkpointFileExists(model);
-  const pathRow = compactPaths ? compactPathRow : fieldRow;
-  return [
+    fieldRow("Raw path", model.path),
+    structuredRow(
+      "Metrics / evidence",
+      model.metrics ?? model.checkpoint_metric ?? model.checkpoint_metric_name,
+    ),
+    fieldRow("Training log path", model.training_log_path),
     fieldRow(
-      "Run ID",
+      "Training log available",
+      typeof model.training_log_available === "boolean"
+        ? model.training_log_available
+          ? "Yes"
+          : "No"
+        : undefined,
+    ),
+    fieldRow("Checkpoint status", modelCheckpointHealthLabel(model)),
+    structuredRow("Checkpoint metric", model.checkpoint_metric),
+    structuredRow(
+      "Selected resume checkpoint",
+      selectedResumeCheckpoint(model),
+    ),
+    structuredRow(
+      "Dataset counts",
       pickValue(model, [
-        ["run_id"],
-        ["adaptation_run", "run_id"],
-        ["metadata", "run_id"],
+        ["dataset_counts"],
+        ["adaptation_run", "dataset_counts"],
+        ["metadata", "dataset_counts"],
       ]),
     ),
-    pathRow(
+    fieldRow(
       "Output dir / result run dir",
       pickValue(model, [
         ["output_dir"],
@@ -374,16 +521,16 @@ function adaptationRows(model: DisplayModel, compactPaths = true): DetailRow[] {
         ["metadata", "result_run_dir"],
       ]),
     ),
-    pathRow(
-      "Best overall checkpoint",
+    fieldRow(
+      "Best overall checkpoint path",
       pickValue(model, [
         ["best_overall_checkpoint"],
         ["adaptation_run", "best_overall_checkpoint"],
         ["metadata", "best_overall_checkpoint"],
       ]),
     ),
-    pathRow(
-      "Final checkpoint",
+    fieldRow(
+      "Final checkpoint path",
       pickValue(model, [
         ["final_checkpoint"],
         ["adaptation_run", "final_checkpoint"],
@@ -391,112 +538,25 @@ function adaptationRows(model: DisplayModel, compactPaths = true): DetailRow[] {
       ]),
     ),
     structuredRow(
-      "Selected resume checkpoint",
-      formatResumeCheckpoint(pickValue(model, [
-        ["selected_resume_checkpoint"],
-        ["adaptation_run", "selected_resume_checkpoint"],
-        ["metadata", "selected_resume_checkpoint"],
-      ])),
-    ),
-    structuredRow(
-      "Dataset counts",
-      pickValue(model, [
-        ["dataset_counts"],
-        ["adaptation_run", "dataset_counts"],
-        ["metadata", "dataset_counts"],
-        ["latest_readiness_snapshot", "summary"],
-        ["adaptation_run", "readiness_snapshot", "summary"],
-      ]),
-    ),
-    structuredRow(
-      "Readiness snapshot summary",
-      pickValue(model, [
-        ["latest_readiness_snapshot", "summary"],
-        ["readiness_snapshot", "summary"],
-        ["adaptation_run", "readiness_snapshot", "summary"],
-        ["metadata", "latest_readiness_snapshot"],
-      ]),
-    ),
-    fieldRow(
-      "Training summary status",
-      pickValue(model, [
-        ["training_summary_status"],
-        ["training_summary", "status"],
-        ["adaptation_run", "training_summary", "status"],
-        ["adaptation_run", "status"],
-      ]),
-    ),
-    structuredRow(
-      "Best metrics / checkpoint metric",
-      pickValue(model, [
-        ["best_metrics"],
-        ["metrics"],
-        ["checkpoint_metric"],
-        ["adaptation_run", "best_metrics"],
-        ["metadata", "best_metrics"],
-      ]),
-    ),
-    structuredRow(
       "Last adaptation promotion decision",
       model.last_adaptation_promotion_decision,
     ),
     structuredRow("Last promotion result", model.last_promotion_result),
-    fieldRow("Checkpoint file status", exists === null ? undefined : modelCheckpointHealthLabel(model)),
-  ];
-}
-
-function supplementalRows(model: DisplayModel): DetailRow[] {
-  return [
-    fieldRow("Raw path", model.path),
-    structuredRow(
-      "Metrics / evidence",
-      model.metrics ?? model.checkpoint_metric ?? model.checkpoint_metric_name,
-    ),
-    fieldRow("Training log path", model.training_log_path),
-    fieldRow("Training log available", typeof model.training_log_available === "boolean" ? (model.training_log_available ? "Yes" : "No") : undefined),
     structuredRow("Notes", model.notes),
   ];
 }
 
-
-function modelScoreSummary(model: DisplayModel): string {
-  const rows = collectModelMetricRows(model);
-  const preferred = rows.find((row) =>
-    [
-      "Internal checkpoint selection score",
-      "Checkpoint Metric",
-      "Best Overall Score",
-      "Final Score",
-      "Score",
-    ].includes(row.label),
-  );
-  const row = preferred ?? rows[0];
-  return row ? `${row.label}: ${row.value}` : "Not reported";
-}
-
-function summaryRows(model: DisplayModel, activeModelId: string | null): DetailRow[] {
-  return [
-    fieldRow("Model ID", model.model_id),
-    fieldRow("Status", model.status),
-    fieldRow("Active / current", isModelActive(model, activeModelId) ? "Yes" : "No"),
-    fieldRow("Selection / best metric", modelScoreSummary(model)),
-    fieldRow("Parent / trained from", modelParentLabel(model)),
-  ];
-}
-
-function technicalDetailRows(model: DisplayModel, activeModelId: string | null): DetailRow[] {
-  return [
-    ...coreRows(model, activeModelId),
-    ...lifecycleRows(model),
-    ...adaptationRows(model, false),
-    ...supplementalRows(model),
-  ];
-}
-
 function collectTrainingLogLines(model: DisplayModel): string[] {
-  const value = pickValue(model, [["training_log_tail"], ["adaptation_run", "training_log_tail"], ["metadata", "training_log_tail"]]);
+  const value = pickValue(model, [
+    ["training_log_tail"],
+    ["adaptation_run", "training_log_tail"],
+    ["metadata", "training_log_tail"],
+  ]);
   if (Array.isArray(value)) {
-    return value.map((line) => String(line)).filter((line) => line.trim().length > 0).slice(-100);
+    return value
+      .map((line) => String(line))
+      .filter((line) => line.trim().length > 0)
+      .slice(-100);
   }
   return [];
 }
@@ -525,7 +585,10 @@ function collectModelMetricRows(model: DisplayModel): MetricRow[] {
       const value = record[key];
       if (value === null || value === undefined || value === "") continue;
       if (seen.has(key)) break;
-      rows.push({ label: metricLabel(key), value: formatStructuredValue(value) });
+      rows.push({
+        label: metricLabel(key),
+        value: formatCheckpointMetric(value),
+      });
       seen.add(key);
       break;
     }
@@ -544,8 +607,7 @@ export function OpsRegistryTab() {
 
   const models = registryState.registry?.models ?? [];
   const inspectModel = useMemo(
-    () =>
-      models.find((model) => model.model_id === inspectModelId) ?? null,
+    () => models.find((model) => model.model_id === inspectModelId) ?? null,
     [models, inspectModelId],
   );
   const activeModelId = registryState.registry?.active_model_id ?? null;
@@ -592,13 +654,14 @@ export function OpsRegistryTab() {
     if (!canActivateModel(model, activeModelId)) return;
     const modelId = String(model.model_id);
     const status = String(model.status ?? "").toLowerCase();
-    const activation = isAdaptationRecord(model) && status === "candidate"
-      ? () =>
-          opsClient.approveAdaptationCandidate(
-            modelId,
-            decisionPayload("Approved and activated from Ops UI."),
-          )
-      : () => opsClient.activateModel(modelId);
+    const activation =
+      isAdaptationRecord(model) && status === "candidate"
+        ? () =>
+            opsClient.approveAdaptationCandidate(
+              modelId,
+              decisionPayload("Approved and activated from Ops UI."),
+            )
+        : () => opsClient.activateModel(modelId);
     await runAction(modelId, "Activate model", activation);
   }
 
@@ -606,7 +669,10 @@ export function OpsRegistryTab() {
     const modelId = typeof model.model_id === "string" ? model.model_id : "";
     const disabledReason = checkpointDeleteDisabledReason(model, activeModelId);
     if (disabledReason || !modelId) {
-      setActionError(disabledReason ?? "Checkpoint deletion is not available for this model.");
+      setActionError(
+        disabledReason ??
+          "Checkpoint deletion is not available for this model.",
+      );
       return;
     }
     const confirmed = window.confirm(
@@ -616,7 +682,9 @@ export function OpsRegistryTab() {
     await runAction(modelId, "Delete checkpoint record", () =>
       opsClient.deleteAdaptationCheckpointFile(
         modelId,
-        decisionPayload("Checkpoint file deleted from Ops UI row actions menu."),
+        decisionPayload(
+          "Checkpoint file deleted from Ops UI row actions menu.",
+        ),
       ),
     );
   }
@@ -645,7 +713,9 @@ export function OpsRegistryTab() {
         {actionError ? <p className="failure-text">{actionError}</p> : null}
         {actionNotice ? <p className="muted">{actionNotice}</p> : null}
 
-        {!registryState.loading && !registryState.error && models.length === 0 ? (
+        {!registryState.loading &&
+        !registryState.error &&
+        models.length === 0 ? (
           <p className="muted">No model records are currently registered.</p>
         ) : null}
         {!registryState.loading && !registryState.error && models.length > 0 ? (
@@ -763,13 +833,24 @@ export function OpsRegistryTab() {
                                   Inspect
                                 </button>
                                 <button
-                                  onClick={() => void handleDeleteCheckpointFile(model)}
+                                  onClick={() =>
+                                    void handleDeleteCheckpointFile(model)
+                                  }
                                   disabled={
-                                    !canDeleteCheckpointFile(model, activeModelId) ||
-                                    (busy && runningAction?.endsWith("Delete checkpoint record"))
+                                    !canDeleteCheckpointFile(
+                                      model,
+                                      activeModelId,
+                                    ) ||
+                                    (busy &&
+                                      runningAction?.endsWith(
+                                        "Delete checkpoint record",
+                                      ))
                                   }
                                   title={
-                                    checkpointDeleteDisabledReason(model, activeModelId) ??
+                                    checkpointDeleteDisabledReason(
+                                      model,
+                                      activeModelId,
+                                    ) ??
                                     (checkpointFileExists(model) === false
                                       ? "Checkpoint file is already missing; backend will remove the registry record."
                                       : checkpointFileExists(model) === null
@@ -778,7 +859,9 @@ export function OpsRegistryTab() {
                                   }
                                 >
                                   {busy &&
-                                  runningAction?.endsWith("Delete checkpoint record")
+                                  runningAction?.endsWith(
+                                    "Delete checkpoint record",
+                                  )
                                     ? "Deleting..."
                                     : "Delete"}
                                 </button>
@@ -808,35 +891,36 @@ export function OpsRegistryTab() {
             aria-label="Model Details"
             onClick={(event) => event.stopPropagation()}
           >
-            <h3 style={{ margin: 0 }}>Model Details</h3>
+            <div>
+              <h3 style={{ margin: 0 }}>Model inspection</h3>
+              <p className="muted" style={{ margin: "4px 0 0" }}>
+                {formatCellValue(inspectModel.model_id)}
+              </p>
+            </div>
             {actionError ? <p className="failure-text">{actionError}</p> : null}
             {actionNotice ? <p className="muted">{actionNotice}</p> : null}
-            <ModelSummarySection rows={summaryRows(inspectModel, activeModelId)} />
-            <EvaluationMetricsSection rows={collectModelMetricRows(inspectModel)} />
             <ModelDetailSection
-              title="Lifecycle"
-              rows={lifecycleRows(inspectModel)}
-              preserveLabels={LIFECYCLE_DETAIL_LABELS}
+              title="Model summary"
+              rows={modelSummaryRows(inspectModel, activeModelId)}
             />
-            {isAdaptationRecord(inspectModel) ? (
+            {collectModelMetricRows(inspectModel).length > 1 ? (
               <ModelDetailSection
-                title="Adaptation / training provenance"
-                rows={adaptationRows(inspectModel)}
+                title="Evaluation metrics"
+                rows={collectModelMetricRows(inspectModel)}
               />
             ) : null}
-            <CheckpointStatusSection
-              model={inspectModel}
-              activeModelId={activeModelId}
+            <ModelDetailSection
+              title="Training provenance"
+              rows={resumeCheckpointSummary(inspectModel)}
             />
-            <details className="advanced-section ops-technical-details">
+            <details className="advanced-section">
               <summary>Technical details</summary>
               <ModelDetailSection
                 title="Raw registry details"
                 rows={technicalDetailRows(inspectModel, activeModelId)}
-                preserveLabels={new Set([...CORE_DETAIL_LABELS, ...LIFECYCLE_DETAIL_LABELS])}
               />
             </details>
-            <details className="advanced-section" open={collectTrainingLogLines(inspectModel).length > 0}>
+            <details className="advanced-section">
               <summary>Raw training log</summary>
               {collectTrainingLogLines(inspectModel).length ? (
                 <pre className="ops-log-window">
@@ -844,7 +928,7 @@ export function OpsRegistryTab() {
                 </pre>
               ) : (
                 <p className="muted">
-                  Raw training log file was not available for this model. Evaluation metrics above are shown from the registry/training summary when available.
+                  Raw training log was not available for this model.
                 </p>
               )}
             </details>
@@ -860,76 +944,6 @@ export function OpsRegistryTab() {
         </div>
       ) : null}
     </div>
-  );
-}
-
-function ModelSummarySection({ rows }: { rows: DetailRow[] }) {
-  return (
-    <section className="ops-summary-strip" aria-label="Model summary">
-      {rows.map((row) => (
-        <div key={row.label} className="ops-summary-card">
-          <span>{row.label}</span>
-          <strong title={row.value}>{row.value}</strong>
-        </div>
-      ))}
-    </section>
-  );
-}
-
-function EvaluationMetricsSection({ rows }: { rows: MetricRow[] }) {
-  return (
-    <section className="ops-modal-section">
-      <h4>Evaluation metrics</h4>
-      {rows.length ? (
-        <dl className="ops-metric-details-grid">
-          {rows.map((row) => (
-            <div key={row.label}>
-              <dt>{row.label}</dt>
-              <dd>{row.value}</dd>
-            </div>
-          ))}
-        </dl>
-      ) : (
-        <p className="muted">No evaluation metrics were reported for this model.</p>
-      )}
-    </section>
-  );
-}
-
-function CheckpointStatusSection({
-  model,
-  activeModelId,
-}: {
-  model: DisplayModel;
-  activeModelId: string | null;
-}) {
-  const status = modelCheckpointHealthLabel(model);
-  const active = isModelActive(model, activeModelId);
-  const adaptation = isAdaptationRecord(model);
-
-  return (
-    <section className="ops-modal-section">
-      <h4>Checkpoint status</h4>
-      <dl className="ops-model-details-list">
-        <div>
-          <dt>Checkpoint status</dt>
-          <dd>{status}</dd>
-        </div>
-      </dl>
-      {checkpointFileDeletedMetadataPresent(model) ? (
-        <p className="muted">
-          Checkpoint file was previously deleted; legacy registry metadata is preserved.
-        </p>
-      ) : null}
-      {active ? (
-        <p className="muted">Active model checkpoints cannot be deleted.</p>
-      ) : null}
-      {!adaptation ? (
-        <p className="muted">
-          Checkpoint deletion is only available for adaptation records.
-        </p>
-      ) : null}
-    </section>
   );
 }
 

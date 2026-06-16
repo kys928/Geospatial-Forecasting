@@ -21,12 +21,13 @@ assert.match(source, /<th>Gate \/ Promotion<\/th>/, "table includes gate column"
 assert.match(source, /<th>Checkpoint<\/th>/, "table includes checkpoint health column");
 assert.doesNotMatch(source, /<th>Path<\/th>/, "main table no longer uses raw path as a primary column");
 assert.match(source, /fieldRow\("Raw path", model\.path\)/, "raw path remains in Inspect Model technical details");
-assert.match(source, /title="Lifecycle"/, "Inspect Model includes prominent lifecycle section");
-assert.match(source, /rows=\{lifecycleRows\(inspectModel\)\}/, "Inspect Model lifecycle section uses lifecycle rows");
+assert.match(source, /title="Model summary"/, "Inspect modal includes compact Model summary section");
+assert.match(source, /rows=\{modelSummaryRows\(inspectModel, activeModelId\)\}/, "Inspect modal summary uses model summary rows");
+assert.doesNotMatch(source, /title="Lifecycle"/, "Inspect modal no longer includes a separate lifecycle section");
 assert.match(source, /disabled=\{!canActivate \|\| busy\}/, "activation button availability remains guarded by existing canActivate logic");
 
 assert.match(source, /<td>\{active \? "Yes" : "No"\}<\/td>/, "active model row still reports Active Yes/No");
 
-assert.match(source, /const gatesEnabled = outcome\.enabled === true \|\| outcome\.gates_enabled === true;/, "selection_gate_outcome enabled=true is treated as gates enabled");
+assert.match(source, /const gatesEnabled =\s*outcome\.enabled === true \|\| outcome\.gates_enabled === true;/s, "selection_gate_outcome enabled=true is treated as gates enabled");
 assert.match(source, /if \(gatesEnabled\) return "Passed";/, "enabled gates without stage-3 rejection show Passed");
 assert.match(source, /if \(outcome\.stage3_rejected_by_gates === false\) return "No gate issue";/, "stage3 false without enabled metadata still shows No gate issue");
