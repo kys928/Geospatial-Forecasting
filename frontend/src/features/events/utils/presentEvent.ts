@@ -1,7 +1,7 @@
 import type { EventRecord } from "../types/event.types";
 
 export type EventSeverity = "success" | "info" | "warning" | "error";
-export type EventCategory = "training" | "registry" | "worker" | "forecast" | "system" | "unknown";
+export type EventCategory = "training" | "model" | "forecast" | "system" | "unknown";
 
 export interface PresentedEvent {
   id: string;
@@ -17,6 +17,7 @@ export interface PresentedEvent {
   objectLabel: string | null;
   raw: EventRecord;
   isPreview?: boolean;
+  groupCount?: number;
 }
 
 const TITLE_MAP: Record<string, string> = {
@@ -31,7 +32,8 @@ const TITLE_MAP: Record<string, string> = {
   adaptation_candidate_manual_review_required: "Adaptation candidate needs review",
   adaptation_candidate_rejected: "Adaptation candidate rejected",
   adaptation_checkpoint_file_deleted: "Checkpoint file deleted",
-  automatic_retraining_skipped_cooldown: "Automatic training skipped",
+  automatic_retraining_skipped_cooldown: "Automatic retraining skipped",
+  automatic_retraining_skipped_readiness_not_green: "Automatic retraining skipped",
   automatic_retraining_job_enqueued: "Automatic training queued",
   retraining_job_submitted: "Retraining job submitted",
   retraining_job_started: "Retraining job started",
@@ -46,18 +48,17 @@ const TITLE_MAP: Record<string, string> = {
 
 const ACTIVITY_LABELS: Record<EventCategory, string> = {
   training: "Training",
-  registry: "Registry",
-  worker: "Worker",
+  model: "Model",
   forecast: "Forecast",
   system: "System",
   unknown: "Other"
 };
 
 const STATUS_LABELS: Record<EventSeverity, string> = {
-  error: "Failed",
+  error: "Error",
   warning: "Warning",
-  success: "Completed",
-  info: "Normal"
+  success: "Success",
+  info: "Info"
 };
 
 function asString(value: unknown): string | null {
@@ -117,17 +118,16 @@ function gateSummary(value: unknown): string | null {
 
 function inferCategory(eventType: string, event: EventRecord, payload: Record<string, unknown>): EventCategory {
   const eventTypeBlob = eventType.toLowerCase();
-  if (/(worker|heartbeat)/.test(eventTypeBlob)) return "worker";
   if (/(forecast)/.test(eventTypeBlob)) return "forecast";
   if (/(retraining|training|job|cooldown|stop_requested)/.test(eventTypeBlob)) return "training";
-  if (/(model|candidate|registry|rollback|activate|checkpoint|promotion)/.test(eventTypeBlob)) return "registry";
+  if (/(model|candidate|registry|rollback|activate|checkpoint|promotion)/.test(eventTypeBlob)) return "model";
+  if (/(worker|heartbeat)/.test(eventTypeBlob)) return "system";
 
   const blob = `${JSON.stringify(payload)} ${JSON.stringify(event)}`.toLowerCase();
-  if (/(worker|heartbeat)/.test(blob)) return "worker";
   if (/(forecast)/.test(blob)) return "forecast";
   if (/(retraining|training|job|cooldown)/.test(blob)) return "training";
-  if (/(model|candidate|registry|rollback|activate|checkpoint|promotion)/.test(blob)) return "registry";
-  if (/(system|ops|health)/.test(blob)) return "system";
+  if (/(model|candidate|registry|rollback|activate|checkpoint|promotion)/.test(blob)) return "model";
+  if (/(worker|heartbeat|system|ops|health)/.test(blob)) return "system";
   return "unknown";
 }
 
@@ -184,6 +184,9 @@ function buildSummary(eventType: string, event: EventRecord, payload: Record<str
   if (eventType === "adaptation_checkpoint_file_deleted" && candidateId) {
     return `Checkpoint file for ${candidateId} was deleted; registry metadata was preserved.`;
   }
+  if (eventType === "automatic_retraining_skipped_readiness_not_green") {
+    return "Readiness checks were not green, so no training job was started.";
+  }
   if (eventType === "automatic_retraining_skipped_cooldown") {
     const scope = cooldownScope ? cooldownScope.replace(/[_-]+/g, " ") : null;
     const reasonLabel = cooldownReasonLabel(reason);
@@ -203,7 +206,9 @@ function buildSummary(eventType: string, event: EventRecord, payload: Record<str
   if (eventType === "worker_heartbeat") return `Worker ${workerId ?? "worker"} is active.`;
   if (eventType === "forecast_created") return `Forecast ${forecastId ?? "forecast"} was created.`;
   if (eventType === "forecast_failed") return `Forecast ${forecastId ?? "forecast"} failed: ${errorMessage ?? "Unknown reason"}.`;
-  return fallbackMessage ? `${fallbackMessage.replace(/[.\s]*$/, "")}.` : "No summary available.";
+  return TITLE_MAP[eventType] && fallbackMessage
+    ? `${fallbackMessage.replace(/[.\s]*$/, "")}.`
+    : "A workspace event was recorded. Open details for technical information.";
 }
 
 export function presentEvent(event: EventRecord, index: number): PresentedEvent {
@@ -228,7 +233,7 @@ export function presentEvent(event: EventRecord, index: number): PresentedEvent 
     timestampRaw,
     timeLabel,
     dateGroup,
-    title: TITLE_MAP[eventType] ?? (eventType ? sentenceCase(eventType) : "Operational event"),
+    title: TITLE_MAP[eventType] ?? (eventString(event, payload, "title") ?? "Workspace event"),
     summary: buildSummary(eventType, event, payload),
     category,
     severity,

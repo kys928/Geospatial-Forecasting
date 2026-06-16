@@ -28,7 +28,7 @@ assertPresented(
     title: "Model activated",
     summary:
       "Model candidate_retrain-job-000407 was activated; previous active model was robust_pretrained_baseline_v3c_tiny_recall_lift.",
-    category: "registry",
+    category: "model",
     severity: "success",
     objectLabel: "candidate_retrain-job-000407"
   }
@@ -42,7 +42,7 @@ assertPresented(
   {
     title: "Model candidate approved",
     summary: "Candidate candidate_retrain-job-000407 was approved by ops-ui.",
-    category: "registry",
+    category: "model",
     severity: "success",
     objectLabel: "candidate_retrain-job-000407"
   }
@@ -54,7 +54,7 @@ assertPresented(
     payload: { cooldown_reason: "cooldown_active", cooldown_scope: "automatic_cadence", remaining_seconds: 30 }
   },
   {
-    title: "Automatic training skipped",
+    title: "Automatic retraining skipped",
     summary: "Automatic training skipped because automatic cadence cooldown is active (30 seconds remaining).",
     category: "training",
     severity: "warning"
@@ -69,7 +69,7 @@ assertPresented(
   {
     title: "Checkpoint file deleted",
     summary: "Checkpoint file for candidate_retrain-job-000399 was deleted; registry metadata was preserved.",
-    category: "registry",
+    category: "model",
     severity: "warning",
     objectLabel: "candidate_retrain-job-000399"
   }
@@ -78,8 +78,8 @@ assertPresented(
 assertPresented(
   { event_type: "unknown_backend_event", payload: { message: "backend emitted an unknown event" } },
   {
-    title: "Unknown backend event",
-    summary: "backend emitted an unknown event.",
+    title: "Workspace event",
+    summary: "A workspace event was recorded. Open details for technical information.",
     category: "unknown",
     severity: "info"
   }
