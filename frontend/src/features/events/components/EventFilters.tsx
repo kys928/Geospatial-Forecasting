@@ -34,7 +34,6 @@ export function EventFilters(props: EventFiltersProps) {
         <option value="success">Success</option>
         <option value="warning">Warning</option>
         <option value="error">Error</option>
-        <option value="info">Info</option>
       </select>
       <select value={limit} onChange={(e) => onLimitChange(Number(e.target.value) as 50 | 100 | 200)}>
         <option value={50}>Limit: 50</option>
