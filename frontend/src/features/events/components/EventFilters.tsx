@@ -23,20 +23,18 @@ export function EventFilters(props: EventFiltersProps) {
         onChange={(e) => onSearchTextChange(e.target.value)}
       />
       <select value={category} onChange={(e) => onCategoryChange(e.target.value as "all" | EventCategory)}>
-        <option value="all">Type: all</option>
-        <option value="training">Type: training</option>
-        <option value="registry">Type: registry</option>
-        <option value="worker">Type: worker</option>
-        <option value="forecast">Type: forecast</option>
-        <option value="system">Type: system</option>
-        <option value="unknown">Type: unknown</option>
+        <option value="all">All activity</option>
+        <option value="forecast">Forecast</option>
+        <option value="training">Training</option>
+        <option value="model">Model</option>
+        <option value="system">System</option>
       </select>
       <select value={severity} onChange={(e) => onSeverityChange(e.target.value as "all" | EventSeverity)}>
-        <option value="all">Severity: all</option>
-        <option value="success">Severity: success</option>
-        <option value="info">Severity: info</option>
-        <option value="warning">Severity: warning</option>
-        <option value="error">Severity: error</option>
+        <option value="all">All status</option>
+        <option value="success">Success</option>
+        <option value="warning">Warning</option>
+        <option value="error">Error</option>
+        <option value="info">Info</option>
       </select>
       <select value={limit} onChange={(e) => onLimitChange(Number(e.target.value) as 50 | 100 | 200)}>
         <option value={50}>Limit: 50</option>

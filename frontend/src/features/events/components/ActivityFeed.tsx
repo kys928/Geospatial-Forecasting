@@ -24,7 +24,7 @@ export function ActivityFeed({ events, selectedEventId, onSelect, isPreview, fil
         >
           <div className="activity-event-topline">
             <div className="activity-event-title">{event.title}</div>
-            <span className="activity-event-meta">{`${event.activityLabel} · ${event.statusLabel} · ${event.timeLabel}`}</span>
+            <span className="activity-event-meta">{`${event.activityLabel} · ${event.statusLabel} · latest ${event.timeLabel}`}</span>
           </div>
           <div className="activity-event-summary">{event.summary}</div>
         </button>
