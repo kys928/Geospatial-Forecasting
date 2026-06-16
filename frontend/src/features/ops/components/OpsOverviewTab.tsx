@@ -68,7 +68,6 @@ export function OpsOverviewTab() {
         {loading && !status ? (
           <p className="muted">Loading system metrics...</p>
         ) : null}
-        {error ? <p className="muted">{error}</p> : null}
         <p className="muted">
           Last updated: {formatTimestamp(status?.generated_at)}
         </p>
@@ -150,14 +149,8 @@ export function OpsOverviewTab() {
       <section className="panel">
         <h3>Workspace status</h3>
         <p>Forecast workspace is available.</p>
-        <p>
-          Training worker is{" "}
-          {String(
-            worker.retraining_worker_status ?? "not reported",
-          ).toLowerCase()}
-          .
-        </p>
         <p>{jobSummary(retraining)}</p>
+        {error ? <p className="muted">System status refresh issue: {error}</p> : null}
         <details>
           <summary>Technical worker/job details</summary>
           <div className="ops-service-grid" style={{ marginTop: 10 }}>
@@ -176,6 +169,16 @@ export function OpsOverviewTab() {
               <p>Queued: {String(retraining.queued ?? "Not reported")}</p>
               <p>Running: {String(retraining.running ?? "Not reported")}</p>
               <p>Failed: {String(retraining.failed ?? "Not reported")}</p>
+              {typeof jobs.jobs_unavailable_reason === "string" ? (
+                <p className="muted">
+                  Job status reason: {jobs.jobs_unavailable_reason}
+                </p>
+              ) : null}
+              {typeof worker.worker_status_unavailable_reason === "string" ? (
+                <p className="muted">
+                  Worker status reason: {worker.worker_status_unavailable_reason}
+                </p>
+              ) : null}
             </div>
           </div>
         </details>
@@ -250,15 +253,13 @@ function BarCard({
 function jobSummary(retraining: Record<string, unknown>): string {
   const queued = Number(retraining.queued ?? 0);
   const running = Number(retraining.running ?? 0);
-  if (
-    Number.isFinite(queued) &&
-    Number.isFinite(running) &&
-    (queued > 0 || running > 0)
-  ) {
-    return `Retraining jobs: ${queued} queued, ${running} running.`;
+  if (!Number.isFinite(queued) || !Number.isFinite(running)) {
+    return "No active training job is reported.";
   }
-  if (retraining.queued !== undefined || retraining.running !== undefined) {
-    return "No queued or running retraining jobs are reported.";
+  if (queued > 0 && running > 0) {
+    return `Training jobs: ${queued} queued, ${running} running.`;
   }
-  return "Retraining job state is not reported.";
+  if (running > 0) return "Training job is running.";
+  if (queued > 0) return "Training job is queued.";
+  return "No active training job is reported.";
 }

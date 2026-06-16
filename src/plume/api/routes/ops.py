@@ -1220,40 +1220,95 @@ def register_ops_routes(app: FastAPI, *, forecast_service, dispatch_worker=dispa
     @app.get("/ops/system/status", response_model=OpsSystemStatusResponse)
     def get_ops_system_status(_role: str = Depends(_require_ops_read_access)):
         paths = _ops_paths()
-        status_payload = get_ops_status(_role)
+        host = _collect_host_metrics()
+        gpu = _collect_gpu_metrics()
+
+        errors: dict[str, str] = {}
         jobs_store = RetrainingJobStore(paths["jobs"])
-        jobs = _annotate_stale_jobs(jobs_store.list_jobs())
-        events = _load_recent_events(paths["events"], limit=8)
-        worker_status = WorkerStatusStore(_worker_status_path()).read_status()
+        jobs: list[dict[str, object]] = []
+        latest_retraining: dict[str, object] | None = None
+        try:
+            jobs = _annotate_stale_jobs(jobs_store.list_jobs())
+            latest_retraining = jobs_store.latest_job()
+        except Exception as exc:
+            errors["jobs_unavailable_reason"] = "job_store_busy"
+            errors["jobs_unavailable_detail"] = str(exc)
 
-        forecast_jobs = {"queued": 0, "running": 0}
-        retraining_jobs = {"queued": 0, "running": 0, "failed": 0}
-        for job in jobs:
-            status = job.get("status")
-            if status == "queued":
-                retraining_jobs["queued"] += 1
-            elif status == "running":
-                retraining_jobs["running"] += 1
-            elif status == "failed":
-                retraining_jobs["failed"] += 1
+        try:
+            events = _load_recent_events(paths["events"], limit=8)
+        except Exception as exc:
+            events = []
+            errors["recent_events_unavailable_reason"] = "recent_events_unavailable"
+            errors["recent_events_unavailable_detail"] = str(exc)
 
-        dataset_status = DatasetScenarioService.from_env().availability()
-        return {
-            "generated_at": datetime.now(timezone.utc).isoformat(),
-            "host": _collect_host_metrics(),
-            "gpu": _collect_gpu_metrics(),
-            "worker_status": worker_status or {},
-            "jobs": {
-                "forecast": forecast_jobs,
-                "retraining": retraining_jobs,
-                "latest_retraining": jobs_store.latest_job(),
-            },
-            "recent_events": events,
-            "status_summary": {
+        try:
+            worker_status = WorkerStatusStore(_worker_status_path()).read_status() or {}
+        except Exception as exc:
+            worker_status = {}
+            errors["worker_status_unavailable_reason"] = "worker_status_unavailable"
+            errors["worker_status_unavailable_detail"] = str(exc)
+
+        try:
+            status_payload = get_ops_status(_role)
+            status_summary = {
                 "phase": status_payload["phase"],
                 "latest_warning_or_error": status_payload.get("latest_warning_or_error"),
                 "active_model": status_payload.get("active_model"),
+            }
+        except Exception as exc:
+            status_summary = {
+                "phase": "unknown",
+                "latest_warning_or_error": "Operational status summary is unavailable.",
+                "active_model": None,
+                "status_summary_unavailable_reason": "status_summary_unavailable",
+                "status_summary_unavailable_detail": str(exc),
+            }
+            errors["status_summary_unavailable_reason"] = "status_summary_unavailable"
+            errors["status_summary_unavailable_detail"] = str(exc)
+
+        forecast_jobs = {"queued": 0, "running": 0}
+        retraining_jobs: dict[str, object] = {"queued": 0, "running": 0, "failed": 0}
+        queued_like_statuses = {"queued", "waiting"}
+        running_like_statuses = {"running", "starting", "claimed"}
+        failed_like_statuses = {"failed"}
+        for job in jobs:
+            status = str(job.get("status") or "").lower()
+            if status in queued_like_statuses:
+                retraining_jobs["queued"] = int(retraining_jobs["queued"]) + 1
+            elif status in running_like_statuses:
+                retraining_jobs["running"] = int(retraining_jobs["running"]) + 1
+            elif status in failed_like_statuses:
+                retraining_jobs["failed"] = int(retraining_jobs["failed"]) + 1
+        if "jobs_unavailable_reason" in errors:
+            retraining_jobs["jobs_unavailable_reason"] = errors["jobs_unavailable_reason"]
+            retraining_jobs["jobs_unavailable_detail"] = errors["jobs_unavailable_detail"]
+
+        if "worker_status_unavailable_reason" in errors:
+            worker_status["worker_status_unavailable_reason"] = errors["worker_status_unavailable_reason"]
+            worker_status["worker_status_unavailable_detail"] = errors["worker_status_unavailable_detail"]
+
+        try:
+            dataset_status = DatasetScenarioService.from_env().availability()
+        except Exception as exc:
+            dataset_status = {
+                "available": False,
+                "dataset_unavailable_reason": "dataset_status_unavailable",
+                "dataset_unavailable_detail": str(exc),
+            }
+
+        return {
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "host": host,
+            "gpu": gpu,
+            "worker_status": worker_status,
+            "jobs": {
+                "forecast": forecast_jobs,
+                "retraining": retraining_jobs,
+                "latest_retraining": latest_retraining,
+                **errors,
             },
+            "recent_events": events,
+            "status_summary": status_summary,
             "dataset": dataset_status,
         }
 

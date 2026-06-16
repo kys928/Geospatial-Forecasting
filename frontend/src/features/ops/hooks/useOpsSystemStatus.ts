@@ -6,11 +6,13 @@ export function useOpsSystemStatus(enabled = true, pollMs = 8000) {
   const cachedStatus = enabled ? opsClient.peekSystemStatus() : null;
   const [status, setStatus] = useState<OpsSystemStatusResponse | null>(cachedStatus);
   const hasDataRef = useRef(Boolean(cachedStatus));
+  const inFlightRef = useRef(false);
   const [loading, setLoading] = useState(enabled && !cachedStatus);
   const [error, setError] = useState<string | null>(null);
 
   const refresh = useCallback(async (force = false) => {
-    if (!enabled) return;
+    if (!enabled || inFlightRef.current) return;
+    inFlightRef.current = true;
     if (!hasDataRef.current) setLoading(true);
     try {
       const payload = await opsClient.getSystemStatus({ force });
@@ -20,6 +22,7 @@ export function useOpsSystemStatus(enabled = true, pollMs = 8000) {
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unable to load system status");
     } finally {
+      inFlightRef.current = false;
       setLoading(false);
     }
   }, [enabled]);
