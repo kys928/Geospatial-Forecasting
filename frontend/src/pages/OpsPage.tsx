@@ -16,10 +16,18 @@ export function OpsPage() {
       metaItems={[{ label: "Workspace" }]}
     >
       <OpsTabs selected={tab} onSelect={setTab} />
-      {tab === "overview" ? <OpsOverviewTab /> : null}
-      {tab === "training" ? <OpsTrainingTab /> : null}
-      {tab === "registry" ? <OpsRegistryTab /> : null}
-      {tab === "events" ? <OpsEventsTab /> : null}
+      <section hidden={tab !== "overview"} aria-hidden={tab !== "overview"}>
+        <OpsOverviewTab active={tab === "overview"} />
+      </section>
+      <section hidden={tab !== "training"} aria-hidden={tab !== "training"}>
+        <OpsTrainingTab active={tab === "training"} />
+      </section>
+      <section hidden={tab !== "registry"} aria-hidden={tab !== "registry"}>
+        <OpsRegistryTab />
+      </section>
+      <section hidden={tab !== "events"} aria-hidden={tab !== "events"}>
+        <OpsEventsTab />
+      </section>
     </AppShell>
   );
 }
