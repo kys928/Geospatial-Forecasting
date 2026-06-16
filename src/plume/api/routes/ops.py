@@ -1268,13 +1268,16 @@ def register_ops_routes(app: FastAPI, *, forecast_service, dispatch_worker=dispa
 
         forecast_jobs = {"queued": 0, "running": 0}
         retraining_jobs: dict[str, object] = {"queued": 0, "running": 0, "failed": 0}
+        queued_like_statuses = {"queued", "waiting"}
+        running_like_statuses = {"running", "starting", "claimed"}
+        failed_like_statuses = {"failed"}
         for job in jobs:
-            status = job.get("status")
-            if status == "queued":
+            status = str(job.get("status") or "").lower()
+            if status in queued_like_statuses:
                 retraining_jobs["queued"] = int(retraining_jobs["queued"]) + 1
-            elif status == "running":
+            elif status in running_like_statuses:
                 retraining_jobs["running"] = int(retraining_jobs["running"]) + 1
-            elif status == "failed":
+            elif status in failed_like_statuses:
                 retraining_jobs["failed"] = int(retraining_jobs["failed"]) + 1
         if "jobs_unavailable_reason" in errors:
             retraining_jobs["jobs_unavailable_reason"] = errors["jobs_unavailable_reason"]
