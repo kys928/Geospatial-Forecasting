@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { ActivityFeed } from "../../events/components/ActivityFeed";
 import { EventDetailDrawer } from "../../events/components/EventDetailDrawer";
 import { useEvents } from "../../events/hooks/useEvents";
-import { presentEvent, type EventCategory, type EventSeverity, type PresentedEvent } from "../../events/utils/presentEvent";
+import { presentEvent, type EventSeverity, type PresentedEvent } from "../../events/utils/presentEvent";
 import type { EventRecord } from "../../events/types/event.types";
 
 const PREVIEW_EVENTS: PresentedEvent[] = [
@@ -33,7 +33,7 @@ function rawEventType(event: PresentedEvent): string {
 
 function groupedSummary(event: PresentedEvent, groupCount: number): string {
   if (groupCount <= 1) return event.summary;
-  return `${event.summary} ${groupCount - 1} similar events recently.`;
+  return `${event.summary} Repeated recently.`;
 }
 
 function groupDuplicateEvents(events: PresentedEvent[]): PresentedEvent[] {
@@ -65,7 +65,6 @@ function groupDuplicateEvents(events: PresentedEvent[]): PresentedEvent[] {
 export function OpsEventsTab() {
   const eventsState = useEvents();
   const [searchText, setSearchText] = useState("");
-  const [category, setCategory] = useState<"all" | EventCategory>("all");
   const [severity, setSeverity] = useState<"all" | EventSeverity>("all");
   const [selectedEventId, setSelectedEventId] = useState<string | null>(null);
   const [visibleCount, setVisibleCount] = useState(5);
@@ -78,17 +77,16 @@ export function OpsEventsTab() {
     const sourceEvents = hasRealEvents ? presentedEvents : PREVIEW_EVENTS;
     const needle = searchText.trim().toLowerCase();
     return sourceEvents.filter((event) => {
-      const matchesCategory = category === "all" || event.category === category;
       const matchesSeverity = severity === "all" || event.severity === severity;
       const blob = `${event.title} ${event.summary} ${event.activityLabel} ${event.statusLabel}`.toLowerCase();
       const matchesSearch = needle === "" || blob.includes(needle);
-      return matchesCategory && matchesSeverity && matchesSearch;
+      return matchesSeverity && matchesSearch;
     });
-  }, [category, hasRealEvents, presentedEvents, searchText, severity]);
+  }, [hasRealEvents, presentedEvents, searchText, severity]);
 
   useEffect(() => {
     setVisibleCount(5);
-  }, [searchText, category, severity, hasRealEvents]);
+  }, [searchText, severity, hasRealEvents]);
 
   const groupedEvents = useMemo(() => groupDuplicateEvents(filteredEvents), [filteredEvents]);
   const visibleEvents = groupedEvents.slice(0, visibleCount);
@@ -114,11 +112,8 @@ export function OpsEventsTab() {
         </div>
         <div className="activity-toolbar">
           <input className="activity-search" aria-label="Search activity" placeholder="Search activity..." value={searchText} onChange={(e) => setSearchText(e.target.value)} />
-          <select className="activity-select" value={category} onChange={(e) => setCategory(e.target.value as "all" | EventCategory)}>
-            <option value="all">All activity</option><option value="forecast">Forecast</option><option value="training">Training</option><option value="model">Model</option><option value="system">System</option>
-          </select>
           <select className="activity-select" value={severity} onChange={(e) => setSeverity(e.target.value as "all" | EventSeverity)}>
-            <option value="all">All status</option><option value="success">Success</option><option value="warning">Warning</option><option value="error">Error</option><option value="info">Info</option>
+            <option value="all">All status</option><option value="success">Success</option><option value="warning">Warning</option><option value="error">Error</option>
           </select>
         </div>
       </section>
