@@ -45,8 +45,8 @@ function workerSummary(worker: Record<string, unknown>): string {
   return "Worker heartbeat received, but no active worker process is reported.";
 }
 
-export function OpsOverviewTab() {
-  const { status, loading, error } = useOpsSystemStatus(true, 5000);
+export function OpsOverviewTab({ active = true }: { active?: boolean }) {
+  const { status, loading, error } = useOpsSystemStatus(active, 5000);
   const host = status?.host ?? {};
   const gpu = status?.gpu ?? {};
   const worker = status?.worker_status ?? {};
@@ -60,6 +60,12 @@ export function OpsOverviewTab() {
   const vramPercent = gpu.available ? percent(gpu.vram_percent) : null;
 
   const retraining = (jobs.retraining as Record<string, unknown>) ?? {};
+  const forecastWorkerStatus = formatWorkerStatus(
+    worker.forecast_worker_status,
+  );
+  const retrainingWorkerStatus = formatWorkerStatus(
+    worker.retraining_worker_status,
+  );
 
   return (
     <div className="ops-dashboard">
@@ -150,25 +156,27 @@ export function OpsOverviewTab() {
         <h3>Workspace status</h3>
         <p>Forecast workspace is available.</p>
         <p>{jobSummary(retraining)}</p>
-        {error ? <p className="muted">System status refresh issue: {error}</p> : null}
+        {error ? (
+          <p className="muted">System status refresh issue: {error}</p>
+        ) : null}
         <details>
           <summary>Technical worker/job details</summary>
           <div className="ops-service-grid" style={{ marginTop: 10 }}>
             <div>
               <p>{workerSummary(worker)}</p>
-              <p className="muted">
-                Forecast worker:{" "}
-                {String(worker.forecast_worker_status ?? "Not reported")}
-              </p>
-              <p className="muted">
-                Retraining worker:{" "}
-                {String(worker.retraining_worker_status ?? "Not reported")}
-              </p>
+              {forecastWorkerStatus ? (
+                <p className="muted">Forecast worker: {forecastWorkerStatus}</p>
+              ) : null}
+              {retrainingWorkerStatus ? (
+                <p className="muted">
+                  Retraining worker: {retrainingWorkerStatus}
+                </p>
+              ) : null}
             </div>
             <div>
-              <p>Queued: {String(retraining.queued ?? "Not reported")}</p>
-              <p>Running: {String(retraining.running ?? "Not reported")}</p>
-              <p>Failed: {String(retraining.failed ?? "Not reported")}</p>
+              <p>Queued: {formatCount(retraining.queued)}</p>
+              <p>Running: {formatCount(retraining.running)}</p>
+              <p>Failed: {formatCount(retraining.failed)}</p>
               {typeof jobs.jobs_unavailable_reason === "string" ? (
                 <p className="muted">
                   Job status reason: {jobs.jobs_unavailable_reason}
@@ -176,7 +184,8 @@ export function OpsOverviewTab() {
               ) : null}
               {typeof worker.worker_status_unavailable_reason === "string" ? (
                 <p className="muted">
-                  Worker status reason: {worker.worker_status_unavailable_reason}
+                  Worker status reason:{" "}
+                  {worker.worker_status_unavailable_reason}
                 </p>
               ) : null}
             </div>
@@ -248,6 +257,16 @@ function BarCard({
       <p className="muted">{detail}</p>
     </article>
   );
+}
+
+function formatWorkerStatus(value: unknown): string | null {
+  return typeof value === "string" && value.trim() ? value : null;
+}
+
+function formatCount(value: unknown): string {
+  return typeof value === "number" && Number.isFinite(value)
+    ? String(value)
+    : "0";
 }
 
 function jobSummary(retraining: Record<string, unknown>): string {

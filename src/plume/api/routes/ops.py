@@ -10,7 +10,7 @@ import subprocess
 import platform
 import re
 
-from fastapi import Depends, FastAPI, Header, HTTPException
+from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException
 import yaml
 
 from plume.api.ops_schemas import (
@@ -1509,7 +1509,7 @@ def register_ops_routes(app: FastAPI, *, forecast_service, dispatch_worker=dispa
             raise HTTPException(status_code=400, detail=f"Unable to build retraining recommendation context: {exc}") from exc
 
     @app.post("/ops/retraining/trigger", response_model=RetrainingTriggerResponse)
-    def trigger_retraining(payload: RetrainingTriggerRequest, _role: str = Depends(_require_ops_operator_access)):
+    def trigger_retraining(payload: RetrainingTriggerRequest, background_tasks: BackgroundTasks, _role: str = Depends(_require_ops_operator_access)):
         paths = _ops_paths()
         try:
             state = _load_operational_state(paths["state"])
@@ -1540,7 +1540,8 @@ def register_ops_routes(app: FastAPI, *, forecast_service, dispatch_worker=dispa
                     metadata={"manual_trigger": True, "worker_claimed": False},
                 )
             if _should_auto_dispatch_worker():
-                dispatch_worker(
+                background_tasks.add_task(
+                    dispatch_worker,
                     jobs_path=paths["jobs"],
                     registry_path=paths["registry"],
                     state_path=paths["state"],

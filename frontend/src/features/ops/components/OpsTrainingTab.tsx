@@ -170,22 +170,28 @@ const compareJobsNewestFirst = (a: OpsJobRecord, b: OpsJobRecord): number => {
 const latestByTimestampOrId = (jobs: OpsJobRecord[]): OpsJobRecord | null =>
   jobs.length ? [...jobs].sort(compareJobsNewestFirst)[0] : null;
 
-export function OpsTrainingTab() {
-  const jobsState = useOpsJobs();
-  const statusState = useOpsStatus();
-  const recommendationState = useRetrainingRecommendation();
-  const candidateState = useModelCandidateContext();
+export function OpsTrainingTab({ active = true }: { active?: boolean }) {
+  const jobsState = useOpsJobs(active);
+  const statusState = useOpsStatus(active);
+  const recommendationState = useRetrainingRecommendation(active);
+  const candidateState = useModelCandidateContext(active);
   const [manualOpen, setManualOpen] = useState(false);
   const [manualSubmitting, setManualSubmitting] = useState(false);
   const [stopSubmitting, setStopSubmitting] = useState(false);
   const [manualNotice, setManualNotice] = useState<string | null>(null);
   const [followLogs, setFollowLogs] = useState(true);
   const [adaptationTraining, setAdaptationTraining] =
-    useState<AdaptationTrainingStatus | null>(() => opsClient.peekAdaptationTrainingStatus());
+    useState<AdaptationTrainingStatus | null>(() =>
+      opsClient.peekAdaptationTrainingStatus(),
+    );
   const [adaptationReadiness, setAdaptationReadiness] =
-    useState<AdaptationReadiness | null>(() => opsClient.peekAdaptationReadiness());
+    useState<AdaptationReadiness | null>(() =>
+      opsClient.peekAdaptationReadiness(),
+    );
   const [adaptationBuffer, setAdaptationBuffer] =
-    useState<AdaptationBufferStatus | null>(() => opsClient.peekAdaptationBufferStatus());
+    useState<AdaptationBufferStatus | null>(() =>
+      opsClient.peekAdaptationBufferStatus(),
+    );
   const [adaptationTrainingError, setAdaptationTrainingError] = useState<
     string | null
   >(null);
@@ -257,12 +263,7 @@ export function OpsTrainingTab() {
         adaptationTraining,
         adaptationReadiness,
       ),
-    [
-      activeJobForDisplay,
-      latestJob,
-      adaptationTraining,
-      adaptationReadiness,
-    ],
+    [activeJobForDisplay, latestJob, adaptationTraining, adaptationReadiness],
   );
   const summaryText = useMemo(
     () => buildSummaryText(trainingView.state, checklist, trainingView.detail),
@@ -276,7 +277,12 @@ export function OpsTrainingTab() {
         adaptationTraining,
         candidateState.context,
       ),
-    [statusState.status, jobForLogs, adaptationTraining, candidateState.context],
+    [
+      statusState.status,
+      jobForLogs,
+      adaptationTraining,
+      candidateState.context,
+    ],
   );
   const metricLogLines = useMemo(
     () => formatTrainingMetricsAsLogLines(jobForLogs, adaptationTraining),
@@ -286,7 +292,10 @@ export function OpsTrainingTab() {
     () => combineTrainingLogs(rawLogs, metricLogLines),
     [rawLogs, metricLogLines],
   );
-  const visibleLogs = logs.filter((line) => !/FutureWarning.*torch\.load|torch\.load.*FutureWarning/i.test(line));
+  const visibleLogs = logs.filter(
+    (line) =>
+      !/FutureWarning.*torch\.load|torch\.load.*FutureWarning/i.test(line),
+  );
   const hiddenWarningCount = logs.length - visibleLogs.length;
   const hasErrorLogs = logs.some((line) => line.startsWith("ERROR:"));
   const canStopTraining = Boolean(activeJobForDisplay);
@@ -296,13 +305,14 @@ export function OpsTrainingTab() {
       logRef.current.scrollTop = logRef.current.scrollHeight;
   }, [logs, followLogs]);
   useEffect(() => {
+    if (!active) return;
     void refreshAdaptationTraining(false);
     const timer = window.setInterval(() => {
       if (document.visibilityState === "hidden") return;
       void refreshAll(false);
     }, 10000);
     return () => window.clearInterval(timer);
-  }, []);
+  }, [active]);
 
   async function refreshAdaptationTraining(force = true) {
     try {
@@ -337,10 +347,17 @@ export function OpsTrainingTab() {
     setManualNotice(null);
     try {
       const response = await opsClient.stopRetraining();
-      setManualNotice(response.message || (response.stopped ? "Training stop requested." : "No active training job to stop."));
+      setManualNotice(
+        response.message ||
+          (response.stopped
+            ? "Training stop requested."
+            : "No active training job to stop."),
+      );
       await refreshAll();
     } catch (e) {
-      setManualNotice(e instanceof Error ? e.message : "Unable to stop training job.");
+      setManualNotice(
+        e instanceof Error ? e.message : "Unable to stop training job.",
+      );
     } finally {
       setStopSubmitting(false);
     }
@@ -357,7 +374,14 @@ export function OpsTrainingTab() {
           : "Submission was not accepted by backend policy.",
       );
       setManualOpen(false);
-      await refreshAll();
+      setManualSubmitting(false);
+      void Promise.all([
+        jobsState.refresh(false),
+        statusState.refresh(false),
+        refreshAdaptationTraining(false),
+      ]).catch(() => {
+        // Keep the manual submit flow non-blocking; the next poll will retry.
+      });
     } catch (e) {
       setManualNotice(
         e instanceof Error
@@ -392,7 +416,10 @@ export function OpsTrainingTab() {
             ))}
           </dl>
           {trainingView.technicalRows.length > 0 ? (
-            <details className="advanced-section" style={{ gridColumn: "1 / -1" }}>
+            <details
+              className="advanced-section"
+              style={{ gridColumn: "1 / -1" }}
+            >
               <summary>Technical Details</summary>
               <dl className="ops-training-facts">
                 {trainingView.technicalRows.map((row) => (
@@ -407,61 +434,70 @@ export function OpsTrainingTab() {
         </div>
       </section>
       <section className="panel">
-        <details className="advanced-section" open={Boolean(activeJobForDisplay)} >
-          <summary>Live Training Logs</summary>
-        <div
-          className="button-row"
-          style={{ justifyContent: "space-between", alignItems: "center", marginTop: 10 }}
+        <details
+          className="advanced-section"
+          open={Boolean(activeJobForDisplay)}
         >
-          <h3 style={{ margin: 0 }}>Terminal training output</h3>
-          <div className="button-row">
-            <label
-              className="muted"
-              style={{ display: "flex", gap: 6, alignItems: "center" }}
-              title="Keep the log view pinned to the newest line."
-            >
-              <input
-                type="checkbox"
-                checked={followLogs}
-                onChange={(e) => setFollowLogs(e.target.checked)}
-              />
-              Auto-scroll
-            </label>
-            <button
-              className="secondary-button"
-              onClick={() =>
-                void navigator.clipboard?.writeText(logs.join("\n"))
-              }
-              disabled={!logs.length}
-            >
-              Copy logs
-            </button>
-          </div>
-        </div>
-        {jobForLogs?.log_available === false ? (
-          <p className="muted" style={{ margin: "8px 0 0" }}>
-            Real training log file not available; showing generated metrics and summary.
-          </p>
-        ) : null}
-        {hiddenWarningCount > 0 ? (
-          <p className="muted" style={{ margin: "8px 0 0" }}>
-            {hiddenWarningCount} known torch.load warning line(s) hidden from this view; Copy logs preserves raw output.
-          </p>
-        ) : null}
-        {!visibleLogs.length ? (
-          <p className="muted" style={{ marginBottom: 0 }}>
-            {activeJobForDisplay
-              ? "Active training job has no logs available."
-              : "No active training job is producing logs."}
-          </p>
-        ) : (
-          <pre
-            ref={logRef}
-            className={`ops-log-window${hasErrorLogs ? " ops-log-window-error" : ""}`}
+          <summary>Live Training Logs</summary>
+          <div
+            className="button-row"
+            style={{
+              justifyContent: "space-between",
+              alignItems: "center",
+              marginTop: 10,
+            }}
           >
-            {visibleLogs.join("\n")}
-          </pre>
-        )}
+            <h3 style={{ margin: 0 }}>Terminal training output</h3>
+            <div className="button-row">
+              <label
+                className="muted"
+                style={{ display: "flex", gap: 6, alignItems: "center" }}
+                title="Keep the log view pinned to the newest line."
+              >
+                <input
+                  type="checkbox"
+                  checked={followLogs}
+                  onChange={(e) => setFollowLogs(e.target.checked)}
+                />
+                Auto-scroll
+              </label>
+              <button
+                className="secondary-button"
+                onClick={() =>
+                  void navigator.clipboard?.writeText(logs.join("\n"))
+                }
+                disabled={!logs.length}
+              >
+                Copy logs
+              </button>
+            </div>
+          </div>
+          {jobForLogs?.log_available === false ? (
+            <p className="muted" style={{ margin: "8px 0 0" }}>
+              Real training log file not available; showing generated metrics
+              and summary.
+            </p>
+          ) : null}
+          {hiddenWarningCount > 0 ? (
+            <p className="muted" style={{ margin: "8px 0 0" }}>
+              {hiddenWarningCount} known torch.load warning line(s) hidden from
+              this view; Copy logs preserves raw output.
+            </p>
+          ) : null}
+          {!visibleLogs.length ? (
+            <p className="muted" style={{ marginBottom: 0 }}>
+              {activeJobForDisplay
+                ? "Active training job has no logs available."
+                : "No active training job is producing logs."}
+            </p>
+          ) : (
+            <pre
+              ref={logRef}
+              className={`ops-log-window${hasErrorLogs ? " ops-log-window-error" : ""}`}
+            >
+              {visibleLogs.join("\n")}
+            </pre>
+          )}
         </details>
       </section>
       <section className="panel">
@@ -494,7 +530,11 @@ export function OpsTrainingTab() {
             </button>
             <button
               className="secondary-button"
-              style={{ background: "#dc2626", color: "white", borderColor: "#dc2626" }}
+              style={{
+                background: "#dc2626",
+                color: "white",
+                borderColor: "#dc2626",
+              }}
               onClick={() => void handleStopTraining()}
               disabled={!canStopTraining || stopSubmitting}
             >
@@ -556,7 +596,9 @@ function deriveTrainingView(
     ? asStr(pick(asObj(activeJob), ["status", "effective_status"]))
     : null;
   const readinessSnapshot =
-    adaptationReadiness ?? adaptationTraining?.latest_readiness_snapshot ?? null;
+    adaptationReadiness ??
+    adaptationTraining?.latest_readiness_snapshot ??
+    null;
   const readiness = asObj(readinessSnapshot);
   const readinessDetail = Object.keys(readiness).length
     ? trainingReadinessDetail(readiness, readinessState(readiness))
@@ -565,23 +607,56 @@ function deriveTrainingView(
     ? activeTrainingState(activeStatusRaw)
     : readinessTrainingState(readiness, adaptationTraining);
   const started = asStr(pick(jobObj, ["started_at", "start_time"]));
-  const completed = asStr(pick(jobObj, ["finished_at", "completed_at", "end_time"]));
-  const runtimeSeconds = typeof jobObj.runtime_seconds === "number" ? jobObj.runtime_seconds : null;
-  const elapsedSeconds = typeof jobObj.elapsed_seconds === "number" ? jobObj.elapsed_seconds : null;
+  const completed = asStr(
+    pick(jobObj, ["finished_at", "completed_at", "end_time"]),
+  );
+  const runtimeSeconds =
+    typeof jobObj.runtime_seconds === "number" ? jobObj.runtime_seconds : null;
+  const elapsedSeconds =
+    typeof jobObj.elapsed_seconds === "number" ? jobObj.elapsed_seconds : null;
   const elapsed = started
-    ? formatDurationSeconds(elapsedSeconds ?? Math.max(0, Math.floor(((completed ? Date.parse(completed) : Date.now()) - Date.parse(started)) / 1000)))
+    ? formatDurationSeconds(
+        elapsedSeconds ??
+          Math.max(
+            0,
+            Math.floor(
+              ((completed ? Date.parse(completed) : Date.now()) -
+                Date.parse(started)) /
+                1000,
+            ),
+          ),
+      )
     : "Not reported";
-  const runtime = runtimeSeconds !== null ? formatDurationSeconds(runtimeSeconds) : completed && started ? formatDurationSeconds(Math.max(0, Math.floor((Date.parse(completed) - Date.parse(started)) / 1000))) : null;
-  const latestStatus = asStr(pick(latestJobObj, ["status", "effective_status"])) ?? "Not reported";
+  const runtime =
+    runtimeSeconds !== null
+      ? formatDurationSeconds(runtimeSeconds)
+      : completed && started
+        ? formatDurationSeconds(
+            Math.max(
+              0,
+              Math.floor((Date.parse(completed) - Date.parse(started)) / 1000),
+            ),
+          )
+        : null;
+  const latestStatus =
+    asStr(pick(latestJobObj, ["status", "effective_status"])) ?? "Not reported";
   const activeStatus = activeStatusRaw ?? "Not reported";
   const jobCounts = adaptationTraining?.job_counts ?? {};
   const jobCountSummary = formatJobCountSummary(jobCounts);
   const logJobObj = activeJob ? jobObj : latestJobObj;
-  const logStatus = logJobObj.is_stale === true ? "stale" : logJobObj.log_available === true ? "available" : logJobObj.log_available === false ? "unavailable" : "initializing";
+  const logStatus =
+    logJobObj.is_stale === true
+      ? "stale"
+      : logJobObj.log_available === true
+        ? "available"
+        : logJobObj.log_available === false
+          ? "unavailable"
+          : "initializing";
   const readinessStatus =
     readiness.ready === true
       ? "ready"
-      : asStr(readiness.status) ?? (Object.keys(readiness).length ? readinessState(readiness) : null);
+      : (asStr(readiness.status) ??
+        (Object.keys(readiness).length ? readinessState(readiness) : null));
   const blockingReason = primaryReadinessReason(readiness);
   const rows = [
     { label: "Current state", value: state },
@@ -595,7 +670,10 @@ function deriveTrainingView(
         : []),
     ...(activeJob
       ? [
-          { label: "Active job", value: asStr(activeJob.job_id) ?? "Recorded without job id" },
+          {
+            label: "Active job",
+            value: asStr(activeJob.job_id) ?? "Recorded without job id",
+          },
           { label: "Active status", value: activeStatus },
         ]
       : []),
@@ -657,10 +735,20 @@ function deriveTrainingView(
       : [{ label: "Elapsed", value: elapsed }]),
     {
       label: "Retraining cooldown",
-      value: formatDurationSeconds(adaptationTraining?.cooldown_seconds ?? 10800),
+      value: formatDurationSeconds(
+        adaptationTraining?.cooldown_seconds ?? 10800,
+      ),
     },
-    ...(adaptationTraining?.cooldown_remaining_seconds && adaptationTraining.cooldown_remaining_seconds > 0
-      ? [{ label: "Next automatic training eligible in", value: formatDurationSeconds(adaptationTraining.cooldown_remaining_seconds) }]
+    ...(adaptationTraining?.cooldown_remaining_seconds &&
+    adaptationTraining.cooldown_remaining_seconds > 0
+      ? [
+          {
+            label: "Next automatic training eligible in",
+            value: formatDurationSeconds(
+              adaptationTraining.cooldown_remaining_seconds,
+            ),
+          },
+        ]
       : []),
     { label: "Job counts", value: jobCountSummary },
   ].filter(
@@ -714,19 +802,28 @@ function readinessTrainingState(
   if (!Object.keys(readiness).length) return "Not reported";
   if (readiness.ready === true || readinessState(readiness) === "met")
     return "Ready for automatic training";
-  if (primaryReadinessReason(readiness) || readinessState(readiness) === "not_met")
+  if (
+    primaryReadinessReason(readiness) ||
+    readinessState(readiness) === "not_met"
+  )
     return "Readiness blocked";
   return "Waiting for readiness";
 }
 
-function primaryReadinessReason(readiness: Record<string, unknown>): string | null {
+function primaryReadinessReason(
+  readiness: Record<string, unknown>,
+): string | null {
   const blockingReasons = Array.isArray(readiness.blocking_reasons)
     ? readiness.blocking_reasons.filter((reason) => typeof reason === "string")
     : [];
   const warnings = Array.isArray(readiness.warnings)
     ? readiness.warnings.filter((warning) => typeof warning === "string")
     : [];
-  return (blockingReasons[0] as string | undefined) ?? (warnings[0] as string | undefined) ?? null;
+  return (
+    (blockingReasons[0] as string | undefined) ??
+    (warnings[0] as string | undefined) ??
+    null
+  );
 }
 
 function collectTrainingMetricSources(
@@ -756,37 +853,58 @@ function formatMetricValue(key: string, value: unknown): string {
 }
 
 function metricSourceKey(source: Record<string, unknown>): string {
-  return [source.stage_name ?? source.stage ?? "stage", source.global_epoch ?? "epoch", source.epoch_in_stage ?? "stage_epoch"]
+  return [
+    source.stage_name ?? source.stage ?? "stage",
+    source.global_epoch ?? "epoch",
+    source.epoch_in_stage ?? "stage_epoch",
+  ]
     .map((value) => String(value))
     .join(":");
 }
 
-function firstMetricValue(source: Record<string, unknown>, keys: string[]): unknown {
+function firstMetricValue(
+  source: Record<string, unknown>,
+  keys: string[],
+): unknown {
   for (const key of keys) {
     const value = source[key];
-    if (value !== undefined && value !== null && String(value).trim() !== "") return value;
+    if (value !== undefined && value !== null && String(value).trim() !== "")
+      return value;
   }
   return undefined;
 }
 
 function formatMetricPair(key: string, value: unknown): string | null {
-  if (value === undefined || value === null || String(value).trim() === "") return null;
+  if (value === undefined || value === null || String(value).trim() === "")
+    return null;
   return `${key}=${formatMetricValue(key, value)}`;
 }
 
-function metricPairs(source: Record<string, unknown>, entries: Array<[string, string[]]>): string {
+function metricPairs(
+  source: Record<string, unknown>,
+  entries: Array<[string, string[]]>,
+): string {
   return entries
-    .map(([label, keys]) => formatMetricPair(label, firstMetricValue(source, keys)))
+    .map(([label, keys]) =>
+      formatMetricPair(label, firstMetricValue(source, keys)),
+    )
     .filter((value): value is string => Boolean(value))
     .join(" ");
 }
 
-function collectMetricLogSources(latestJob: OpsJobRecord | null, adaptationTraining: AdaptationTrainingStatus | null): Record<string, unknown>[] {
-  const sources = collectTrainingMetricSources(asObj(latestJob), adaptationTraining);
+function collectMetricLogSources(
+  latestJob: OpsJobRecord | null,
+  adaptationTraining: AdaptationTrainingStatus | null,
+): Record<string, unknown>[] {
+  const sources = collectTrainingMetricSources(
+    asObj(latestJob),
+    adaptationTraining,
+  );
   const deduped: Record<string, unknown>[] = [];
   const seen = new Set<string>();
   for (const source of sources) {
-    if (!Object.keys(source).some((key) => TRAINING_METRIC_KEYS.includes(key))) continue;
+    if (!Object.keys(source).some((key) => TRAINING_METRIC_KEYS.includes(key)))
+      continue;
     const key = metricSourceKey(source);
     if (seen.has(key)) continue;
     seen.add(key);
@@ -828,13 +946,24 @@ export function formatTrainingMetricsAsLogLines(
     if (selection) lines.push(`[metrics] ${selection}`);
     const scheduler = metricPairs(source, [
       ["lr", ["learning_rate", "lr"]],
-      ["teacher_forcing_prob", ["teacher_forcing_prob", "teacher_forcing_ratio"]],
+      [
+        "teacher_forcing_prob",
+        ["teacher_forcing_prob", "teacher_forcing_ratio"],
+      ],
     ]);
     if (scheduler) lines.push(`[metrics] ${scheduler}`);
   }
 
-  const bestSource = collectTrainingMetricSources(asObj(latestJob), adaptationTraining).find((source) =>
-    ["best_score", "best_stage", "best_global_epoch", "best_checkpoint_path"].some((key) => source[key] !== undefined && source[key] !== null),
+  const bestSource = collectTrainingMetricSources(
+    asObj(latestJob),
+    adaptationTraining,
+  ).find((source) =>
+    [
+      "best_score",
+      "best_stage",
+      "best_global_epoch",
+      "best_checkpoint_path",
+    ].some((key) => source[key] !== undefined && source[key] !== null),
   );
   if (bestSource) {
     const best = metricPairs(bestSource, [
@@ -848,14 +977,21 @@ export function formatTrainingMetricsAsLogLines(
   return lines;
 }
 
-function combineTrainingLogs(rawLogs: string[], metricLogLines: string[]): string[] {
+function combineTrainingLogs(
+  rawLogs: string[],
+  metricLogLines: string[],
+): string[] {
   if (!metricLogLines.length) return rawLogs;
   const rawMetricKeys = new Set(
     rawLogs
-      .filter((line) => line.startsWith("[metrics]") || line.startsWith("[best]"))
+      .filter(
+        (line) => line.startsWith("[metrics]") || line.startsWith("[best]"),
+      )
       .map((line) => line.trim()),
   );
-  const generated = metricLogLines.filter((line) => !rawMetricKeys.has(line.trim()));
+  const generated = metricLogLines.filter(
+    (line) => !rawMetricKeys.has(line.trim()),
+  );
   if (!generated.length) return rawLogs;
   return rawLogs.length ? [...rawLogs, "", ...generated] : generated;
 }
@@ -892,11 +1028,15 @@ function collectLogs(
 ): string[] {
   const jobObj = asObj(latestJob);
   const lines: string[] = [];
-  const adaptationLatestJob = adaptationTraining?.latest_job as OpsJobRecord | null | undefined;
+  const adaptationLatestJob = adaptationTraining?.latest_job as
+    | OpsJobRecord
+    | null
+    | undefined;
   const adaptationLatestMatchesSelected =
     !latestJob?.job_id || adaptationLatestJob?.job_id === latestJob.job_id;
   const latestLogTail =
-    adaptationLatestMatchesSelected && Array.isArray(adaptationLatestJob?.log_tail)
+    adaptationLatestMatchesSelected &&
+    Array.isArray(adaptationLatestJob?.log_tail)
       ? adaptationLatestJob.log_tail
       : [];
   if (latestLogTail.length) return latestLogTail.map((line) => String(line));
@@ -918,7 +1058,9 @@ function collectLogs(
       lines.push("Worker has not claimed this manual job yet.");
   }
   if (jobObj.is_stale === true || asStr(jobObj.effective_status) === "stale") {
-    lines.unshift("Training job appears stale; no recent worker update was reported.");
+    lines.unshift(
+      "Training job appears stale; no recent worker update was reported.",
+    );
   } else if (statusValue === "running") {
     lines.unshift(
       `Training job ${asStr(jobObj.job_id) ?? "latest"} is running.`,
@@ -954,12 +1096,11 @@ function collectLogs(
       asStr(pick(jobObj, ["result_run_dir", "output_dir"]));
     if (runDir) lines.push(`Run directory: ${runDir}`);
   }
-  const failure =
-    ["failed", "error"].includes(statusValue)
-      ? asStr(pick(jobObj, ["failure_reason", "error_message"]))
-      : latestJob
-        ? null
-        : asStr(status?.last_retraining_job_failure_reason);
+  const failure = ["failed", "error"].includes(statusValue)
+    ? asStr(pick(jobObj, ["failure_reason", "error_message"]))
+    : latestJob
+      ? null
+      : asStr(status?.last_retraining_job_failure_reason);
   if (failure)
     lines.push(
       isManual ? `Manual training job failed: ${failure}` : `ERROR: ${failure}`,
@@ -984,11 +1125,16 @@ function buildSummaryText(
   if (state === "Cooling down")
     return "Automatic adaptation training is cooling down before another run can start.";
   if (state === "Readiness blocked")
-    return detail ?? "Automatic adaptation training is blocked by readiness checks.";
+    return (
+      detail ?? "Automatic adaptation training is blocked by readiness checks."
+    );
   if (state === "Ready for automatic training")
     return "Automatic adaptation training is ready to start when new work is selected.";
   if (state === "Waiting for readiness")
-    return detail ?? "Automatic adaptation training is waiting for readiness conditions or new work.";
+    return (
+      detail ??
+      "Automatic adaptation training is waiting for readiness conditions or new work."
+    );
   if (state === "Failed")
     return "The latest adaptation training job failed. Review logs and job details before starting another run.";
   if (state === "Completed")
@@ -1260,7 +1406,9 @@ function buildChecklist({
 }): ChecklistRow[] {
   const legacyReadiness = status?.retraining_readiness ?? {};
   const readinessSnapshot =
-    adaptationReadiness ?? adaptationTraining?.latest_readiness_snapshot ?? null;
+    adaptationReadiness ??
+    adaptationTraining?.latest_readiness_snapshot ??
+    null;
   const readiness = asObj(readinessSnapshot);
   const checks = Array.isArray(readiness.checks) ? readiness.checks : [];
   const adaptationEnabledCheck = findReadinessCheck(checks, [
@@ -1358,13 +1506,17 @@ function trainingReadinessDetail(
   const warnings = Array.isArray(readiness.warnings)
     ? readiness.warnings.filter((warning) => typeof warning === "string")
     : [];
-  const reason = (blockingReasons[0] as string | undefined) ?? (warnings[0] as string | undefined);
+  const reason =
+    (blockingReasons[0] as string | undefined) ??
+    (warnings[0] as string | undefined);
   if (state === "met") return "Training can start.";
   if (state === "checking" || status === "waiting" || status === "yellow") {
     return reason ? `Waiting: ${reason}` : "Waiting for readiness conditions.";
   }
   if (state === "not_met") {
-    return reason ? `Training cannot start yet: ${reason}` : "Training cannot start yet.";
+    return reason
+      ? `Training cannot start yet: ${reason}`
+      : "Training cannot start yet.";
   }
   return Object.keys(readiness).length
     ? "Training readiness is being evaluated."
@@ -1376,16 +1528,19 @@ function buildNewTrainingDataRow(
   fallbackCheck: Record<string, unknown> | null,
   adaptationBuffer: AdaptationBufferStatus | null,
 ): ChecklistRow {
-  const freshState = freshSamplesCheck ? readinessState(freshSamplesCheck) : "unknown";
+  const freshState = freshSamplesCheck
+    ? readinessState(freshSamplesCheck)
+    : "unknown";
   const counts = adaptationBufferCounts(adaptationBuffer);
   const fallbackAvailable = hasFallbackDataset(fallbackCheck);
   if (freshState === "met") {
     return {
       label: "New training data",
       state: "met",
-      detail: counts.acceptedTotal > 0
-        ? `Enough accepted training samples are available (${formatAcceptedCounts(counts)}).`
-        : "Enough new training data is available.",
+      detail:
+        counts.acceptedTotal > 0
+          ? `Enough accepted training samples are available (${formatAcceptedCounts(counts)}).`
+          : "Enough new training data is available.",
     };
   }
   if (counts.acceptedTotal > 0) {
@@ -1399,7 +1554,8 @@ function buildNewTrainingDataRow(
     return {
       label: "New training data",
       state: "checking",
-      detail: "Waiting for enough collected training data; a historical fallback dataset is available.",
+      detail:
+        "Waiting for enough collected training data; a historical fallback dataset is available.",
     };
   }
   if (freshState === "not_met") {
@@ -1433,16 +1589,21 @@ function buildBufferDataRow(
   adaptationBuffer: AdaptationBufferStatus | null,
 ): ChecklistRow {
   const bufferState = bufferCheck ? readinessState(bufferCheck) : "unknown";
-  const spanState = sampleSpanCheck ? readinessState(sampleSpanCheck) : "unknown";
+  const spanState = sampleSpanCheck
+    ? readinessState(sampleSpanCheck)
+    : "unknown";
   const ageState = sampleAgeCheck ? readinessState(sampleAgeCheck) : "unknown";
   const counts = adaptationBufferCounts(adaptationBuffer);
   const fallbackAvailable = hasFallbackDataset(fallbackCheck);
-  const countDetail = counts.acceptedTotal > 0 ? formatAcceptedCounts(counts) : null;
+  const countDetail =
+    counts.acceptedTotal > 0 ? formatAcceptedCounts(counts) : null;
 
   if (counts.acceptedTotal > 0) {
     const dataChecksPass =
       bufferState === "met" &&
-      [spanState, ageState].every((state) => state === "met" || state === "unknown");
+      [spanState, ageState].every(
+        (state) => state === "met" || state === "unknown",
+      );
     return {
       label: "Buffer Data",
       state: dataChecksPass ? "met" : "checking",
@@ -1455,7 +1616,8 @@ function buildBufferDataRow(
     return {
       label: "Buffer Data",
       state: "checking",
-      detail: "No buffer samples yet; a historical fallback dataset is available.",
+      detail:
+        "No buffer samples yet; a historical fallback dataset is available.",
     };
   }
   if (bufferState === "not_met") {
@@ -1486,7 +1648,10 @@ function buildBaseModelRow(
   readiness: Record<string, unknown>,
   legacyReadiness: Record<string, unknown>,
 ): ChecklistRow {
-  const selectedCheckpointPath = selectedCheckpointFromReadiness(readiness, checkpointCheck);
+  const selectedCheckpointPath = selectedCheckpointFromReadiness(
+    readiness,
+    checkpointCheck,
+  );
   if (selectedCheckpointPath) {
     return {
       label: "Base model",
@@ -1552,7 +1717,11 @@ function buildTrainingJobStateRow(
       state: "checking",
       detail: "Training job is queued and waiting for a worker.",
     };
-  if (TERMINAL_JOB_STATUSES.includes(latestStatus as (typeof TERMINAL_JOB_STATUSES)[number]))
+  if (
+    TERMINAL_JOB_STATUSES.includes(
+      latestStatus as (typeof TERMINAL_JOB_STATUSES)[number],
+    )
+  )
     return {
       label: "Training job",
       state: "met",
@@ -1633,7 +1802,9 @@ function formatAcceptedCounts({
   return `${acceptedTrain} train, ${acceptedVal} validation`;
 }
 
-function hasFallbackDataset(fallbackCheck: Record<string, unknown> | null): boolean {
+function hasFallbackDataset(
+  fallbackCheck: Record<string, unknown> | null,
+): boolean {
   const fallbackDetails = asObj(fallbackCheck?.details);
   return Boolean(fallbackDetails.selected_dataset_path);
 }
