@@ -335,11 +335,13 @@ function trainingDataSummary(model: DisplayModel): string {
     ]),
   );
   const train =
+    counts?.train_total ??
     counts?.train ??
     counts?.train_count ??
     counts?.training ??
     counts?.training_count;
   const validation =
+    counts?.val_total ??
     counts?.validation ??
     counts?.val ??
     counts?.validation_count ??
