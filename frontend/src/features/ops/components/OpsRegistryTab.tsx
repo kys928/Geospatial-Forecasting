@@ -546,21 +546,6 @@ function technicalDetailRows(
   ];
 }
 
-function collectTrainingLogLines(model: DisplayModel): string[] {
-  const value = pickValue(model, [
-    ["training_log_tail"],
-    ["adaptation_run", "training_log_tail"],
-    ["metadata", "training_log_tail"],
-  ]);
-  if (Array.isArray(value)) {
-    return value
-      .map((line) => String(line))
-      .filter((line) => line.trim().length > 0)
-      .slice(-100);
-  }
-  return [];
-}
-
 function collectModelMetricRows(model: DisplayModel): MetricRow[] {
   const sources = [
     model.metrics,
@@ -919,18 +904,6 @@ export function OpsRegistryTab() {
                 title="Raw registry details"
                 rows={technicalDetailRows(inspectModel, activeModelId)}
               />
-            </details>
-            <details className="advanced-section">
-              <summary>Raw training log</summary>
-              {collectTrainingLogLines(inspectModel).length ? (
-                <pre className="ops-log-window">
-                  {collectTrainingLogLines(inspectModel).join("\n")}
-                </pre>
-              ) : (
-                <p className="muted">
-                  Raw training log was not available for this model.
-                </p>
-              )}
             </details>
             <div className="button-row" style={{ justifyContent: "flex-end" }}>
               <button
