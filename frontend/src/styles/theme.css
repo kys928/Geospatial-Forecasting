@@ -1229,14 +1229,3 @@ textarea {
     height: 176px;
   }
 }
-.ops-summary-strip{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;}
-.ops-summary-card{border:1px solid #d9e1ef;background:#f8fbff;border-radius:12px;padding:10px;display:grid;gap:4px;min-width:0;}
-.ops-summary-card span{font-size:.78rem;font-weight:600;color:#64748b;text-transform:uppercase;letter-spacing:.02em;}
-.ops-summary-card strong{font-size:.95rem;color:#0f172a;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
-.ops-metric-details-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:10px;margin:0;}
-.ops-metric-details-grid div{border:1px solid #e2e8f0;border-radius:10px;background:#fff;padding:10px;display:grid;gap:4px;}
-.ops-metric-details-grid dt{font-weight:600;color:#334155;font-size:.86rem;}
-.ops-metric-details-grid dd{margin:0;color:#0f172a;font-variant-numeric:tabular-nums;word-break:break-word;}
-.ops-technical-details{border:1px solid #dde4f0;border-radius:10px;padding:12px;background:#fbfcff;}
-.ops-technical-details .ops-modal-section{border:0;padding:0;background:transparent;}
-@media (max-width: 640px){.ops-model-details-list div{grid-template-columns:1fr;gap:4px}.ops-summary-card strong{white-space:normal}}
