@@ -16,7 +16,7 @@ Current deployment shape is a **modular monolith + worker boundary**:
 - **Runtime boundary (`src/plume/runtime`)**: `ForecastRuntimeClient` protocol with `LocalForecastRuntimeClient` implementation. Local runtime delegates to existing `ForecastService` (batch) and `OnlineForecastService` (session workflows).
 - **Forecast artifact boundary**: batch forecast artifacts are durably written to `artifacts/forecasts/<forecast_id>/...` and can be listed/retrieved by API.
 - **Retraining worker boundary (`src/plume/workers/retraining_worker.py`)**: API submits jobs; a dedicated worker process claims/executes jobs. Shared boundary is job store + model registry + operational state + event log.
-- **OpenRemote boundary (`src/plume/openremote`)**: optional external service registration lifecycle; disabled by default.
+- **OpenRemote boundary (`src/plume/openremote`)**: optional/provisional service registration and HTTP publishing components; disabled by default and not live-validated as an OpenRemote schema contract.
 - **Frontend workspaces (`frontend/src/pages`)**: React pages for Map / Forecast (`/forecast`), Forecast Overview / AI Decision Support (`/decision-support`), and Workspace / Ops status (`/ops`).
 - **Internal session tooling (`/sessions`)**: routable developer-focused runtime/session infrastructure inspection page; available but not part of the normal operator workflow.
 
@@ -411,7 +411,7 @@ Retraining worker boundary:
 - No separate deployed inference HTTP service (runtime boundary is internal today).
 - No broker/queue infrastructure (worker uses shared stores and local dispatch).
 - Durable sessions are opt-in via CSV (`state_store: csv` or `PLUME_STATE_STORE=csv`) and remain local app-owned persistence only.
-- No persisted explanation artifacts for persisted-only forecasts.
+- Explanation artifacts are opt-in; forecasts created without `PLUME_PERSIST_BATCH_EXPLANATION=true` or older persisted forecasts may not have `explanation.json`, and live reconstruction from persisted artifacts is not implemented.
 - No automatic OpenRemote asset creation/discovery workflow.
 - No live OpenRemote validation in this repo.
 - ConvLSTM should not be treated as a proven production default unless a real trained checkpoint/registry model is configured.
