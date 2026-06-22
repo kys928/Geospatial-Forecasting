@@ -1,10 +1,8 @@
 from __future__ import annotations
 
-from plume.backends.base import BaseBackend
 from plume.backends.convlstm_backend import ConvLSTMBackend
 from plume.backends.gaussian_fallback_backend import GaussianFallbackBackend
 from plume.backends.mock_online_backend import MockOnlineBackend
-from plume.utils.config import Config
 
 def _normalize_backend_name(name: str | None) -> str:
     raw = (name or "").strip().lower()

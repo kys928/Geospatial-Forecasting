@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from plume.openremote.publishing_service import OpenRemotePublishingService
-from plume.openremote.sink import HttpOpenRemoteResultSink, OpenRemoteResultSink
+from plume.openremote.sink import HttpOpenRemoteResultSink
 from plume.openremote.settings import (
     get_openremote_service_registration_settings,
     load_openremote_settings,

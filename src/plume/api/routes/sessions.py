@@ -125,7 +125,6 @@ def register_session_routes(
     @app.post("/sessions/{session_id}/observations")
     def ingest_observations(session_id: str, payload: ObservationIngestRequest):
         payload_dict = payload.model_dump()
-        observations_payload = payload_dict.get("observations", [])
         try:
             ingest_result = runtime_client.ingest_observations(session_id, payload_dict)
             state = ingest_result.state
