@@ -1,11 +1,24 @@
 # OpenRemote schema mapping notes
 
 ## Purpose
-This document records practical OpenRemote database/schema findings for integration mapping and sets a lightweight local CSV session-store contract for this repository.
 
-It is intentionally documentation-only: no direct database integration is introduced, and no OpenRemote database behavior is reimplemented here.
+This document records practical OpenRemote database/schema findings for integration mapping and documents this repository's app-owned local session CSV store shape.
+
+It is intentionally documentation-only: no direct OpenRemote database integration is introduced, and no OpenRemote database behavior is reimplemented here.
+
+## Current OpenRemote alignment
+
+OpenRemote support in this repository is optional and provisional:
+
+- Optional service registration and heartbeat lifecycle exist.
+- Optional HTTP publishing components exist.
+- These paths are disabled by default unless configured.
+- This repository does not claim a live-validated OpenRemote schema or contract.
+- This repository does not mirror or copy OpenRemote's database.
+- OpenRemote internal database tables are not this app's runtime persistence contract.
 
 ## What OpenRemote stores
+
 OpenRemote Manager uses PostgreSQL internally, including migration files under:
 
 - `manager/src/main/resources/org/openremote/manager/setup/database`
@@ -19,9 +32,11 @@ From reviewed schema facts:
 - OpenRemote converts datapoint tables into Timescale hypertables.
 
 ## Important OpenRemote tables/columns
-The following columns are important for conceptual mapping and technical honesty when discussing integration:
+
+The following columns are important for conceptual mapping and technical honesty when discussing integration.
 
 ### `ASSET`
+
 - `ID`
 - `ATTRIBUTES`
 - `CREATED_ON`
@@ -34,18 +49,21 @@ The following columns are important for conceptual mapping and technical honesty
 - `VERSION`
 
 ### `ASSET_DATAPOINT`
+
 - `TIMESTAMP`
 - `ENTITY_ID`
 - `ATTRIBUTE_NAME`
 - `VALUE`
 
 ### `ASSET_PREDICTED_DATAPOINT`
+
 - `TIMESTAMP`
 - `ENTITY_ID`
 - `ATTRIBUTE_NAME`
 - `VALUE`
 
 ## Attribute JSON shape
+
 `ASSET.ATTRIBUTES` (jsonb) stores current attributes using a map keyed by attribute name.
 
 ```json
@@ -61,11 +79,13 @@ The following columns are important for conceptual mapping and technical honesty
 ```
 
 Notes:
+
 - The top-level key is the attribute name.
 - `value` is JSON-valued payload content.
 - `timestamp` is epoch milliseconds.
 
 ## What we should NOT copy
+
 For this project:
 
 - Do **not** copy, mirror, or clone OpenRemote's PostgreSQL schema.
@@ -76,24 +96,25 @@ For this project:
 OpenRemote's database remains internal to OpenRemote.
 
 ## Recommended integration pattern
+
 Use OpenRemote through API/service boundaries only:
 
 - keep service registration and heartbeat lifecycle in the existing OpenRemote integration path,
-- use OpenRemote service registration for external-service discovery/navigation,
+- keep optional HTTP publishing provisional until validated against a target OpenRemote deployment,
 - keep this repository's domain/runtime state independent from OpenRemote internal storage.
 
 This preserves separation of concerns and avoids coupling this app to OpenRemote internal schema evolution.
 
-## CSV mapping if we need local export/import
-If a local durable export/import layer is needed, use app-owned CSV/JSON files with app-owned columns. This can assist local recovery and operator workflows without introducing a database dependency.
+## Local app-owned CSV session store
 
-This mapping is for this repository's operational needs; it is **not** an OpenRemote database mirror.
+This section documents the implemented optional local CSV session/state store used when the configured state store is CSV, for example through `PLUME_STATE_STORE=csv` or equivalent backend configuration.
 
-## Proposed local CSV session-store contract
-This section defines a documentation contract for a future lightweight local session store.
+This mapping is for this repository's operational needs; it is **not** an OpenRemote database mirror and not an OpenRemote-compatible persistence contract.
 
 ### `sessions.csv`
+
 Columns:
+
 - `session_id`
 - `backend_name`
 - `model_name`
@@ -103,30 +124,28 @@ Columns:
 - `last_error`
 - `metadata_json`
 - `runtime_metadata_json`
+- `state_json`
+
+`state_json` stores the current backend state summary, including recent observations needed by the app-owned state store.
 
 ### `session_latest_forecasts.csv`
+
 Columns:
+
 - `session_id`
 - `latest_forecast_id`
 - `latest_forecast_artifact_dir`
 - `updated_at`
 
-### Optional `observations.csv`
-Use only if local replay/recovery requires per-observation persistence.
+### Observation persistence note
 
-Columns:
-- `session_id`
-- `timestamp`
-- `latitude`
-- `longitude`
-- `value`
-- `pollutant_type`
-- `source_type`
-- `metadata_json`
+There is currently no separate implemented `observations.csv`. Recent observations and state details are serialized inside `state_json` in `sessions.csv`. A separate observations export/import file could be added later only if replay or recovery requirements justify it.
 
 ### Contract rules and non-goals
+
 - Scope: local session recovery/export for this app only.
 - Non-goal: OpenRemote-compatible database mirroring.
 - JSON columns should store compact JSON strings.
 - CSV is acceptable for proof-of-concept and local development.
 - CSV is not intended for high-concurrency production storage.
+- Optional app-owned SQLite-backed Ops stores may exist elsewhere in the application; those are also not OpenRemote DB mirrors.
