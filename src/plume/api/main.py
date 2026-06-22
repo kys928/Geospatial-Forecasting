@@ -72,6 +72,7 @@ def create_app() -> FastAPI:
     export_service = get_export_service()
     forecast_store = get_forecast_store()
     backend_config = forecast_service.config.load_backend()
+    dataset_scenario_service = DatasetScenarioService.from_env()
 
     def _runtime_status_payload() -> dict[str, object]:
         openremote_service_registration = app.state.openremote_service_registrar.status()
@@ -110,7 +111,6 @@ def create_app() -> FastAPI:
         forecast_store=forecast_store,
         explain_service=explain_service,
     )
-    dataset_scenario_service = DatasetScenarioService.from_env()
     forecast_context_service = ForecastContextService(runtime_client=runtime_client, explain_service=explain_service, dataset_scenario_service=dataset_scenario_service)
     decision_support_service = DecisionSupportService(runtime_client=runtime_client, explain_service=explain_service, forecast_context_service=forecast_context_service)
 
