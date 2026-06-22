@@ -2,8 +2,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import json
+import logging
 
 from plume.services.explanation_payloads import build_explanation_payload
+
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -191,24 +195,24 @@ class DecisionSupportService:
     def _interpret_context_with_llm(self, context: dict) -> tuple[dict | None, bool, str | None]:
         llm_service = getattr(self.explain_service, "llm_service", None)
         if llm_service is None:
-            print("[decision-support] no llm_service configured")
+            logger.debug("[decision-support] no llm_service configured")
             return None, False, None
 
         try:
             try:
                 compact_context = self._build_compact_llm_context(context)
             except Exception as compact_exc:
-                print(f"[decision-support] failed to build compact LLM context: {compact_exc}")
+                logger.warning("[decision-support] failed to build compact LLM context: %s", compact_exc)
                 compact_context = {}
             compact_size = len(json.dumps(compact_context, separators=(",", ":"), ensure_ascii=False))
-            print(f"[decision-support] compact LLM context size chars={compact_size} keys={list(compact_context.keys())}")
+            logger.debug("[decision-support] compact LLM context size chars=%s keys=%s", compact_size, list(compact_context.keys()))
             llm_result = llm_service.interpret_context(
                 system_prompt=self._build_context_llm_prompt(context),
                 context=compact_context,
             )
         except Exception as exc:
             error = str(exc).strip() or exc.__class__.__name__
-            print(f"[decision-support] LLM context interpretation failed with exception: {error}")
+            logger.warning("[decision-support] LLM context interpretation failed with exception: %s", error)
             return None, True, error
 
         if not llm_result.success:
@@ -217,13 +221,16 @@ class DecisionSupportService:
             error = getattr(llm_result, "error", None)
             raw_text = getattr(llm_result, "raw_text", None)
             short_error = str(error).strip() if error else "LLM interpretation returned unsuccessful result"
-            print(
-                "[decision-support] LLM context interpretation unsuccessful "
-                f"provider={provider} model={model} error={short_error} raw_text={raw_text!r}"
+            logger.warning(
+                "[decision-support] LLM context interpretation unsuccessful provider=%s model=%s error=%s",
+                provider,
+                model,
+                short_error,
             )
+            logger.debug("[decision-support] LLM context interpretation raw_text=%r", raw_text)
             return None, True, short_error
 
-        print("[decision-support] LLM context interpretation succeeded")
+        logger.debug("[decision-support] LLM context interpretation succeeded")
         return {
             "summary": llm_result.summary or "Unavailable",
             "risk_level": llm_result.risk_level or "unknown",

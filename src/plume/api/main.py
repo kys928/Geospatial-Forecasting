@@ -29,12 +29,6 @@ from plume.services.forecast_context_service import ForecastContextService
 from plume.services.dataset_scenario_service import DatasetScenarioService
 
 
-def _env_flag(name: str, *, default: bool) -> bool:
-    value = os.getenv(name)
-    if value is None:
-        return default
-    return value.strip().lower() in {"1", "true", "yes", "on"}
-
 
 def _cors_settings() -> tuple[list[str], str | None]:
     allow_origins = ["http://localhost:5173", "http://127.0.0.1:5173"]
