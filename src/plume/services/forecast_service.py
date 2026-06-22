@@ -9,6 +9,7 @@ from plume.inference.engine import InferenceEngine
 from plume.inference.postprocessor import ForecastPostprocessor
 from plume.models.gaussian_plume import GaussianPlume
 from plume.schemas.forecast import Forecast
+from plume.services.provenance import FORECAST_PROVENANCE_KEYS
 from plume.services.runtime_metadata import build_batch_runtime_metadata
 from plume.utils.config import Config
 
@@ -107,27 +108,7 @@ class ForecastService:
             },
             "timestamp": result.forecast.timestamp.isoformat(),
         }
-        provenance_keys = (
-            "forecast_source",
-            "model_id",
-            "model_family",
-            "model_backend",
-            "checkpoint_path",
-            "inference_mode",
-            "fallback_used",
-            "temporary_model_substitution",
-            "prediction_engine",
-            "input_window_source",
-            "output_source",
-            "dataset_playback_enabled",
-            "active_registry_model_id",
-            "generated_at",
-            "stale_model",
-            "active_model_mismatch",
-            "current_active_model_id",
-            "artifact_model_id",
-        )
-        provenance = {key: result.execution_metadata.get(key) for key in provenance_keys}
+        provenance = {key: result.execution_metadata.get(key) for key in FORECAST_PROVENANCE_KEYS}
         if any(value is not None for value in provenance.values()):
             payload["provenance"] = provenance
         if result.forecast.concentration_sequence is not None:

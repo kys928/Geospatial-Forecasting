@@ -7,6 +7,7 @@ from dataclasses import replace
 import numpy as np
 
 from plume.services.explanation_payloads import build_explanation_payload
+from plume.services.provenance import FORECAST_PROVENANCE_KEYS
 from plume.api.schemas import ObservationIngestRequest, SessionCreateRequest, SessionPredictionRequest
 
 
@@ -225,7 +226,7 @@ def register_session_routes(
             "frame_indices": indices,
             "default_frame_index": 0,
             "shape": shape,
-            "metadata": {**(result.forecast.metadata if isinstance(result.forecast.metadata, dict) else {}), "provenance": {key: result.execution_metadata.get(key) for key in ("forecast_source", "model_id", "model_family", "model_backend", "checkpoint_path", "inference_mode", "fallback_used", "temporary_model_substitution", "prediction_engine", "input_window_source", "output_source", "dataset_playback_enabled", "active_registry_model_id", "generated_at", "fallback_reason", "input_source", "stale_model", "active_model_mismatch", "current_active_model_id", "artifact_model_id")}},
+            "metadata": {**(result.forecast.metadata if isinstance(result.forecast.metadata, dict) else {}), "provenance": {key: result.execution_metadata.get(key) for key in FORECAST_PROVENANCE_KEYS}},
         }
 
     @app.get("/sessions/{session_id}/forecast/latest/frames/{frame_index}/summary")
@@ -272,7 +273,7 @@ def register_session_routes(
                 "model": frame_result.model_name,
                 "model_version": frame_result.model_version,
                 "georeferencing_note": raster_metadata.get("georeferencing_note"),
-                "provenance": {key: frame_result.execution_metadata.get(key) for key in ("forecast_source", "model_id", "model_family", "model_backend", "checkpoint_path", "inference_mode", "fallback_used", "temporary_model_substitution", "prediction_engine", "input_window_source", "output_source", "dataset_playback_enabled", "active_registry_model_id", "generated_at", "fallback_reason", "input_source", "stale_model", "active_model_mismatch", "current_active_model_id", "artifact_model_id")},
+                "provenance": {key: frame_result.execution_metadata.get(key) for key in FORECAST_PROVENANCE_KEYS},
             },
         }
 
