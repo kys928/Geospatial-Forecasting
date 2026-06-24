@@ -1,569 +1,385 @@
 # Geospatial Forecasting
 
-## Overview
-Geospatial Forecasting is an early proof-of-concept Python project for airborne hazard dispersion forecasting. The system supports both:
-
-- **Batch one-off forecasting** (Gaussian plume baseline), and
-- **Online backend session workflows** (runtime/session/state skeleton).
-
-This is **not** a production atmospheric dispersion platform, and real online learning is **not** implemented yet.
-
-## Current architecture
-
-Current deployment shape is a **modular monolith + worker boundary**:
-
-- **Control/API layer (`src/plume/api`)**: one FastAPI app exposing batch, sessions, service/runtime status, and ops routes.
-- **Runtime boundary (`src/plume/runtime`)**: `ForecastRuntimeClient` protocol with `LocalForecastRuntimeClient` implementation. Local runtime delegates to existing `ForecastService` (batch) and `OnlineForecastService` (session workflows).
-- **Forecast artifact boundary**: batch forecast artifacts are durably written to `artifacts/forecasts/<forecast_id>/...` and can be listed/retrieved by API.
-- **Retraining worker boundary (`src/plume/workers/retraining_worker.py`)**: API submits jobs; a dedicated worker process claims/executes jobs. Shared boundary is job store + model registry + operational state + event log.
-- **OpenRemote boundary (`src/plume/openremote`)**: optional/provisional service registration and HTTP publishing components; disabled by default and not live-validated as an OpenRemote schema contract.
-- **Frontend workspaces (`frontend/src/pages`)**: React pages for Map / Forecast (`/forecast`), Forecast Overview / AI Decision Support (`/decision-support`), and Workspace / Ops status (`/ops`).
-- **Internal session tooling (`/sessions`)**: routable developer-focused runtime/session infrastructure inspection page; available but not part of the normal operator workflow.
-
-## What is implemented now
-
-### Batch forecast baseline
-- Scenario + grid schema loading from YAML configs
-- Input validation and grid construction
-- Gaussian plume concentration grid generation
-- Forecast summary statistics (`max_concentration`, `mean_concentration`)
-
-### Runtime/session workflows
-- Runtime client boundary (`ForecastRuntimeClient`) and local implementation (`LocalForecastRuntimeClient`)
-- Session/state schemas (`BackendSession`, `BackendState`, observation/prediction/update schemas)
-- Default in-memory session store (`InMemoryStateStore`) with process-lifetime behavior
-- Optional local CSV session store (`CsvStateStore`) for app-owned session metadata/state recovery
-- Online orchestration (`OnlineForecastService`) for session create/ingest/update/predict
-- ConvLSTM online backend with Gaussian fallback path
-
-### Session lifecycle semantics
-Session statuses are explicit and lightweight:
-- `created` on session creation
-- `active` after observation ingest
-- `updated` after explicit/update-on-ingest update
-- `predicting` during prediction
-- `idle` after successful prediction
-- `error` if prediction fails
-
-### Observation validation and normalization
-`ObservationService` enforces a clean ingestion boundary:
-- timestamp required and ISO-8601 parseable
-- latitude in `[-90, 90]`
-- longitude in `[-180, 180]`
-- value numeric, non-NaN, non-negative
-- `source_type` required non-empty string
-- optional `pollutant_type` normalized to lowercase
-- `metadata` normalized to `{}`
-- batch observations sorted by timestamp ascending
-
-### API surface
-Existing batch endpoints remain:
-- `GET /health`
-- `GET /capabilities`
-- `POST /forecast`
-- `GET /forecasts?limit=50`
-- `GET /forecast/{forecast_id}`
-- `GET /forecast/{forecast_id}/summary`
-- `GET /forecast/{forecast_id}/geojson`
-- `GET /forecast/{forecast_id}/raster-metadata`
-- `POST /ops/retraining/trigger` (submits retraining jobs)
-- `GET /ops/retraining/recommendation` (returns structured recommendation from policy/job/registry/event state only; no synthetic drift/performance metrics)
-
-
-### Async batch forecast jobs
-
-`POST /forecast` remains synchronous and executes forecast creation inline.
-
-For asynchronous control/execution separation, use:
-- `POST /forecast/jobs` to enqueue a batch forecast request
-- `GET /forecast/jobs` and `GET /forecast/jobs/{job_id}` to track status
-
-A forecast worker process claims queued jobs and executes normal batch forecast logic, then writes standard durable forecast artifacts under the configured artifact root. This boundary prepares future decoupling without introducing a broker, a second HTTP service, or model behavior changes.
-
-Run one worker cycle locally:
-
-```bash
-python scripts/run_forecast_worker.py
-```
-
-Unified worker runner (control vs execution mode boundary):
-
-```bash
-python -m plume.workers.run --kind forecast
-python -m plume.workers.run --kind retraining
-python -m plume.workers.run --kind all
-```
-
-See `docs/service_modes.md` for service mode guidance.
-See `docs/optional_features_audit.md` for a compact optional/provisional feature audit.
-See `docs/adaptation_operational_runbook.md` for adaptation loop smoke-test and operator verification guidance.
-
-Manual robust ConvLSTM three-stage adaptation smoke runner:
-
-```bash
-python scripts/train_three_stage_adaptation.py \
-  --reference-dataset-dir /path/to/reference_subset \
-  --buffer-root /path/to/adaptation_buffer \
-  --output-dir /path/to/run_output \
-  --resume-checkpoint /path/to/robust_checkpoint.pt \
-  --resume-mode model_only \
-  --start-stage stage3 \
-  --device cuda
-```
+Geospatial Forecasting is a hazardous plume forecasting application with a Python/FastAPI backend, a React dashboard, ConvLSTM-oriented forecast support, dataset playback, local explanation support, and model-operations tooling.
 
-The script is manual only: it builds a dataset manifest from CLI-provided reference and/or adaptation-buffer paths, optionally performs model-only resume, and writes run artifacts under the selected output directory. Use `--dry-run` to write `dataset_manifest_preview.json` without starting training.
+The README is the project landing page and practical runbook. Deeper system notes, runtime details, model-mode guidance, and OpenRemote integration planning live in the documents under [`Documentation/`](Documentation/).
 
-Safe dev/ops adaptation-buffer seeding from a discovered full windows dataset is available for validating readiness checks without OpenRemote polling or training side effects. It defaults to dry-run; pass `--execute` to write accepted train/validation samples through the existing buffer service format:
+## What this project is
 
-```bash
-python scripts/seed_adaptation_buffer_from_windows.py \
-  --repo-root /workspace/Geospatial-Forecasting \
-  --source-dataset-dir /workspace/Dataset/hysplit-plume-convlstm-multiyear-2024-2026 \
-  --buffer-root /workspace/Geospatial-Forecasting/artifacts/adaptation/buffer \
-  --count 64 \
-  --frame-interval-minutes 60 \
-  --fresh-window-ending-now \
-  --dry-run
-```
+This project is a geospatial plume forecasting application for exploring forecast outputs, runtime state, and decision-support context.
 
-Use `--fresh-window-ending-now` to simulate live inflow by spacing selected windows backward so the final seeded `window_end` is near current UTC time. Use `--start-time 2026-06-01T00:00:00Z` instead when you need a fixed historical window; `--start-time` and `--fresh-window-ending-now` are mutually exclusive.
+At a high level, it provides:
 
-The adaptation smoke script can include this seed step with `--seed-buffer-from-reference`; it remains non-mutating unless `--execute-seed` is supplied.
+- a backend API for forecasts, forecast artifacts, sessions, runtime status, and operations workflows;
+- a frontend dashboard for map-based plume viewing, forecast panels, runtime information, and model operations views;
+- ConvLSTM model-backed forecasting direction and checkpoint-based runtime configuration;
+- dataset playback for demos, development, and validation against prepared scenarios;
+- local LLM explanation support for explaining existing forecast context;
+- training, retraining, registry, and provenance support for controlled model operations;
+- an OpenRemote integration direction through optional service registration, heartbeat, and OpenRemote-facing publishing behavior.
 
-Online endpoints:
-- `POST /sessions`
-- `GET /sessions`
-- `GET /sessions/{session_id}`
-- `GET /sessions/{session_id}/state`
-- `POST /sessions/{session_id}/observations`
-- `POST /sessions/{session_id}/update`
-- `POST /sessions/{session_id}/predict`
+Keep the distinction clear: the application manages and presents forecast workflows, but forecast provenance depends on the configured runtime mode and available assets.
 
-## Production / OpenRemote-friendly startup
+## What this project is not
 
-RunPod is only one deployment shape for this proof of concept. OpenRemote/API integration does not need the RunPod two-port dev stack or the Vite development server; it can call the FastAPI API/service URL directly. API-only mode is the safest OpenRemote integration mode, and optional frontend serving is disabled by default.
+This repository is not:
 
-Backend-only production/OpenRemote-friendly startup:
+- a production emergency-response platform;
+- a validated live OpenRemote deployment by itself;
+- a claim that the local LLM creates plume forecasts;
+- a replacement for real sensor validation, operational procedures, incident command, or domain-specific safety review;
+- proof that every runtime path is available without the required model, dataset, CUDA, and environment configuration.
 
-```bash
-python scripts/run_app_service.py
-```
+## Documentation map
 
-`scripts/run_app_service.py` starts only the FastAPI app with uvicorn. It reads `PLUME_APP_HOST` (default `0.0.0.0`) and `PLUME_APP_PORT` (default `8000`), and also accepts `--host`, `--port`, and `--reload`. Real production deployments should still run this process under a process manager, container, or supervisor appropriate for the environment.
+The README intentionally stays practical. Use these documents for the fuller explanations:
 
-Optional single-port frontend mode serves an already built frontend from the same FastAPI process under `/app`:
+- [`Documentation/system_overview.md`](Documentation/system_overview.md) — high-level project and system overview.
+- [`Documentation/openremote_integration_proposal.md`](Documentation/openremote_integration_proposal.md) — OpenRemote integration direction, service registration, heartbeat, publishing, and validation scope.
+- [`Documentation/model_modes_training_and_provenance.md`](Documentation/model_modes_training_and_provenance.md) — model modes, fallback behavior, dataset playback, provenance, registry, training, and adaptation guidance.
+- [`Documentation/runtime_setup_and_configuration.md`](Documentation/runtime_setup_and_configuration.md) — runtime setup, asset handling, environment variables, and startup commands.
 
-```bash
-cd frontend && npm run build
-export PLUME_SERVE_FRONTEND=true
-export PLUME_FRONTEND_DIST_DIR="$PLUME_REPO_DIR/frontend/dist"
-python scripts/run_app_service.py
-```
+## Repository contents
 
-When `PLUME_SERVE_FRONTEND=true`, FastAPI serves built assets only if the configured dist directory exists and contains `index.html`; missing frontend assets log a warning and do not stop the API. The built UI is available at `http://localhost:8000/app` or `http://localhost:8000/app/forecast`, and built assets are served from `/app/assets`. API routes remain at their existing paths, such as `/forecast`, `/decision-support`, `/sessions`, `/ops`, `/runtime/status`, and `/openapi.json`; they are not moved under `/api` and are not shadowed by the frontend fallback. Backend-only mode remains the safest OpenRemote/API mode.
+- `src/plume/` — backend package for API routes, forecasting services, runtime helpers, OpenRemote support, model operations, and workers.
+- `frontend/` — React/Vite dashboard.
+- `scripts/` — setup, service launchers, workers, demos, smoke checks, and utility scripts.
+- `configs/` — backend, model, training, OpenRemote, and scenario configuration files.
+- `tests/` — backend and workflow tests.
+- `Documentation/` — project runbooks and explanatory documentation.
+- `artifacts/` — generated forecasts, model-operation state, downloaded/runtime-linked assets, and local outputs when configured.
 
-Existing convenience launchers remain available for their original workflows:
+## Requirements
 
-```bash
-# Generic app-stack convenience orchestration for RunPod or portable deployments
-python scripts/run_stack.py ...
+- Python 3.11 or newer.
+- Node.js and npm for the frontend dashboard.
+- CUDA-capable GPU recommended for the full ConvLSTM and local LLM runtime paths.
+- A CPU-only or simple development install can run some API, utility, and test paths, but full model-backed runtime behavior is intended for configured assets and suitable hardware.
+- Runtime assets are prepared through `scripts/setup_runtime.sh` and `scripts/bootstrap_runtime_assets.py`.
 
-# Local development two-process workflow
-python scripts/run_local_stack.py
-```
+## Installation for development
 
-Use `scripts/run_stack.py` for generic app-stack convenience on RunPod or portable deployments, `scripts/run_local_stack.py` for local development, and `scripts/run_app_service.py` for the generic production/OpenRemote-friendly FastAPI process.
-
-## Config
-Backend/session behavior is configured in `configs/backend.yaml`:
-
-- `default_backend`
-- `fallback_backend`
-- `state_store`
-- `max_recent_observations`
-- `auto_update_on_ingest`
-- `convlstm_prediction_engine` (`convlstm` default, optional temporary `ridge_baseline`)
-- `convlstm_ridge_model_path` (default `artifacts/models/ridge_plume_baseline.pkl`)
-
-Note: `convlstm_online` can temporarily run a Ridge plume baseline prediction engine via `convlstm_prediction_engine: ridge_baseline` while preserving the same API/session flow. This is not the final production ConvLSTM model.
-
-OpenRemote integration is service-registration-focused. Configure via environment variables documented below; `configs/openremote.yaml` is a lightweight reference only.
-
-### Persisted forecast artifacts
-
-Forecast artifacts are persisted on disk at:
-
-- default root: `artifacts/`
-- forecast folders: `artifacts/forecasts/<forecast_id>/`
-- files per forecast: `summary.json`, `geojson.json`, `raster_metadata.json`, `metadata.json`
-- optional file per forecast: `explanation.json` (only when explicitly enabled)
-
-Override the artifact root with:
-
-```bash
-export PLUME_ARTIFACT_DIR=/path/to/artifacts
-```
-
-Use `GET /forecasts?limit=50` to list persisted forecast metadata (newest first).
-
-Batch explanation persistence is **opt-in** and disabled by default:
-
-```bash
-export PLUME_PERSIST_BATCH_EXPLANATION=false
-export PLUME_PERSIST_BATCH_EXPLANATION_USE_LLM=false
-```
-
-When `PLUME_PERSIST_BATCH_EXPLANATION=true`, `POST /forecast` will generate an explanation payload and persist it as `explanation.json` alongside other artifacts. `GET /forecast/{forecast_id}/explanation` serves this persisted artifact when available.
-
-If `explanation.json` is missing (for older forecasts or when persistence is disabled), the explanation endpoint returns the honest HTTP `409 Conflict` limitation that persisted artifact reconstruction is not implemented.
-
-
-LLM decision-support configuration (local GGUF via `llama-cpp-python`, in-process):
-
-```bash
-# Safe dev default (no local LLM required):
-export PLUME_EXPLANATION_BACKEND=stub
-
-# Optional local LLM mode:
-export PLUME_EXPLANATION_BACKEND=llm
-export PLUME_LLM_PROVIDER=local-gguf
-export PLUME_LOCAL_LLM_GGUF_PATH="/workspace/llm_runtime/models/Qwen_Qwen2.5-7B-Instruct.Q4_K_M.gguf"
-export PLUME_LOCAL_LLM_N_GPU_LAYERS=-1
-export PLUME_LOCAL_LLM_N_CTX=4096
-```
-
-Notes:
-- `HF_TOKEN` is not required when `PLUME_LLM_PROVIDER=local-gguf`.
-- Keep GGUF model artifacts outside this repository.
-- `llama-cli` can still be used for one-off smoke tests, but app runtime inference is in-process via `llama-cpp-python`.
-- RunPod CUDA install command for local provider:
-  `CMAKE_ARGS="-DGGML_CUDA=on" FORCE_CMAKE=1 python -m pip install --force-reinstall --no-cache-dir llama-cpp-python`
-
-
-### OpenRemote external service registration
-
-External service registration is **optional** and **disabled by default**. This lifecycle only registers this FastAPI/React service with OpenRemote and maintains heartbeat/deregistration; it does **not** publish plume assets.
-
-Environment variables:
-- `PLUME_OPENREMOTE_SERVICE_REGISTRATION_ENABLED` (default `false`)
-- `PLUME_OPENREMOTE_MANAGER_API_URL` (full Manager API base for target realm, e.g. `https://host/api/master`)
-- `PLUME_OPENREMOTE_SERVICE_ID` (default `geospatial-plume-forecast`)
-- `PLUME_OPENREMOTE_SERVICE_LABEL` (default `Geospatial Plume Forecast`)
-- `PLUME_OPENREMOTE_SERVICE_VERSION` (default `0.1.0`)
-- `PLUME_OPENREMOTE_SERVICE_ICON` (default `mdi-map-marker-radius`)
-- `PLUME_OPENREMOTE_SERVICE_HOMEPAGE_URL` (UI/frontend URL for Manager embedding)
-- `PLUME_OPENREMOTE_SERVICE_GLOBAL` (default `false`)
-- `PLUME_OPENREMOTE_SERVICE_HEARTBEAT_SECONDS` (default `30`)
-- `PLUME_OPENREMOTE_SERVICE_TOKEN` (bearer token for Service User with `write:services`)
-
-Notes:
-- Global service registration requires using the master realm API base and a super-user-capable service user.
-- Service registration lifecycle is implemented in the FastAPI lifespan startup/shutdown flow.
-### OpenRemote DB/schema note
-
-- OpenRemote uses PostgreSQL internally for Manager storage.
-- This project does **not** copy or mirror the OpenRemote database.
-- Integration should continue through OpenRemote APIs/service registration only.
-- Direct forecast asset/attribute publishing was removed from the main runtime path because the contract was provisional and not validated against a live OpenRemote deployment.
-- If local durable sessions are implemented, they should use this app's own CSV/JSON contract.
-- See `docs/openremote_schema_mapping.md` for mapping notes and the proposed local CSV session-store contract.
-
-## Runtime setup
-
-The setup flow resolves paths from environment variables so the same script can run on RunPod or a portable local machine. By default, the setup script detects the repository root and places large runtime assets next to the repository under the repo parent directory. On RunPod, a clone at `/workspace/Geospatial-Forecasting` naturally resolves the runtime root to `/workspace`.
-
-- `PLUME_REPO_DIR` defaults to the detected repository root.
-- `PLUME_RUNTIME_ROOT` defaults to the parent directory of `PLUME_REPO_DIR`.
-- `PLUME_DATASET_ROOT` defaults to `$PLUME_RUNTIME_ROOT/Dataset`.
-- `PLUME_LLM_RUNTIME_ROOT` defaults to `$PLUME_RUNTIME_ROOT/llm_runtime`.
-- `PLUME_RUNTIME_ENV_FILE` defaults to `$PLUME_RUNTIME_ROOT/geospatial_runtime_env.sh`.
-- Operators can override all paths with `PLUME_RUNTIME_ROOT`, `PLUME_REPO_DIR`, `PLUME_FULL_DATASET_PATH`, `PLUME_LOCAL_LLM_GGUF_PATH`, and `PLUME_CONVLSTM_CHECKPOINT_PATH`.
-
-The runtime setup script installs OS, Python, and frontend dependencies, then runs `scripts/bootstrap_runtime_assets.py` before validating local model assets and optional dataset assets. Fresh setup downloads required model assets from the public Hugging Face runtime asset repo by default: `DavidDulovic/geospatial-plume-runtime-assets`. The default model assets are the Qwen GGUF file (`models/Qwen_Qwen2.5-7B-Instruct.Q4_K_M.gguf`) and the ConvLSTM tiny recall lift final checkpoint (`models/convlstm_multistep_three_stage_robust_v3c_tiny_recall_lift/final_full_checkpoint.pt`). Runtime uses local files after setup.
-
-The Kaggle dataset is large, optional, and **not downloaded by default**. Dataset playback/demo features need the dataset, but the model/API setup can still validate without downloading it. When the dataset is unavailable and `PLUME_SETUP_REQUIRE_DATASET=false`, generated runtime env sets `PLUME_DATASET_SCENARIO_MODE=disabled` so the app does not pretend dataset playback is available.
-
-Asset download is controlled by setup-time environment variables:
-
-- `PLUME_SETUP_DOWNLOAD_ASSETS` defaults to `true` and is the global master switch. Set it to `false` to disable model and dataset downloads.
-- `PLUME_SETUP_OFFLINE` defaults to `false`; set it to `true` to skip all network downloads and validate/report local assets only.
-- `PLUME_SETUP_DOWNLOAD_MODEL_ASSETS` defaults to `true`; when enabled, missing or invalid GGUF and ConvLSTM checkpoint files are downloaded from Hugging Face.
-- `PLUME_SETUP_DOWNLOAD_DATASET` defaults to `false`; when enabled, Kaggle download/materialization is allowed only if `PLUME_KAGGLE_DATASET_SLUG` is set by the operator.
-- `PLUME_SETUP_REQUIRE_DATASET` defaults to `false`; when enabled, setup fails if the dataset is missing or invalid.
-- `PLUME_SETUP_FORCE_DOWNLOAD` defaults to `false`; set to `true` to redownload enabled assets even when files already exist.
-- `PLUME_KAGGLE_MATERIALIZE_MODE` defaults to `copy`; use `move` for an empty/missing target to avoid duplicate dataset storage, or `symlink` when the target path does not already exist.
-- `PLUME_LLM_SHA256_EXPECTED` defaults to the current GGUF hash used by setup validation; set it to a different hash for another GGUF, or set it to an empty string to disable GGUF SHA validation.
-- `PLUME_CONVLSTM_SHA256_EXPECTED` defaults to the tiny recall lift checkpoint hash; set it to a different hash for another checkpoint, or set it to an empty string to disable ConvLSTM SHA validation.
-
-Opt into the large Kaggle dataset download only when needed:
-
-```bash
-export PLUME_SETUP_DOWNLOAD_DATASET=true
-export PLUME_KAGGLE_DATASET_SLUG="owner/dataset"
-```
-
-Require the dataset for setup:
-
-```bash
-export PLUME_SETUP_REQUIRE_DATASET=true
-```
-
-Disable all downloads:
-
-```bash
-export PLUME_SETUP_DOWNLOAD_ASSETS=false
-```
-
-Override model asset sources if needed:
-
-```bash
-export PLUME_LLM_HF_REPO_ID="DavidDulovic/geospatial-plume-runtime-assets"
-export PLUME_LLM_HF_FILENAME="models/Qwen_Qwen2.5-7B-Instruct.Q4_K_M.gguf"
-export PLUME_CONVLSTM_HF_REPO_ID="DavidDulovic/geospatial-plume-runtime-assets"
-export PLUME_CONVLSTM_HF_FILENAME="models/convlstm_multistep_three_stage_robust_v3c_tiny_recall_lift/final_full_checkpoint.pt"
-```
-
-Secrets are setup-time only and must not be committed. `HF_TOKEN` or `HUGGINGFACEHUB_API_TOKEN` may be used for private Hugging Face assets, and `KAGGLE_USERNAME` / `KAGGLE_KEY` may be used for explicit Kaggle authentication. The generated runtime env file intentionally does not export `HF_TOKEN`, `HUGGINGFACEHUB_API_TOKEN`, `KAGGLE_USERNAME`, or `KAGGLE_KEY`.
-
-RunPod example using the runtime setup script (models download by default; dataset remains disabled unless opted in):
-
-```bash
-# Optional for private overridden Hugging Face assets only:
-# export HF_TOKEN="..."
-# Optional large dataset download:
-# export PLUME_SETUP_DOWNLOAD_DATASET=true
-# export PLUME_KAGGLE_DATASET_SLUG="<kaggle-owner>/<dataset-name>"
-bash /workspace/Geospatial-Forecasting/scripts/setup_runtime.sh
-```
-
-Portable/local example:
-
-```bash
-export PLUME_RUNTIME_ROOT="$HOME/geospatial-runtime"
-export PLUME_REPO_DIR="$HOME/projects/Geospatial-Forecasting"
-# Optional large dataset download:
-# export PLUME_SETUP_DOWNLOAD_DATASET=true
-# export PLUME_KAGGLE_DATASET_SLUG="<kaggle-owner>/<dataset-name>"
-bash "$PLUME_REPO_DIR/scripts/setup_runtime.sh"
-```
-
-The runtime setup script prepares dependencies, validates dataset, GGUF, and ConvLSTM checkpoint artifacts, writes the resolved runtime env file, and does **not** start API/frontend/worker processes.
-
-## Launch app stack
-
-After runtime setup completes, launch the generic app stack when you are ready to start API, worker, and frontend processes. The same launcher can be used for RunPod proxy deployments or portable/local runtime roots. For RunPod browser access, pass externally accessible proxy URLs:
-
-```bash
-cd "$PLUME_REPO_DIR"
-python scripts/run_stack.py --api-base-url "<RunPod 8000 proxy URL>" --frontend-origin "<RunPod 5173 proxy URL>"
-```
-
-## Installation
-Use Python 3.11.
+The preferred development path is an editable install from `pyproject.toml`:
 
 ```bash
 python -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip
 pip install -e .
-# for tests/dev extras
 pip install -e ".[test]"
 ```
 
-`requirements.txt` is kept as a compatibility/convenience mirror for environments that still use
-`pip install -r requirements.txt`; editable install via `pyproject.toml` is the recommended path.
-
-## Run local script paths
+`requirements.txt` is kept as a compatibility/convenience requirements file for scripts or environments that expect one. Use it when you need a requirements-file install instead of the editable development workflow:
 
 ```bash
-python scripts/run_local_inference.py
-python scripts/run_demo_forecast.py
-python scripts/export_geojson.py
-python scripts/seed_demo_data.py
+pip install -r requirements.txt
 ```
 
-## Run API only
+For frontend work:
+
+```bash
+cd frontend
+npm install
+```
+
+## Runtime asset setup
+
+Export the runtime asset configuration before running the setup script:
+
+```bash
+export PLUME_LLM_HF_REPO_ID="DavidDulovic/geospatial-plume-runtime-assets"
+export PLUME_LLM_HF_FILENAME="models/Qwen_Qwen2.5-7B-Instruct.Q4_K_M.gguf"
+export PLUME_LLM_SHA256_EXPECTED="11e1c92aa0175db460399af847179825301a1a91a31da01cae12a2386fcbf3a1"
+
+export PLUME_CONVLSTM_HF_REPO_ID="DavidDulovic/geospatial-plume-runtime-assets"
+export PLUME_CONVLSTM_HF_FILENAME="models/convlstm_multistep_three_stage_robust_v3c_tiny_recall_lift/final_full_checkpoint.pt"
+export PLUME_CONVLSTM_SHA256_EXPECTED="3697c237f2f86de58cc313f822e7d998c975267ff4d221a481a46a4b92e5f748"
+
+export PLUME_SETUP_DOWNLOAD_ASSETS="true"
+export PLUME_SETUP_DOWNLOAD_MODEL_ASSETS="true"
+export PLUME_SETUP_DOWNLOAD_DATASET="false"
+```
+
+Then run setup and source the generated environment file:
+
+```bash
+bash scripts/setup_runtime.sh
+source <runtime-root>/geospatial_runtime_env.sh
+```
+
+Notes:
+
+- Model assets download when asset downloads and model-asset downloads are enabled.
+- Dataset download is separate and disabled by default.
+- Dataset playback requires a dataset path or downloaded dataset assets.
+- Set `PLUME_SETUP_DOWNLOAD_DATASET=true` and `PLUME_KAGGLE_DATASET_SLUG=...` only when Kaggle dataset download is needed.
+- Set `PLUME_SETUP_REQUIRE_DATASET=true` when setup should fail if no dataset is available.
+- The runtime root is portable; it does not have to be `/workspace`.
+
+See [`Documentation/runtime_setup_and_configuration.md`](Documentation/runtime_setup_and_configuration.md) for the full runtime setup guide.
+
+## Run commands
+
+### Backend API only
+
+Run the control service wrapper:
 
 ```bash
 python scripts/run_control_service.py
 ```
 
-Equivalent direct command:
+Or run uvicorn directly:
 
 ```bash
 python -m uvicorn plume.api.main:app --host 0.0.0.0 --port 8000
 ```
 
-
-## Run two local process modes
-
-Terminal 1 (control service):
+The generic app service wrapper starts the same FastAPI app with `PLUME_APP_HOST` / `PLUME_APP_PORT` defaults and is the cleaner production/OpenRemote-friendly entrypoint:
 
 ```bash
-python scripts/run_control_service.py
+python scripts/run_app_service.py
 ```
 
-Terminal 2 (execution worker):
+### Frontend only
+
+Point the frontend at the backend API, then start Vite:
 
 ```bash
-python scripts/run_execution_worker.py --kind all
+export VITE_API_BASE_URL="http://localhost:8000"
+cd frontend
+npm install
+npm run dev
 ```
 
-Notes:
-- This remains one repo with two process modes (control and execution), not a production deployment split.
-- No broker or SQL/SQLite database is required.
-- Shared state is coordinated through configured local files (artifact/job/state paths).
-- Worker execution is one-shot by default; rerun it as needed or add external supervision later.
-- Existing specific worker scripts remain available (`scripts/run_forecast_worker.py`, `scripts/run_retraining_worker.py`).
+### Full stack
 
-## Run full local dev stack (control + worker + frontend)
+`scripts/run_stack.py` can start the API, optional worker, and optional frontend together:
 
-From repo root:
+```bash
+python scripts/run_stack.py \
+  --api-base-url "http://localhost:8000" \
+  --frontend-origin "http://localhost:5173"
+```
+
+Supported stack options include:
+
+```bash
+python scripts/run_stack.py --no-worker
+python scripts/run_stack.py --no-frontend
+python scripts/run_stack.py --no-api
+python scripts/run_stack.py --worker-kind forecast
+python scripts/run_stack.py --worker-kind retraining
+python scripts/run_stack.py --worker-kind all
+```
+
+### Local developer stack
+
+For a local control-service, worker, and frontend workflow:
 
 ```bash
 python scripts/run_local_stack.py
 ```
 
-Optional modes:
-
-```bash
-python scripts/run_local_stack.py --no-worker
-python scripts/run_local_stack.py --no-frontend
-```
-
-Notes:
-- This launcher is for local developer convenience only, not production orchestration.
-- For production/deployment, run services under a real process manager or container setup.
-- Press `Ctrl+C` to stop all child processes started by this launcher.
-
-## Run backend + frontend (one command)
-
-From repo root:
+For a bootstrap-oriented local backend/frontend starter:
 
 ```bash
 python scripts/start_dev.py
 ```
 
-This launches:
-- backend: `python -m uvicorn plume.api.main:app --reload --host 0.0.0.0 --port 8000`
-- frontend: `npm run dev -- --host 0.0.0.0 --port 5173` in `frontend/`
+Useful `start_dev.py` options include `--install`, `--skip-install`, `--backend-only`, `--with-worker`, `--preload-models`, and `--skip-frontend`.
 
-`start_dev.py` now performs bootstrap checks before launch:
-- Python dependency checks (and optional install behavior)
-- Frontend dependency checks (`node_modules`) when frontend startup is enabled
-- `PYTHONPATH` wiring for `src/`
-- Optional retraining worker startup (`--with-worker`)
-- Optional Hugging Face preload when configured
+### Workers
 
-Useful flags:
-- `--install` / `--skip-install`
-- `--backend-only` / `--skip-frontend`
-- `--with-worker`
-- `--preload-models`
-
-
-Frontend API base URL is environment-driven:
+Workers are optional process modes for queued forecast and retraining work:
 
 ```bash
-# frontend/.env (or shell env before npm run dev)
-VITE_API_BASE_URL=http://<pod-backend-url>
+python scripts/run_execution_worker.py --kind forecast
+python scripts/run_execution_worker.py --kind retraining
+python scripts/run_execution_worker.py --kind all
 ```
 
-If `VITE_API_BASE_URL` is unset, the frontend falls back to `http://localhost:8000` for local development.
-For remote pod usage, do not rely on browser `localhost` unless you are explicitly port-forwarding backend port `8000`.
-
-
-Frontend workspace routes now align to the current operator workflow:
-- `/forecast`: Map / Forecast main operator entrypoint
-- `/decision-support`: Forecast Overview / AI Decision Support for explanation and forecast interpretation
-- `/ops`: Workspace / operations status (retraining, registry, event/audit, and system visibility)
-
-Internal/developer tooling route:
-- `/sessions`: developer session infrastructure tooling for inspecting runtime session behavior; it remains routable but is not part of the normal operator flow
-
-Ops read and write actions may require bearer-token auth depending on backend auth settings.
-By default, backend ops auth also requires auth for reads, so `VITE_OPS_API_TOKEN` may be needed to load ops pages as well as perform write actions.
+Specific one-shot worker scripts are also present:
 
 ```bash
-# frontend/.env
-VITE_OPS_API_TOKEN=<token-with-ops-operator-access>
+python scripts/run_forecast_worker.py
+python scripts/run_retraining_worker.py
 ```
 
-Hugging Face preload env (used when `--preload-models` is passed or `PLUME_PRELOAD_HF_MODELS=true`):
-- `PLUME_HF_LLM_REPO_ID` (required when preload enabled)
-- `PLUME_HF_LLM_REVISION` (optional)
-- `PLUME_HF_LLM_LOCAL_DIR` (optional)
+### Batch, demo, and smoke scripts
 
-## Ops retraining worker
-
-Ops retraining triggers now queue jobs and return immediately. A local worker process executes queued jobs.
-
-Retraining worker boundary:
-- API submits retraining jobs and reports status.
-- Worker claims queued jobs and owns execution (training + candidate registration).
-- Job store, model registry, and ops event log are the shared boundary.
-- This remains a single-repo deployment with an optional worker process (not a brokered microservice split).
-
-## OpenRemote status (honest current state)
-
-- External service registration exists and is **disabled by default**.
-- Forecast attribute publishing exists and is **disabled by default**.
-- Runtime sink modes are `disabled` or `http`; fake sink usage is test-only.
-- `forecastGeoJson` publishing uses exported forecast GeoJSON payloads from the forecast result.
-- HTTP mode is still provisional until validated against the target OpenRemote deployment.
-- This repository does **not** claim a live-validated OpenRemote contract yet.
-
-## Not implemented yet (important limits)
-
-- No separate deployed inference HTTP service (runtime boundary is internal today).
-- No broker/queue infrastructure (worker uses shared stores and local dispatch).
-- Durable sessions are opt-in via CSV (`state_store: csv` or `PLUME_STATE_STORE=csv`) and remain local app-owned persistence only.
-- Explanation artifacts are opt-in; forecasts created without `PLUME_PERSIST_BATCH_EXPLANATION=true` or older persisted forecasts may not have `explanation.json`, and live reconstruction from persisted artifacts is not implemented.
-- No automatic OpenRemote asset creation/discovery workflow.
-- No live OpenRemote validation in this repo.
-- ConvLSTM should not be treated as a proven production default unless a real trained checkpoint/registry model is configured.
-
-## Service-boundary roadmap (concise)
-
-- **Current**: single FastAPI control/runtime service with modular boundaries + dedicated retraining worker boundary.
-- **Inference direction**: `ForecastRuntimeClient` is the seam for future optional remote inference service integration.
-- **Training direction**: worker already owns retraining execution boundary.
-- **Not claimed**: this is not yet two independently deployed services.
-
-- API trigger endpoint: `POST /ops/retraining/trigger`
-- Auto-dispatch on trigger: enabled by default via `PLUME_OPS_AUTO_DISPATCH_WORKER=true`
-- Manual worker entrypoint:
+Useful utility scripts currently include:
 
 ```bash
-PYTHONPATH=src python scripts/run_retraining_worker.py
+python scripts/run_demo_forecast.py
+python scripts/export_geojson.py
+python scripts/run_local_inference.py
+python scripts/smoke_adaptation_loop.py
+bash scripts/smoke_map_frame_api.sh
+python scripts/smoke_torch_multistep_convlstm_dataset_window.py
 ```
 
-Useful worker flags:
-- `--jobs-path <path>`: override retraining job store location
-- `--config-dir <path>`: override config directory containing `convlstm_training.yaml`
+Some scripts require runtime assets, dataset files, a running API, or model checkpoints. Check script arguments with `--help` before using them in a new environment.
 
-Ops metadata persistence can use a single SQLite file by setting:
+## Environment variables
 
-```bash
-export PLUME_OPS_DB_PATH=artifacts/convlstm_ops/ops.sqlite3
-```
+The full environment reference is in [`Documentation/runtime_setup_and_configuration.md`](Documentation/runtime_setup_and_configuration.md). The most important variables are:
 
-When `PLUME_OPS_DB_PATH` is set, ops state/registry/jobs/events read and write through SQLite-backed stores. Existing JSON artifacts remain supported when this env var is unset.
+- `PLUME_RUNTIME_ROOT` — base directory for runtime assets and generated environment files.
+- `PLUME_REPO_DIR` — repository directory used by setup/runtime scripts.
+- `PLUME_FULL_DATASET_PATH` — prepared dataset path for dataset-backed workflows.
+- `PLUME_LOCAL_LLM_GGUF_PATH` — local GGUF file used by explanation support.
+- `PLUME_CONVLSTM_CHECKPOINT_PATH` — ConvLSTM checkpoint path.
+- `VITE_API_BASE_URL` — frontend API base URL.
+- `PLUME_CORS_ALLOW_ORIGINS` — allowed frontend origins for the API.
+- `PLUME_SETUP_DOWNLOAD_ASSETS` — top-level setup asset-download switch.
+- `PLUME_SETUP_DOWNLOAD_MODEL_ASSETS` — model asset download switch.
+- `PLUME_SETUP_DOWNLOAD_DATASET` — dataset download switch.
+- `PLUME_SETUP_REQUIRE_DATASET` — fail setup when a required dataset is missing.
 
-See `docs/api-contract.md` for response examples.
+## Model and explanation truthfulness
+
+Forecast-like outputs must be labeled honestly:
+
+- ConvLSTM/model backend execution is the model-backed forecast path.
+- Dataset playback is not live forecasting.
+- Fallback output is not the same as active ConvLSTM output.
+- The local LLM explains structured forecast context that already exists.
+- The LLM must not invent forecasts, sensor confirmation, or live operational facts.
+
+See [`Documentation/model_modes_training_and_provenance.md`](Documentation/model_modes_training_and_provenance.md) for the detailed model-mode and provenance guidance.
+
+## OpenRemote direction
+
+OpenRemote is an integration direction, not a requirement for running the standalone app.
+
+Depending on configuration, the repository supports optional service registration, heartbeat, and integration-facing publishing behavior. Live OpenRemote validation and deployment-specific contracts should be tested separately and should not be overstated.
+
+See [`Documentation/openremote_integration_proposal.md`](Documentation/openremote_integration_proposal.md) for the integration guide.
 
 ## Testing
 
+Run backend tests and syntax checks from the repository root:
+
 ```bash
-pytest
+python -m compileall src scripts
+pytest -q
 ```
 
-Pull requests to `main` run backend `pytest -q` and frontend `npm run build` in GitHub Actions CI.
+Run the frontend build when validating UI changes or full development readiness:
+
+```bash
+cd frontend
+npm install
+npm run build
+```
+
+Full runtime/model tests may require local assets, dataset files, CUDA configuration, and environment variables from the runtime setup step.
+
+## Common workflows
+
+### Fresh setup with model assets only
+
+```bash
+python -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+pip install -e ".[test]"
+
+export PLUME_LLM_HF_REPO_ID="DavidDulovic/geospatial-plume-runtime-assets"
+export PLUME_LLM_HF_FILENAME="models/Qwen_Qwen2.5-7B-Instruct.Q4_K_M.gguf"
+export PLUME_LLM_SHA256_EXPECTED="11e1c92aa0175db460399af847179825301a1a91a31da01cae12a2386fcbf3a1"
+export PLUME_CONVLSTM_HF_REPO_ID="DavidDulovic/geospatial-plume-runtime-assets"
+export PLUME_CONVLSTM_HF_FILENAME="models/convlstm_multistep_three_stage_robust_v3c_tiny_recall_lift/final_full_checkpoint.pt"
+export PLUME_CONVLSTM_SHA256_EXPECTED="3697c237f2f86de58cc313f822e7d998c975267ff4d221a481a46a4b92e5f748"
+export PLUME_SETUP_DOWNLOAD_ASSETS="true"
+export PLUME_SETUP_DOWNLOAD_MODEL_ASSETS="true"
+export PLUME_SETUP_DOWNLOAD_DATASET="false"
+
+bash scripts/setup_runtime.sh
+source <runtime-root>/geospatial_runtime_env.sh
+python scripts/run_control_service.py
+```
+
+In another shell:
+
+```bash
+export VITE_API_BASE_URL="http://localhost:8000"
+cd frontend
+npm install
+npm run dev
+```
+
+### Enable dataset playback
+
+Use an existing dataset path:
+
+```bash
+export PLUME_FULL_DATASET_PATH="/path/to/hysplit-plume-dataset"
+bash scripts/setup_runtime.sh
+source <runtime-root>/geospatial_runtime_env.sh
+```
+
+Or enable Kaggle download when needed:
+
+```bash
+export PLUME_SETUP_DOWNLOAD_DATASET="true"
+export PLUME_KAGGLE_DATASET_SLUG="owner/dataset-slug"
+bash scripts/setup_runtime.sh
+source <runtime-root>/geospatial_runtime_env.sh
+```
+
+Add this when setup should fail if the dataset remains unavailable:
+
+```bash
+export PLUME_SETUP_REQUIRE_DATASET="true"
+```
+
+### Start backend for API/OpenRemote-style use
+
+```bash
+source <runtime-root>/geospatial_runtime_env.sh
+python scripts/run_app_service.py
+```
+
+For the control-service wrapper instead:
+
+```bash
+source <runtime-root>/geospatial_runtime_env.sh
+python scripts/run_control_service.py
+```
+
+### Start full developer stack
+
+```bash
+source <runtime-root>/geospatial_runtime_env.sh
+python scripts/run_stack.py \
+  --api-base-url "http://localhost:8000" \
+  --frontend-origin "http://localhost:5173"
+```
+
+Or use the local development stack wrapper:
+
+```bash
+source <runtime-root>/geospatial_runtime_env.sh
+python scripts/run_local_stack.py
+```
 
 ## Current limitations
-- ConvLSTM online path currently runs inference with random/untrained demo weights unless trained weights are wired in
-- Online backend does not implement gradient-based online training
-- State store defaults to process-local in-memory; CSV persistence is opt-in for local recovery and not intended for high-concurrency production use.
-- Ops auth is token-based and limited to `/ops/*`; no full identity provider integration
-- OpenRemote adapter is a **provisional generic payload translation** only (not validated contract, not live integration)
-- OpenRemote HTTP endpoint shapes can vary by deployed OpenRemote version; timestamped/predicted routes may need minor path adjustments for a target instance
+
+- This is not a production emergency-response system.
+- OpenRemote live contracts are not fully validated unless separately tested in a target OpenRemote environment.
+- Dataset playback requires dataset assets.
+- Local LLM explanation requires a configured GGUF file.
+- GPU-heavy runtime paths need a compatible CUDA setup.
+- Training and adaptation should be treated as controlled model operations, not automatic blind replacement of the active model.
+
+## Documentation
+
+Start here, then use the focused documents as needed:
+
+```text
+Documentation/system_overview.md
+Documentation/openremote_integration_proposal.md
+Documentation/model_modes_training_and_provenance.md
+Documentation/runtime_setup_and_configuration.md
+```
