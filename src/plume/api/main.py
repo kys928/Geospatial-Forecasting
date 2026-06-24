@@ -1,10 +1,14 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
+import logging
 import os
+from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.responses import FileResponse, Response
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 
 from plume.api.deps import (
     get_explain_service,
@@ -28,6 +32,78 @@ from plume.services.decision_support_service import DecisionSupportService
 from plume.services.forecast_context_service import ForecastContextService
 from plume.services.dataset_scenario_service import DatasetScenarioService
 
+
+LOGGER = logging.getLogger(__name__)
+REPO_ROOT = Path(__file__).resolve().parents[3]
+FRONTEND_RESERVED_PATHS = (
+    "/health",
+    "/ready",
+    "/capabilities",
+    "/service",
+    "/forecast",
+    "/sessions",
+    "/forecast-context",
+    "/decision-support",
+    "/ops",
+    "/openapi.json",
+    "/docs",
+    "/redoc",
+)
+
+
+def _parse_bool(value: str | None) -> bool:
+    if value is None:
+        return False
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _frontend_dist_dir() -> Path:
+    configured = os.getenv("PLUME_FRONTEND_DIST_DIR")
+    if configured:
+        return Path(configured).expanduser().resolve()
+    return REPO_ROOT / "frontend" / "dist"
+
+
+def _is_reserved_frontend_fallback_path(path: str) -> bool:
+    normalized = path if path.startswith("/") else f"/{path}"
+    return any(
+        normalized == reserved or normalized.startswith(f"{reserved}/")
+        for reserved in FRONTEND_RESERVED_PATHS
+    )
+
+
+def _configure_frontend_serving(app: FastAPI) -> None:
+    if not _parse_bool(os.getenv("PLUME_SERVE_FRONTEND")):
+        return
+
+    dist_dir = _frontend_dist_dir()
+    index_html = dist_dir / "index.html"
+    assets_dir = dist_dir / "assets"
+    if not dist_dir.is_dir() or not index_html.is_file():
+        LOGGER.warning(
+            "PLUME_SERVE_FRONTEND=true but frontend dist directory is missing or incomplete: %s",
+            dist_dir,
+        )
+        return
+
+    if assets_dir.is_dir():
+        app.mount("/assets", StaticFiles(directory=assets_dir), name="frontend-assets")
+
+    @app.get("/{frontend_path:path}", include_in_schema=False)
+    async def frontend_fallback(frontend_path: str, request: Request) -> Response:
+        request_path = request.url.path
+        if _is_reserved_frontend_fallback_path(request_path):
+            return Response(status_code=404)
+
+        candidate = (dist_dir / frontend_path).resolve() if frontend_path else index_html
+        try:
+            candidate.relative_to(dist_dir)
+        except ValueError:
+            return Response(status_code=404)
+
+        if frontend_path and candidate.is_file():
+            return FileResponse(candidate)
+        return FileResponse(index_html)
 
 
 def _cors_settings() -> tuple[list[str], str | None]:
@@ -111,8 +187,16 @@ def create_app() -> FastAPI:
         forecast_store=forecast_store,
         explain_service=explain_service,
     )
-    forecast_context_service = ForecastContextService(runtime_client=runtime_client, explain_service=explain_service, dataset_scenario_service=dataset_scenario_service)
-    decision_support_service = DecisionSupportService(runtime_client=runtime_client, explain_service=explain_service, forecast_context_service=forecast_context_service)
+    forecast_context_service = ForecastContextService(
+        runtime_client=runtime_client,
+        explain_service=explain_service,
+        dataset_scenario_service=dataset_scenario_service,
+    )
+    decision_support_service = DecisionSupportService(
+        runtime_client=runtime_client,
+        explain_service=explain_service,
+        forecast_context_service=forecast_context_service,
+    )
 
     register_session_routes(
         app,
@@ -122,8 +206,13 @@ def create_app() -> FastAPI:
         explain_service=explain_service,
     )
     register_decision_support_routes(app, decision_support_service=decision_support_service)
-    register_forecast_context_routes(app, forecast_context_service=forecast_context_service, dataset_scenario_service=dataset_scenario_service)
+    register_forecast_context_routes(
+        app,
+        forecast_context_service=forecast_context_service,
+        dataset_scenario_service=dataset_scenario_service,
+    )
     register_ops_routes(app, forecast_service=forecast_service, dispatch_worker=dispatch_retraining_worker)
+    _configure_frontend_serving(app)
 
     return app
 

@@ -139,6 +139,41 @@ Online endpoints:
 - `POST /sessions/{session_id}/update`
 - `POST /sessions/{session_id}/predict`
 
+## Production / OpenRemote-friendly startup
+
+RunPod is only one deployment shape for this proof of concept. OpenRemote/API integration does not need the RunPod two-port dev stack or the Vite development server; it can call the FastAPI API/service URL directly. API-only mode is the safest OpenRemote integration mode, and optional frontend serving is disabled by default.
+
+Backend-only production/OpenRemote-friendly startup:
+
+```bash
+python scripts/run_app_service.py
+```
+
+`scripts/run_app_service.py` starts only the FastAPI app with uvicorn. It reads `PLUME_APP_HOST` (default `0.0.0.0`) and `PLUME_APP_PORT` (default `8000`), and also accepts `--host`, `--port`, and `--reload`. Real production deployments should still run this process under a process manager, container, or supervisor appropriate for the environment.
+
+Optional single-port frontend mode serves an already built frontend from the same FastAPI process:
+
+```bash
+cd frontend && npm run build
+export PLUME_SERVE_FRONTEND=true
+export PLUME_FRONTEND_DIST_DIR="$PLUME_REPO_DIR/frontend/dist"
+python scripts/run_app_service.py
+```
+
+When `PLUME_SERVE_FRONTEND=true`, FastAPI serves built assets only if the configured dist directory exists and contains `index.html`; missing frontend assets log a warning and do not stop the API. Static assets are served from `/assets`, and the frontend fallback is guarded so API, OpenAPI, and documentation routes are not shadowed.
+
+Existing convenience launchers remain available for their original workflows:
+
+```bash
+# RunPod pod demos / convenience orchestration
+python scripts/run_runpod_stack.py ...
+
+# Local development two-process workflow
+python scripts/run_local_stack.py
+```
+
+Use `scripts/run_runpod_stack.py` for RunPod/dev convenience, `scripts/run_local_stack.py` for local development, and `scripts/run_app_service.py` for the generic production/OpenRemote-friendly FastAPI process.
+
 ## Config
 Backend/session behavior is configured in `configs/backend.yaml`:
 
