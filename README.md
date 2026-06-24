@@ -22,13 +22,6 @@ Keep the distinction clear: the application manages and presents forecast workfl
 
 ## What this project is not
 
-This repository is not:
-
-- a production emergency-response platform;
-- a validated live OpenRemote deployment by itself;
-- a claim that the local LLM creates plume forecasts;
-- a replacement for real sensor validation, operational procedures, incident command, or domain-specific safety review;
-- proof that every runtime path is available without the required model, dataset, CUDA, and environment configuration.
 
 ## Documentation map
 
