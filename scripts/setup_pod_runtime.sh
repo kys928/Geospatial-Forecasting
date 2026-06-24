@@ -220,17 +220,14 @@ cat > "$ENV_FILE" <<EOF_ENV
 export REPO_DIR="/workspace/Geospatial-Forecasting"
 export PYTHONPATH="/workspace/Geospatial-Forecasting/src"
 
-# RunPod browser routing.
 export VITE_API_BASE_URL="${VITE_API_BASE_URL:-}"
 export PLUME_CORS_ALLOW_ORIGINS="${PLUME_CORS_ALLOW_ORIGINS:-}"
 
-# Ops dev mode.
 export PLUME_OPS_AUTH_ENABLED="false"
 unset PLUME_OPS_API_TOKEN
 unset VITE_OPS_API_TOKEN
 unset PLUME_OPS_READONLY_TOKEN
 
-# Dataset playback / Forecast Context.
 export PLUME_DATASET_SCENARIO_MODE="enabled"
 export PLUME_FULL_DATASET_PATH="/workspace/Dataset/hysplit-plume-convlstm-multiyear-2024-2026"
 export PLUME_DATASET_MANIFEST_PATH="/workspace/Dataset/hysplit-plume-convlstm-multiyear-2024-2026/dataset_manifest.csv"
@@ -238,14 +235,10 @@ export PLUME_WINDOWS_MANIFEST_ENRICHED_PATH="/workspace/Dataset/hysplit-plume-co
 export PLUME_WINDOWS_DIR="/workspace/Dataset/hysplit-plume-convlstm-multiyear-2024-2026/windows"
 export PLUME_DATASET_SCENARIO_SCAN_LIMIT="500"
 
-# AI Decision Support: safe frontend/dev default (context fallback, no local LLM required).
 export PLUME_EXPLANATION_BACKEND="llm"
 export PLUME_LLM_PROVIDER="local-gguf"
 export PLUME_LOCAL_LLM_GGUF_PATH="/workspace/llm_runtime/models/Qwen_Qwen2.5-7B-Instruct.Q4_K_M.gguf"
 export PLUME_LOCAL_LLM_N_GPU_LAYERS="-1"
-# Temporary RunPod demo stability default:
-# in-process local GGUF currently answers reliably, while isolated worker warmup can hang.
-# Revisit before final release; isolated mode remains the preferred safer architecture once fixed.
 export PLUME_LOCAL_LLM_N_CTX="1024"
 export PLUME_LOCAL_LLM_N_BATCH="128"
 export PLUME_LOCAL_LLM_MAX_TOKENS="300"
@@ -257,15 +250,12 @@ export PLUME_LOCAL_LLM_ISOLATED="false"
 export PLUME_LOCAL_LLM_WORKER_TIMEOUT_SECONDS="120"
 export PLUME_LOCAL_LLM_WORKER_STARTUP_TIMEOUT_SECONDS="240"
 
-# Explanation persistence behavior.
 export PLUME_PERSIST_BATCH_EXPLANATION="false"
 export PLUME_PERSIST_BATCH_EXPLANATION_USE_LLM="false"
 
-# Optional paths.
 export PLUME_DEMO_SCENARIO_DIR="/workspace/Geospatial-Forecasting/artifacts/demo_scenarios"
 export PLUME_ONLINE_SUBSET_PATH="/workspace/Dataset/online_learning_subset"
 
-# Local GGUF mode does not need HF tokens.
 unset HF_TOKEN
 unset HUGGINGFACEHUB_API_TOKEN
 unset PLUME_LLAMA_CPP_BIN

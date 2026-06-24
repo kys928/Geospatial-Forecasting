@@ -3,10 +3,6 @@ from dataclasses import dataclass
 
 @dataclass
 class ForecastSummary:
-    """
-    Small, LLM-friendly summary of a forecast or synthetic inference result.
-    This is what we send to the external API, not the whole raw grid/tensor.
-    """
     source_latitude: float
     source_longitude: float
     grid_rows: int

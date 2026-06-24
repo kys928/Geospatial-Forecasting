@@ -252,7 +252,6 @@ def test_low_medium_large_are_distinct_when_candidates_available(tmp_path: Path,
 
 def test_demo_bbox_preferred_for_large(tmp_path: Path, monkeypatch):
     _write_dataset(tmp_path)
-    # First two rows are outside configured bbox, third is inside and should be selected for large.
     manifest = tmp_path / "dataset_manifest.csv"
     rows = list(csv.DictReader(manifest.open("r", encoding="utf-8")))
     rows[0]["lat"], rows[0]["lon"] = "10", "10"

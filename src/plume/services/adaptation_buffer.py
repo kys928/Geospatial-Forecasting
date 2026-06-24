@@ -1,8 +1,3 @@
-"""File-backed adaptation sample buffer foundation.
-
-This module manages local adaptation windows and their manifest metadata only. It
-intentionally does not train, load, promote, or serve ConvLSTM models.
-"""
 
 from __future__ import annotations
 
@@ -37,7 +32,6 @@ def _utc_now() -> str:
 
 @dataclass(frozen=True)
 class AdaptationBufferConfig:
-    """Configuration needed by the file-backed adaptation buffer."""
 
     buffer_root: Path | str | None = None
     buffer_root_env: str = "PLUME_ADAPTATION_BUFFER_DIR"
@@ -54,7 +48,6 @@ class AdaptationBufferConfig:
     move_used_to_reserve: bool = True
 
     def resolve_root(self) -> Path:
-        """Resolve the buffer root from explicit config, environment, or default."""
         env_value = os.environ.get(self.buffer_root_env)
         if env_value:
             return Path(env_value)
@@ -73,7 +66,6 @@ class AdaptationBufferConfig:
 
 @dataclass
 class AdaptationSampleRecord:
-    """Manifest metadata for one adaptation sample window."""
 
     sample_id: str
     status: str
@@ -106,7 +98,6 @@ class AdaptationSampleRecord:
 
 
 class AdaptationBuffer:
-    """Manage file-backed NPZ adaptation windows and manifest state."""
 
     def __init__(self, config: AdaptationBufferConfig | None = None) -> None:
         self.config = config or AdaptationBufferConfig()
@@ -118,7 +109,6 @@ class AdaptationBuffer:
 
     @classmethod
     def from_existing(cls, root: Path | str) -> "AdaptationBuffer":
-        """Build a non-mutating buffer reader for an existing manifest."""
         buffer = cls.__new__(cls)
         buffer.config = AdaptationBufferConfig(buffer_root=root)
         buffer.root = Path(root)
@@ -145,7 +135,6 @@ class AdaptationBuffer:
         ]
 
     def initialize(self) -> None:
-        """Create the buffer directory structure and metadata files if needed."""
         for directory in self.required_directories:
             directory.mkdir(parents=True, exist_ok=True)
         self.observations_path.touch(exist_ok=True)
@@ -170,7 +159,6 @@ class AdaptationBuffer:
         self._append_event("buffer_initialized", {})
 
     def append_raw_observation(self, payload: dict[str, Any]) -> dict[str, Any]:
-        """Append a raw observation JSON record without domain-specific validation."""
         record = dict(payload)
         record.setdefault("timestamp", _utc_now())
         with self.observations_path.open("a", encoding="utf-8") as handle:
@@ -184,7 +172,6 @@ class AdaptationBuffer:
         quality_report: dict[str, Any] | None = None,
         source_kind: str = "npz",
     ) -> AdaptationSampleRecord:
-        """Copy an existing NPZ adaptation window into pending storage."""
         source = Path(source_path)
         if not source.exists():
             raise FileNotFoundError(f"NPZ source file does not exist: {source}")
@@ -234,13 +221,6 @@ class AdaptationBuffer:
         split: str,
         metadata: dict[str, Any] | None = None,
     ) -> AdaptationSampleRecord:
-        """Copy a validated seed NPZ directly into accepted buffer storage.
-
-        This is a dev/ops ingestion-boundary helper for local seeding scripts. It
-        writes the same accepted sample manifest/events shape consumed by
-        readiness and adaptation dataset services; it does not train, promote,
-        approve, activate, or delete model artifacts.
-        """
         source = Path(source_path)
         if not source.exists():
             raise FileNotFoundError(f"NPZ source file does not exist: {source}")
@@ -283,7 +263,6 @@ class AdaptationBuffer:
         return AdaptationSampleRecord.from_dict(payload)
 
     def validate_npz_window(self, path: Path | str) -> dict[str, Any]:
-        """Inspect an NPZ file for canonical input and target tensor shapes."""
         npz_path = Path(path)
         reasons: list[str] = []
         shapes: dict[str, tuple[int, ...]] = {}
@@ -312,7 +291,6 @@ class AdaptationBuffer:
         return {"ok": not reasons, "reasons": reasons, "shapes": shapes}
 
     def accept_pending_sample(self, sample_id: str) -> AdaptationSampleRecord:
-        """Accept a pending sample and rebuild the deterministic train/val split."""
         manifest = self._load_manifest()
         record = self._require_sample(manifest, sample_id)
         if record.status != PENDING:
@@ -327,7 +305,6 @@ class AdaptationBuffer:
         return updated
 
     def reject_pending_sample(self, sample_id: str) -> AdaptationSampleRecord:
-        """Reject a pending sample and move its files into rejected storage."""
         manifest = self._load_manifest()
         record = self._require_sample(manifest, sample_id)
         if record.status != PENDING:
@@ -350,7 +327,6 @@ class AdaptationBuffer:
         return record
 
     def mark_sample_used(self, sample_id: str) -> AdaptationSampleRecord:
-        """Increment use metadata and move an accepted sample into reserve storage."""
         manifest = self._load_manifest()
         record = self._require_sample(manifest, sample_id)
         if record.status not in {ACCEPTED_TRAIN, ACCEPTED_VAL}:
@@ -374,7 +350,6 @@ class AdaptationBuffer:
         return record
 
     def rebuild_split(self) -> None:
-        """Reassign all fresh accepted samples to deterministic train/val folders."""
         manifest = self._load_manifest()
         accepted = [
             AdaptationSampleRecord.from_dict(sample)
@@ -409,7 +384,6 @@ class AdaptationBuffer:
         self._append_event("split_rebuilt", {"accepted_total": len(accepted), "val_count": val_count})
 
     def get_summary(self) -> dict[str, Any]:
-        """Return count summary for current buffer manifest state."""
         manifest = self._load_manifest()
         counts = {status: 0 for status in _VALID_STATUSES}
         used_total = 0

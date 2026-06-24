@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import numpy as np
 
-# Canonical ConvLSTM contract for plume-path inference.
 CONVLSTM_CONTRACT_VERSION = "convlstm_canonical_v1"
 CONVLSTM_SEQUENCE_LENGTH = 3
 CONVLSTM_INPUT_CHANNELS = 10
@@ -50,13 +49,11 @@ CONVLSTM_PLUME_TARGET_CHANNEL = 0
 
 
 def plume_to_model_space(raw_concentration: np.ndarray | float) -> np.ndarray:
-    """Apply canonical plume transform: log1p(1e12 * x)."""
     raw = np.asarray(raw_concentration, dtype=float)
     return np.log1p(PLUME_LOG1P_SCALE * raw)
 
 
 def plume_to_physical_space(model_output: np.ndarray | float, *, clamp_non_negative: bool = True) -> np.ndarray:
-    """Invert canonical plume transform: (exp(pred) - 1) / 1e12."""
     transformed = np.asarray(model_output, dtype=float)
     raw = (np.exp(transformed) - 1.0) / PLUME_LOG1P_SCALE
     if clamp_non_negative:

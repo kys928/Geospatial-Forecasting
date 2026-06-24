@@ -23,7 +23,6 @@ from plume.models.convlstm_contract import (
 
 @dataclass(frozen=True)
 class ConvLSTMTrainingConfig:
-    """Phase-E training configuration for plume-only supervision."""
 
     learning_rate: float = 1e-3
     target_policy: str = "plume_only"
@@ -70,7 +69,6 @@ class ConvLSTMTrainingConfig:
 
 @dataclass(frozen=True)
 class ConvLSTMRunArtifacts:
-    """Stable file layout for narrow trainer-local run artifacts."""
 
     output_dir: Path
     run_config_path: Path
@@ -82,7 +80,6 @@ class ConvLSTMRunArtifacts:
 
 @dataclass(frozen=True)
 class ConvLSTMRunConfig:
-    """Minimal run-level orchestration controls for reproducible trainer flow."""
 
     num_epochs: int
     output_dir: Path
@@ -93,7 +90,6 @@ class ConvLSTMRunConfig:
 
 @dataclass(frozen=True)
 class ConvLSTMDatasetRunConfig:
-    """Minimal dataset-to-run wiring config for canonical stored samples."""
 
     train_data_path: Path
     val_data_path: Path
@@ -104,18 +100,10 @@ class ConvLSTMDatasetRunConfig:
 
 
 class ConvLSTMRunLoadError(ValueError):
-    """Raised when a persisted ConvLSTM run directory is incomplete or malformed."""
+    pass
 
 
 class CanonicalConvLSTMSampleDataset:
-    """Loader/validator for stored canonical ConvLSTM samples.
-
-    Stored per-sample contract:
-    - input: (3, 10, 64, 64)
-    - target: (1, 10, 64, 64)
-
-    Supervised objective in this phase slices plume-only from stored target.
-    """
 
     def __init__(self, sample_paths: list[str | Path]):
         self.sample_paths = [Path(p) for p in sample_paths]
@@ -164,7 +152,6 @@ class CanonicalConvLSTMSampleDataset:
 
 
 def resolve_canonical_sample_paths(data_path: str | Path) -> list[Path]:
-    """Resolve canonical stored sample paths from a .npz file or directory of .npz files."""
     path = Path(data_path)
     if path.is_file():
         if path.suffix.lower() != ".npz":
@@ -181,7 +168,6 @@ def resolve_canonical_sample_paths(data_path: str | Path) -> list[Path]:
 
 
 def load_canonical_sample_dataset(data_path: str | Path) -> CanonicalConvLSTMSampleDataset:
-    """Create canonical sample dataset from stored .npz sample path(s)."""
     return CanonicalConvLSTMSampleDataset(resolve_canonical_sample_paths(data_path))
 
 
@@ -193,7 +179,6 @@ def build_canonical_batches(
     shuffle_seed: int = 0,
     drop_last: bool = False,
 ) -> list[tuple[np.ndarray, np.ndarray]]:
-    """Create explicit batched tensors from canonical per-sample dataset."""
     if batch_size <= 0:
         raise ValueError(f"batch_size must be > 0, got {batch_size}")
     if len(dataset) == 0:
@@ -229,7 +214,6 @@ def create_train_val_batches_from_dataset_paths(
     shuffle_seed: int = 0,
     drop_last: bool = False,
 ) -> tuple[list[tuple[np.ndarray, np.ndarray]], list[tuple[np.ndarray, np.ndarray]]]:
-    """Create canonical train/val batched iterables from on-disk stored samples."""
     train_dataset = load_canonical_sample_dataset(train_data_path)
     val_dataset = load_canonical_sample_dataset(val_data_path)
     train_batches = build_canonical_batches(
@@ -255,7 +239,6 @@ def run_training_from_dataset(
     run_config: ConvLSTMRunConfig,
     dataset_config: ConvLSTMDatasetRunConfig,
 ) -> dict[str, object]:
-    """Minimal run-entry helper that wires canonical on-disk samples into run_training."""
     train_batches, val_batches = create_train_val_batches_from_dataset_paths(
         train_data_path=dataset_config.train_data_path,
         val_data_path=dataset_config.val_data_path,
@@ -281,22 +264,18 @@ def _load_json_artifact(run_dir: str | Path, filename: str) -> dict[str, object]
 
 
 def load_run_summary(run_dir: str | Path) -> dict[str, object]:
-    """Load persisted run_summary.json from a completed ConvLSTM run directory."""
     return _load_json_artifact(run_dir, "run_summary.json")
 
 
 def load_run_config(run_dir: str | Path) -> dict[str, object]:
-    """Load persisted run_config.json from a completed ConvLSTM run directory."""
     return _load_json_artifact(run_dir, "run_config.json")
 
 
 def load_best_checkpoint_summary(run_dir: str | Path) -> dict[str, object]:
-    """Load persisted best_checkpoint_summary.json from a completed ConvLSTM run directory."""
     return _load_json_artifact(run_dir, "best_checkpoint_summary.json")
 
 
 def load_epoch_reports(run_dir: str | Path) -> list[dict[str, object]]:
-    """Load optional epoch_reports.jsonl records from a completed ConvLSTM run directory."""
     artifact_path = Path(run_dir) / "epoch_reports.jsonl"
     if not artifact_path.exists():
         raise ConvLSTMRunLoadError(f"Missing optional run artifact requested explicitly: {artifact_path}")
@@ -319,7 +298,6 @@ def load_epoch_reports(run_dir: str | Path) -> list[dict[str, object]]:
 
 
 def extract_run_comparison_record(run_dir: str | Path, *, include_epoch_reports: bool = False) -> dict[str, object]:
-    """Extract a compact, stable comparison record from persisted run artifacts."""
     run_path = Path(run_dir)
     run_summary = load_run_summary(run_path)
     run_config = load_run_config(run_path)
@@ -387,7 +365,6 @@ def compare_run_dirs(
     ascending: bool = True,
     skip_incomplete: bool = True,
 ) -> dict[str, object]:
-    """Compare multiple completed run directories with deterministic ordering and explicit skips."""
     records: list[dict[str, object]] = []
     skipped: list[dict[str, str]] = []
     for run_dir in sorted((Path(p) for p in run_dirs), key=lambda path: str(path)):
@@ -418,7 +395,6 @@ def summarize_ablation_groups(
     ),
     metric_key: str = "best_metric_value",
 ) -> list[dict[str, object]]:
-    """Group narrow run comparison records and compute compact metric summaries."""
     grouped: dict[tuple[object, ...], list[dict[str, object]]] = {}
     for record in records:
         group_values = tuple(record.get(key) for key in group_by)
@@ -443,7 +419,6 @@ def summarize_ablation_groups(
 
 
 def write_run_comparison_json(path: str | Path, payload: dict[str, object]) -> Path:
-    """Persist run comparison payload as deterministic JSON."""
     output_path = Path(path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
@@ -451,11 +426,6 @@ def write_run_comparison_json(path: str | Path, payload: dict[str, object]) -> P
 
 
 def slice_plume_target(stored_target: np.ndarray) -> np.ndarray:
-    """Slice plume-only supervision target while preserving leading dimensions.
-
-    Input:  (B, 1, 10, 64, 64)
-    Output: (B, 1, 1, 64, 64)
-    """
 
     expected = ("B", *CONVLSTM_STORED_TARGET_SHAPE)
     if stored_target.ndim != 5:
@@ -470,7 +440,6 @@ def slice_plume_target(stored_target: np.ndarray) -> np.ndarray:
 
 
 class ConvLSTMPlumeTrainer:
-    """Phase-E trainer path: full end-to-end plume-only supervision with no extra normalization."""
 
     def __init__(self, model: MinimalConvLSTMModel, config: ConvLSTMTrainingConfig | None = None):
         self.model = model
@@ -751,16 +720,6 @@ class ConvLSTMPlumeTrainer:
         val_batches: list[tuple[np.ndarray, np.ndarray]],
         run_config: ConvLSTMRunConfig,
     ) -> dict[str, object]:
-        """Execute a minimal, explicit ConvLSTM run flow using existing trainer helpers.
-
-        Epoch order is intentionally fixed:
-        1) train epoch
-        2) validation epoch
-        3) metric-gated stage update (if enabled)
-        4) best-checkpoint update
-        5) optional checkpoint save(s)
-        6) epoch report append
-        """
         if run_config.num_epochs <= 0:
             raise ValueError(f"run_config.num_epochs must be > 0, got {run_config.num_epochs}")
 
@@ -944,10 +903,6 @@ class ConvLSTMPlumeTrainer:
         return metrics
 
     def update_stage_from_validation(self, val_metrics: dict[str, float], *, epoch: int) -> bool:
-        """Update metric-gated stage progression from validation metrics.
-
-        Returns True when stage advanced, otherwise False.
-        """
         self._metric_stage_last_advanced = False
         if not self.config.metric_stage_progression_enabled:
             return False
@@ -1000,7 +955,6 @@ class ConvLSTMPlumeTrainer:
         return True
 
     def train_epoch(self, batch_iterable: list[tuple[np.ndarray, np.ndarray]], *, epoch: int = 0) -> float:
-        """Run a narrow epoch helper over already-batched tensors."""
         if not batch_iterable:
             raise ValueError("train_epoch requires at least one batch")
         losses = [self.train_step(batch_input=x, batch_target=y, epoch=epoch) for x, y in batch_iterable]

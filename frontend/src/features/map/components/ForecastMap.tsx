@@ -268,7 +268,6 @@ function moveForecastLayersToTop(map: Map) {
     try {
       if (map.getLayer(layerId)) map.moveLayer(layerId);
     } catch {
-      // Keep map rendering resilient while style/layers are loading.
     }
   }
 }

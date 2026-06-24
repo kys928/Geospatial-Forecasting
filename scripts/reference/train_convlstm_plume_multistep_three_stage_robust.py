@@ -1,28 +1,4 @@
 #!/usr/bin/env python3
-"""
-train_convlstm_plume_multistep_three_stage_robust.py
-
-Three-stage robust ConvLSTM trainer for 4-step plume forecasting.
-
-This is built from the previous uploaded two-stage trainer contract, but fixes the
-curriculum semantics:
-
-Stage 1: direct multi-horizon prediction only
-    input:  real t-2, t-1, t
-    output: t+1, t+2, t+3, t+4
-    no autoregressive feedback
-
-Stage 2: autoregressive rollout with scheduled teacher forcing
-    the model sometimes feeds real previous plume frames and sometimes its own
-    previous prediction, so training starts to resemble inference.
-
-Stage 3: mixed robust training
-    direct branch + autoregressive branch + noisy plume inputs + safe physics
-    losses + consistency loss. Advection/PDE loss stays disabled because dx/dy
-    and raw concentration units are not confirmed.
-
-No argparse is used. Edit CONFIG below.
-"""
 
 from __future__ import annotations
 
@@ -45,9 +21,6 @@ import torch.nn.functional as F
 from torch.utils.data import DataLoader, Dataset, Subset
 
 
-# =============================================================================
-# CONFIG - edit here
-# =============================================================================
 
 CONFIG: Dict[str, Any] = {
     "run_name": "convlstm_multistep_three_stage_robust_v1",
@@ -229,9 +202,6 @@ CONFIG: Dict[str, Any] = {
 }
 
 
-# =============================================================================
-# Utilities
-# =============================================================================
 
 
 def fixed_path(path: str | Path) -> Path:
@@ -307,9 +277,6 @@ def teacher_forcing_prob(epoch_in_stage: int, total_epochs: int, start: float, e
     return float(start + progress * (end - start))
 
 
-# =============================================================================
-# Dataset
-# =============================================================================
 
 
 @dataclass(frozen=True)
@@ -495,9 +462,6 @@ def build_train_val_loaders(config: Dict[str, Any]) -> Tuple[DataLoader, DataLoa
     return train_loader, val_loader, stats
 
 
-# =============================================================================
-# Model
-# =============================================================================
 
 
 class ConvLSTMCell(nn.Module):
@@ -651,9 +615,6 @@ class RobustMultiStepConvLSTMForecaster(nn.Module):
         return out
 
 
-# =============================================================================
-# Losses and metrics
-# =============================================================================
 
 
 def safe_mean(values: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
@@ -843,9 +804,6 @@ def corrupt_plume_inputs(x: torch.Tensor, config: Dict[str, Any]) -> torch.Tenso
     return out
 
 
-# =============================================================================
-# Checkpointing / scoring
-# =============================================================================
 
 
 def composite_score(metrics: Dict[str, float], config: Dict[str, Any]) -> float:
@@ -911,9 +869,6 @@ def validate_advection_contract(config: Dict[str, Any]) -> None:
         raise RuntimeError("Advection is disabled until dx/dy/raw plume units are confirmed.")
 
 
-# =============================================================================
-# Train / Validate
-# =============================================================================
 
 
 def branch_flags_for_stage(stage: Dict[str, Any]) -> Tuple[bool, bool]:

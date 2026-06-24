@@ -32,7 +32,6 @@ SOURCE_FIELDS = (
 
 
 def json_safe(value: Any) -> Any:
-    """Return a FastAPI/JSON-safe copy of metadata-like values."""
     if value is None or isinstance(value, (str, bool)):
         return value
     if isinstance(value, np.generic):
@@ -60,7 +59,7 @@ def json_safe(value: Any) -> Any:
     if isinstance(value, (list, tuple, set)):
         return [json_safe(item) for item in value]
     try:
-        return value.isoformat()  # datetime/date-like
+        return value.isoformat()
     except AttributeError:
         return str(value)
 
@@ -143,7 +142,6 @@ def normalize_conditions(*candidates: Any) -> dict[str, Any]:
         candidate = as_nonempty_dict(candidate)
         if not candidate:
             continue
-        # Accept a wrapper object directly if one is accidentally passed.
         for nested_key in ("conditions", "meteorology"):
             nested = as_nonempty_dict(candidate.get(nested_key))
             if nested:

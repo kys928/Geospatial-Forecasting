@@ -1158,7 +1158,6 @@ def test_phase_i_metric_progression_is_one_way_and_no_stage_skips_per_update():
     trainer = ConvLSTMPlumeTrainer(model=model, config=cfg)
     assert trainer.update_stage_from_validation({"val_mse": 0.01}, epoch=1) is True
     assert trainer._effective_physics_weights(epoch=1, step=0)["active_stage"] == pytest.approx(1.0)
-    # Only one stage advancement per update even if next threshold is already met.
     assert trainer.update_stage_from_validation({"val_mse": 0.01}, epoch=2) is True
     assert trainer._effective_physics_weights(epoch=2, step=0)["active_stage"] == pytest.approx(2.0)
     assert trainer.update_stage_from_validation({"val_mse": 0.01}, epoch=3) is False

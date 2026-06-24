@@ -129,7 +129,6 @@ export function DecisionSupportPage() {
     try {
       sessionStorage.setItem(CHAT_STORAGE_KEY, JSON.stringify(messages.slice(-50)));
     } catch {
-      // ignore storage failures
     }
     const thread = threadRef.current;
     if (!thread) return;
