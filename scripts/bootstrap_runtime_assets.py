@@ -53,8 +53,9 @@ class Config:
 
     @classmethod
     def from_env(cls) -> "Config":
-        runtime_root = resolve_path(os.environ.get("PLUME_RUNTIME_ROOT", "/workspace"))
-        repo_dir = resolve_path(os.environ.get("PLUME_REPO_DIR", str(runtime_root / "Geospatial-Forecasting")))
+        detected_repo_root = Path(__file__).resolve().parents[1]
+        repo_dir = resolve_path(os.environ.get("PLUME_REPO_DIR", str(detected_repo_root)))
+        runtime_root = resolve_path(os.environ.get("PLUME_RUNTIME_ROOT", str(repo_dir.parent)))
         dataset_root = resolve_path(os.environ.get("PLUME_DATASET_ROOT", str(runtime_root / "Dataset")))
         llm_runtime_root = resolve_path(os.environ.get("PLUME_LLM_RUNTIME_ROOT", str(runtime_root / "llm_runtime")))
         dataset_path = resolve_path(

@@ -270,13 +270,14 @@ Notes:
 
 ## RunPod frozen runtime setup
 
-`/workspace` is the default RunPod runtime root, but it is not the only supported location. The setup flow resolves paths from environment variables so the same scripts can run on RunPod or a portable local machine:
+The setup flow resolves paths from environment variables so the same scripts can run on RunPod or a portable local machine. By default, setup scripts detect the repository root and place large runtime assets next to the repository under the repo parent directory. On RunPod, a clone at `/workspace/Geospatial-Forecasting` naturally resolves the runtime root to `/workspace`.
 
-- `PLUME_RUNTIME_ROOT` defaults to `/workspace`.
-- `PLUME_REPO_DIR` defaults to `$PLUME_RUNTIME_ROOT/Geospatial-Forecasting`.
+- `PLUME_REPO_DIR` defaults to the detected repository root.
+- `PLUME_RUNTIME_ROOT` defaults to the parent directory of `PLUME_REPO_DIR`.
 - `PLUME_DATASET_ROOT` defaults to `$PLUME_RUNTIME_ROOT/Dataset`.
 - `PLUME_LLM_RUNTIME_ROOT` defaults to `$PLUME_RUNTIME_ROOT/llm_runtime`.
 - `PLUME_RUNTIME_ENV_FILE` defaults to `$PLUME_RUNTIME_ROOT/geospatial_runtime_env.sh`.
+- Operators can override all paths with `PLUME_RUNTIME_ROOT`, `PLUME_REPO_DIR`, `PLUME_FULL_DATASET_PATH`, `PLUME_LOCAL_LLM_GGUF_PATH`, and `PLUME_CONVLSTM_CHECKPOINT_PATH`.
 
 The setup script installs OS, Python, and frontend dependencies, then runs `scripts/bootstrap_runtime_assets.py` before validating local assets. The script supports fresh-environment asset bootstrap once the required Hugging Face and Kaggle asset identifiers are provided. If required assets already exist locally and pass validation, setup does not require Hugging Face repo IDs, filenames, or Kaggle slugs. Runtime uses local files afterward.
 

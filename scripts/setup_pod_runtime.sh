@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-PLUME_RUNTIME_ROOT="${PLUME_RUNTIME_ROOT:-/workspace}"
-REPO_DIR="${PLUME_REPO_DIR:-$PLUME_RUNTIME_ROOT/Geospatial-Forecasting}"
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+DETECTED_REPO_DIR="$(cd -- "$SCRIPT_DIR/.." && pwd -P)"
+REPO_DIR="${PLUME_REPO_DIR:-$DETECTED_REPO_DIR}"
 PLUME_REPO_DIR="$REPO_DIR"
+PLUME_RUNTIME_ROOT="${PLUME_RUNTIME_ROOT:-$(dirname -- "$REPO_DIR")}"
 SETUP_TARGET="${PLUME_SETUP_TARGET:-$PLUME_RUNTIME_ROOT/setup_pod_runtime.sh}"
 ENV_FILE="${PLUME_RUNTIME_ENV_FILE:-$PLUME_RUNTIME_ROOT/geospatial_runtime_env.sh}"
 REPORT_FILE="${PLUME_SETUP_REPORT_FILE:-$PLUME_RUNTIME_ROOT/geospatial_runtime_last_setup_report.txt}"
