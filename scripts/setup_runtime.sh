@@ -6,7 +6,7 @@ DETECTED_REPO_DIR="$(cd -- "$SCRIPT_DIR/.." && pwd -P)"
 REPO_DIR="${PLUME_REPO_DIR:-$DETECTED_REPO_DIR}"
 PLUME_REPO_DIR="$REPO_DIR"
 PLUME_RUNTIME_ROOT="${PLUME_RUNTIME_ROOT:-$(dirname -- "$REPO_DIR")}"
-SETUP_TARGET="${PLUME_SETUP_TARGET:-$PLUME_RUNTIME_ROOT/setup_pod_runtime.sh}"
+SETUP_TARGET="${PLUME_SETUP_TARGET:-$PLUME_RUNTIME_ROOT/setup_runtime.sh}"
 ENV_FILE="${PLUME_RUNTIME_ENV_FILE:-$PLUME_RUNTIME_ROOT/geospatial_runtime_env.sh}"
 REPORT_FILE="${PLUME_SETUP_REPORT_FILE:-$PLUME_RUNTIME_ROOT/geospatial_runtime_last_setup_report.txt}"
 PLUME_DATASET_ROOT="${PLUME_DATASET_ROOT:-$PLUME_RUNTIME_ROOT/Dataset}"
@@ -40,6 +40,7 @@ EXPECTED_WINDOWS_COUNT=40215
 NUMPY_VERSION="2.4.4"
 LLAMA_CPP_VERSION="0.3.22"
 DISKCACHE_VERSION="5.6.3"
+MATPLOTLIB_VERSION="3.9.4"
 
 log() { echo "[setup] $*"; }
 warn() { echo "[setup][warn] $*"; }
@@ -64,7 +65,7 @@ fi
 if [[ "$0" != "$SETUP_TARGET" ]]; then
   log "Copying setup script to $SETUP_TARGET"
   mkdir -p "$(dirname "$SETUP_TARGET")"
-  cp "$REPO_DIR/scripts/setup_pod_runtime.sh" "$SETUP_TARGET"
+  cp "$REPO_DIR/scripts/setup_runtime.sh" "$SETUP_TARGET"
   chmod +x "$SETUP_TARGET"
 fi
 
@@ -108,6 +109,7 @@ python3 -m pip install \
   pydantic==2.13.4 \
   numpy=="$NUMPY_VERSION" \
   diskcache=="$DISKCACHE_VERSION" \
+  matplotlib=="$MATPLOTLIB_VERSION" \
   huggingface_hub==0.36.2 \
   openai==1.109.1 \
   shapely==2.1.2 \
@@ -140,8 +142,10 @@ python3 - <<'PY'
 import numpy
 import diskcache
 import llama_cpp
+import matplotlib
 print("numpy:", numpy.__version__)
 print("diskcache:", diskcache.__version__)
+print("matplotlib:", matplotlib.__version__)
 print("llama_cpp:", llama_cpp.__file__)
 if numpy.__version__ != "2.4.4":
     raise SystemExit("numpy pin verification failed: expected 2.4.4")
@@ -159,6 +163,7 @@ expected = {
     "pydantic": "2.13.4",
     "numpy": "2.4.4",
     "diskcache": "5.6.3",
+    "matplotlib": "3.9.4",
     "llama-cpp-python": "0.3.22",
     "huggingface-hub": "0.36.2",
     "openai": "1.109.1",
@@ -362,7 +367,7 @@ NPM_VER="$(npm --version)"
   echo "pip_version=$PIP_VER"
   echo "node_version=$NODE_VER"
   echo "npm_version=$NPM_VER"
-  python3 -m pip show fastapi uvicorn pydantic numpy diskcache llama-cpp-python torch torchvision torchaudio pandas scikit-learn 2>/dev/null \
+  python3 -m pip show fastapi uvicorn pydantic numpy diskcache matplotlib llama-cpp-python torch torchvision torchaudio pandas scikit-learn 2>/dev/null \
     | awk '/^Name:|^Version:/{print}'
   echo "dataset_windows_count=$WINDOWS_COUNT"
   echo "gguf_sha256=$GGUF_SHA256_ACTUAL"

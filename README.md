@@ -268,9 +268,9 @@ Notes:
 - If local durable sessions are implemented, they should use this app's own CSV/JSON contract.
 - See `docs/openremote_schema_mapping.md` for mapping notes and the proposed local CSV session-store contract.
 
-## RunPod frozen runtime setup
+## Runtime setup
 
-The setup flow resolves paths from environment variables so the same scripts can run on RunPod or a portable local machine. By default, setup scripts detect the repository root and place large runtime assets next to the repository under the repo parent directory. On RunPod, a clone at `/workspace/Geospatial-Forecasting` naturally resolves the runtime root to `/workspace`.
+The setup flow resolves paths from environment variables so the same script can run on RunPod or a portable local machine. By default, the setup script detects the repository root and places large runtime assets next to the repository under the repo parent directory. On RunPod, a clone at `/workspace/Geospatial-Forecasting` naturally resolves the runtime root to `/workspace`.
 
 - `PLUME_REPO_DIR` defaults to the detected repository root.
 - `PLUME_RUNTIME_ROOT` defaults to the parent directory of `PLUME_REPO_DIR`.
@@ -279,7 +279,7 @@ The setup flow resolves paths from environment variables so the same scripts can
 - `PLUME_RUNTIME_ENV_FILE` defaults to `$PLUME_RUNTIME_ROOT/geospatial_runtime_env.sh`.
 - Operators can override all paths with `PLUME_RUNTIME_ROOT`, `PLUME_REPO_DIR`, `PLUME_FULL_DATASET_PATH`, `PLUME_LOCAL_LLM_GGUF_PATH`, and `PLUME_CONVLSTM_CHECKPOINT_PATH`.
 
-The setup script installs OS, Python, and frontend dependencies, then runs `scripts/bootstrap_runtime_assets.py` before validating local model assets and optional dataset assets. Fresh setup downloads required model assets from the public Hugging Face runtime asset repo by default: `DavidDulovic/geospatial-plume-runtime-assets`. The default model assets are the Qwen GGUF file (`models/Qwen_Qwen2.5-7B-Instruct.Q4_K_M.gguf`) and the ConvLSTM tiny recall lift final checkpoint (`models/convlstm_multistep_three_stage_robust_v3c_tiny_recall_lift/final_full_checkpoint.pt`). Runtime uses local files after setup.
+The runtime setup script installs OS, Python, and frontend dependencies, then runs `scripts/bootstrap_runtime_assets.py` before validating local model assets and optional dataset assets. Fresh setup downloads required model assets from the public Hugging Face runtime asset repo by default: `DavidDulovic/geospatial-plume-runtime-assets`. The default model assets are the Qwen GGUF file (`models/Qwen_Qwen2.5-7B-Instruct.Q4_K_M.gguf`) and the ConvLSTM tiny recall lift final checkpoint (`models/convlstm_multistep_three_stage_robust_v3c_tiny_recall_lift/final_full_checkpoint.pt`). Runtime uses local files after setup.
 
 The Kaggle dataset is large, optional, and **not downloaded by default**. Dataset playback/demo features need the dataset, but the model/API setup can still validate without downloading it. When the dataset is unavailable and `PLUME_SETUP_REQUIRE_DATASET=false`, generated runtime env sets `PLUME_DATASET_SCENARIO_MODE=disabled` so the app does not pretend dataset playback is available.
 
@@ -325,7 +325,7 @@ export PLUME_CONVLSTM_HF_FILENAME="models/convlstm_multistep_three_stage_robust_
 
 Secrets are setup-time only and must not be committed. `HF_TOKEN` or `HUGGINGFACEHUB_API_TOKEN` may be used for private Hugging Face assets, and `KAGGLE_USERNAME` / `KAGGLE_KEY` may be used for explicit Kaggle authentication. The generated runtime env file intentionally does not export `HF_TOKEN`, `HUGGINGFACEHUB_API_TOKEN`, `KAGGLE_USERNAME`, or `KAGGLE_KEY`.
 
-RunPod example (models download by default; dataset remains disabled unless opted in):
+RunPod example using the runtime setup script (models download by default; dataset remains disabled unless opted in):
 
 ```bash
 # Optional for private overridden Hugging Face assets only:
@@ -333,7 +333,7 @@ RunPod example (models download by default; dataset remains disabled unless opte
 # Optional large dataset download:
 # export PLUME_SETUP_DOWNLOAD_DATASET=true
 # export PLUME_KAGGLE_DATASET_SLUG="<kaggle-owner>/<dataset-name>"
-bash /workspace/Geospatial-Forecasting/scripts/setup_pod_runtime.sh
+bash /workspace/Geospatial-Forecasting/scripts/setup_runtime.sh
 ```
 
 Portable/local example:
@@ -344,7 +344,7 @@ export PLUME_REPO_DIR="$HOME/projects/Geospatial-Forecasting"
 # Optional large dataset download:
 # export PLUME_SETUP_DOWNLOAD_DATASET=true
 # export PLUME_KAGGLE_DATASET_SLUG="<kaggle-owner>/<dataset-name>"
-bash "$PLUME_REPO_DIR/scripts/setup_pod_runtime.sh"
+bash "$PLUME_REPO_DIR/scripts/setup_runtime.sh"
 ```
 
 Then launch the app stack:
@@ -354,7 +354,7 @@ cd "$PLUME_REPO_DIR"
 python scripts/run_runpod_stack.py --api-base-url "<RunPod 8000 proxy URL>" --frontend-origin "<RunPod 5173 proxy URL>"
 ```
 
-The setup script prepares dependencies, validates dataset, GGUF, and ConvLSTM checkpoint artifacts, writes the resolved runtime env file, and does **not** start API/frontend/worker processes.
+The runtime setup script prepares dependencies, validates dataset, GGUF, and ConvLSTM checkpoint artifacts, writes the resolved runtime env file, and does **not** start API/frontend/worker processes.
 
 ## Installation
 Use Python 3.11.
