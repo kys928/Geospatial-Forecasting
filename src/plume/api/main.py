@@ -5,7 +5,7 @@ import logging
 import os
 from pathlib import Path
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI
 from fastapi.responses import FileResponse, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -35,20 +35,6 @@ from plume.services.dataset_scenario_service import DatasetScenarioService
 
 LOGGER = logging.getLogger(__name__)
 REPO_ROOT = Path(__file__).resolve().parents[3]
-FRONTEND_RESERVED_PATHS = (
-    "/health",
-    "/ready",
-    "/capabilities",
-    "/service",
-    "/forecast",
-    "/sessions",
-    "/forecast-context",
-    "/decision-support",
-    "/ops",
-    "/openapi.json",
-    "/docs",
-    "/redoc",
-)
 
 
 def _parse_bool(value: str | None) -> bool:
@@ -62,14 +48,6 @@ def _frontend_dist_dir() -> Path:
     if configured:
         return Path(configured).expanduser().resolve()
     return REPO_ROOT / "frontend" / "dist"
-
-
-def _is_reserved_frontend_fallback_path(path: str) -> bool:
-    normalized = path if path.startswith("/") else f"/{path}"
-    return any(
-        normalized == reserved or normalized.startswith(f"{reserved}/")
-        for reserved in FRONTEND_RESERVED_PATHS
-    )
 
 
 def _configure_frontend_serving(app: FastAPI) -> None:
@@ -87,21 +65,22 @@ def _configure_frontend_serving(app: FastAPI) -> None:
         return
 
     if assets_dir.is_dir():
-        app.mount("/assets", StaticFiles(directory=assets_dir), name="frontend-assets")
+        app.mount("/app/assets", StaticFiles(directory=assets_dir), name="frontend-assets")
 
-    @app.get("/{frontend_path:path}", include_in_schema=False)
-    async def frontend_fallback(frontend_path: str, request: Request) -> Response:
-        request_path = request.url.path
-        if _is_reserved_frontend_fallback_path(request_path):
-            return Response(status_code=404)
+    @app.get("/app", include_in_schema=False)
+    @app.get("/app/", include_in_schema=False)
+    async def frontend_index() -> FileResponse:
+        return FileResponse(index_html)
 
-        candidate = (dist_dir / frontend_path).resolve() if frontend_path else index_html
+    @app.get("/app/{frontend_path:path}", include_in_schema=False)
+    async def frontend_fallback(frontend_path: str) -> Response:
+        candidate = (dist_dir / frontend_path).resolve()
         try:
             candidate.relative_to(dist_dir)
         except ValueError:
             return Response(status_code=404)
 
-        if frontend_path and candidate.is_file():
+        if candidate.is_file():
             return FileResponse(candidate)
         return FileResponse(index_html)
 
