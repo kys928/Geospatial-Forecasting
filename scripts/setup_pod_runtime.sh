@@ -1,13 +1,28 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-REPO_DIR="/workspace/Geospatial-Forecasting"
-SETUP_TARGET="/workspace/setup_pod_runtime.sh"
-ENV_FILE="/workspace/geospatial_runtime_env.sh"
-REPORT_FILE="/workspace/geospatial_runtime_last_setup_report.txt"
-DATASET_DIR="/workspace/Dataset/hysplit-plume-convlstm-multiyear-2024-2026"
-GGUF_PATH="/workspace/llm_runtime/models/Qwen_Qwen2.5-7B-Instruct.Q4_K_M.gguf"
-GGUF_SHA256_EXPECTED="11e1c92aa0175db460399af847179825301a1a91a31da01cae12a2386fcbf3a1"
+PLUME_RUNTIME_ROOT="${PLUME_RUNTIME_ROOT:-/workspace}"
+REPO_DIR="${PLUME_REPO_DIR:-$PLUME_RUNTIME_ROOT/Geospatial-Forecasting}"
+PLUME_REPO_DIR="$REPO_DIR"
+SETUP_TARGET="${PLUME_SETUP_TARGET:-$PLUME_RUNTIME_ROOT/setup_pod_runtime.sh}"
+ENV_FILE="${PLUME_RUNTIME_ENV_FILE:-$PLUME_RUNTIME_ROOT/geospatial_runtime_env.sh}"
+REPORT_FILE="${PLUME_SETUP_REPORT_FILE:-$PLUME_RUNTIME_ROOT/geospatial_runtime_last_setup_report.txt}"
+PLUME_DATASET_ROOT="${PLUME_DATASET_ROOT:-$PLUME_RUNTIME_ROOT/Dataset}"
+PLUME_LLM_RUNTIME_ROOT="${PLUME_LLM_RUNTIME_ROOT:-$PLUME_RUNTIME_ROOT/llm_runtime}"
+DATASET_DIR="${PLUME_FULL_DATASET_PATH:-$PLUME_DATASET_ROOT/hysplit-plume-convlstm-multiyear-2024-2026}"
+GGUF_PATH="${PLUME_LOCAL_LLM_GGUF_PATH:-$PLUME_LLM_RUNTIME_ROOT/models/Qwen_Qwen2.5-7B-Instruct.Q4_K_M.gguf}"
+CONVLSTM_CHECKPOINT_PATH="${PLUME_CONVLSTM_CHECKPOINT_PATH:-$REPO_DIR/artifacts/models/convlstm_multistep_autoreg_two_stage_v1/best_full_checkpoint.pt}"
+if [[ -v PLUME_LLM_SHA256_EXPECTED ]]; then
+  GGUF_SHA256_EXPECTED="$PLUME_LLM_SHA256_EXPECTED"
+else
+  GGUF_SHA256_EXPECTED="11e1c92aa0175db460399af847179825301a1a91a31da01cae12a2386fcbf3a1"
+fi
+export PLUME_RUNTIME_ROOT PLUME_REPO_DIR PLUME_DATASET_ROOT PLUME_LLM_RUNTIME_ROOT
+export PLUME_RUNTIME_ENV_FILE="$ENV_FILE"
+export PLUME_FULL_DATASET_PATH="$DATASET_DIR"
+export PLUME_LOCAL_LLM_GGUF_PATH="$GGUF_PATH"
+export PLUME_CONVLSTM_CHECKPOINT_PATH="$CONVLSTM_CHECKPOINT_PATH"
+export PLUME_LLM_SHA256_EXPECTED="$GGUF_SHA256_EXPECTED"
 EXPECTED_WINDOWS_COUNT=40215
 NUMPY_VERSION="2.4.4"
 LLAMA_CPP_VERSION="0.3.22"
@@ -35,6 +50,7 @@ fi
 
 if [[ "$0" != "$SETUP_TARGET" ]]; then
   log "Copying setup script to $SETUP_TARGET"
+  mkdir -p "$(dirname "$SETUP_TARGET")"
   cp "$REPO_DIR/scripts/setup_pod_runtime.sh" "$SETUP_TARGET"
   chmod +x "$SETUP_TARGET"
 fi
@@ -165,6 +181,10 @@ else
   npm install
 fi
 
+cd "$REPO_DIR"
+log "Bootstrapping runtime assets"
+python3 scripts/bootstrap_runtime_assets.py
+
 log "Validating dataset"
 [[ -d "$DATASET_DIR" ]] || fail "Dataset directory missing: $DATASET_DIR"
 [[ -f "$DATASET_DIR/dataset_manifest.csv" ]] || fail "dataset_manifest.csv missing"
@@ -184,10 +204,22 @@ fi
 log "Validating GGUF file and SHA256"
 [[ -f "$GGUF_PATH" ]] || fail "GGUF missing: $GGUF_PATH"
 GGUF_SHA256_ACTUAL="$(sha256sum "$GGUF_PATH" | awk '{print $1}')"
-if [[ "$GGUF_SHA256_ACTUAL" != "$GGUF_SHA256_EXPECTED" ]]; then
-  fail "GGUF hash mismatch. Expected $GGUF_SHA256_EXPECTED, got $GGUF_SHA256_ACTUAL"
+if [[ -n "$GGUF_SHA256_EXPECTED" ]]; then
+  if [[ "$GGUF_SHA256_ACTUAL" != "$GGUF_SHA256_EXPECTED" ]]; then
+    fail "GGUF hash mismatch. Expected $GGUF_SHA256_EXPECTED, got $GGUF_SHA256_ACTUAL"
+  fi
+  log "GGUF SHA256 matches expected"
+else
+  warn "GGUF SHA256 validation disabled because PLUME_LLM_SHA256_EXPECTED is set to an empty string"
 fi
-log "GGUF SHA256 matches expected"
+
+log "Validating ConvLSTM checkpoint"
+[[ -f "$CONVLSTM_CHECKPOINT_PATH" ]] || fail "ConvLSTM checkpoint missing: $CONVLSTM_CHECKPOINT_PATH"
+CONVLSTM_SHA256_ACTUAL="$(sha256sum "$CONVLSTM_CHECKPOINT_PATH" | awk '{print $1}')"
+if [[ -n "${PLUME_CONVLSTM_SHA256_EXPECTED:-}" && "$CONVLSTM_SHA256_ACTUAL" != "$PLUME_CONVLSTM_SHA256_EXPECTED" ]]; then
+  fail "ConvLSTM checkpoint hash mismatch. Expected $PLUME_CONVLSTM_SHA256_EXPECTED, got $CONVLSTM_SHA256_ACTUAL"
+fi
+log "ConvLSTM checkpoint present"
 
 if command -v nvidia-smi >/dev/null 2>&1; then
   log "GPU info (nvidia-smi)"
@@ -214,11 +246,17 @@ if [[ -z "${VITE_API_BASE_URL:-}" || -z "${PLUME_CORS_ALLOW_ORIGINS:-}" ]]; then
   warn "You must pass --api-base-url and --frontend-origin to run_runpod_stack.py."
 fi
 
+mkdir -p "$(dirname "$ENV_FILE")" "$(dirname "$REPORT_FILE")"
 cat > "$ENV_FILE" <<EOF_ENV
 #!/usr/bin/env bash
 
-export REPO_DIR="/workspace/Geospatial-Forecasting"
-export PYTHONPATH="/workspace/Geospatial-Forecasting/src"
+export REPO_DIR="$REPO_DIR"
+export PYTHONPATH="$REPO_DIR/src"
+export PLUME_RUNTIME_ROOT="$PLUME_RUNTIME_ROOT"
+export PLUME_REPO_DIR="$REPO_DIR"
+export PLUME_DATASET_ROOT="$PLUME_DATASET_ROOT"
+export PLUME_LLM_RUNTIME_ROOT="$PLUME_LLM_RUNTIME_ROOT"
+export PLUME_RUNTIME_ENV_FILE="$ENV_FILE"
 
 export VITE_API_BASE_URL="${VITE_API_BASE_URL:-}"
 export PLUME_CORS_ALLOW_ORIGINS="${PLUME_CORS_ALLOW_ORIGINS:-}"
@@ -229,15 +267,16 @@ unset VITE_OPS_API_TOKEN
 unset PLUME_OPS_READONLY_TOKEN
 
 export PLUME_DATASET_SCENARIO_MODE="enabled"
-export PLUME_FULL_DATASET_PATH="/workspace/Dataset/hysplit-plume-convlstm-multiyear-2024-2026"
-export PLUME_DATASET_MANIFEST_PATH="/workspace/Dataset/hysplit-plume-convlstm-multiyear-2024-2026/dataset_manifest.csv"
-export PLUME_WINDOWS_MANIFEST_ENRICHED_PATH="/workspace/Dataset/hysplit-plume-convlstm-multiyear-2024-2026/windows_manifest_enriched.csv"
-export PLUME_WINDOWS_DIR="/workspace/Dataset/hysplit-plume-convlstm-multiyear-2024-2026/windows"
+export PLUME_FULL_DATASET_PATH="$DATASET_DIR"
+export PLUME_DATASET_MANIFEST_PATH="$DATASET_DIR/dataset_manifest.csv"
+export PLUME_WINDOWS_MANIFEST_ENRICHED_PATH="$DATASET_DIR/windows_manifest_enriched.csv"
+export PLUME_WINDOWS_DIR="$DATASET_DIR/windows"
 export PLUME_DATASET_SCENARIO_SCAN_LIMIT="500"
 
 export PLUME_EXPLANATION_BACKEND="llm"
 export PLUME_LLM_PROVIDER="local-gguf"
-export PLUME_LOCAL_LLM_GGUF_PATH="/workspace/llm_runtime/models/Qwen_Qwen2.5-7B-Instruct.Q4_K_M.gguf"
+export PLUME_LOCAL_LLM_GGUF_PATH="$GGUF_PATH"
+export PLUME_CONVLSTM_CHECKPOINT_PATH="$CONVLSTM_CHECKPOINT_PATH"
 export PLUME_LOCAL_LLM_N_GPU_LAYERS="-1"
 export PLUME_LOCAL_LLM_N_CTX="1024"
 export PLUME_LOCAL_LLM_N_BATCH="128"
@@ -253,11 +292,13 @@ export PLUME_LOCAL_LLM_WORKER_STARTUP_TIMEOUT_SECONDS="240"
 export PLUME_PERSIST_BATCH_EXPLANATION="false"
 export PLUME_PERSIST_BATCH_EXPLANATION_USE_LLM="false"
 
-export PLUME_DEMO_SCENARIO_DIR="/workspace/Geospatial-Forecasting/artifacts/demo_scenarios"
-export PLUME_ONLINE_SUBSET_PATH="/workspace/Dataset/online_learning_subset"
+export PLUME_DEMO_SCENARIO_DIR="$REPO_DIR/artifacts/demo_scenarios"
+export PLUME_ONLINE_SUBSET_PATH="$PLUME_DATASET_ROOT/online_learning_subset"
 
 unset HF_TOKEN
 unset HUGGINGFACEHUB_API_TOKEN
+unset KAGGLE_USERNAME
+unset KAGGLE_KEY
 unset PLUME_LLAMA_CPP_BIN
 EOF_ENV
 chmod +x "$ENV_FILE"
@@ -272,6 +313,12 @@ NPM_VER="$(npm --version)"
 {
   echo "date=$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
   echo "repo_commit=$REPO_COMMIT"
+  echo "runtime_root=$PLUME_RUNTIME_ROOT"
+  echo "repo_dir=$REPO_DIR"
+  echo "dataset_dir=$DATASET_DIR"
+  echo "gguf_path=$GGUF_PATH"
+  echo "convlstm_checkpoint_path=$CONVLSTM_CHECKPOINT_PATH"
+  echo "convlstm_checkpoint_exists=$([[ -f "$CONVLSTM_CHECKPOINT_PATH" ]] && echo true || echo false)"
   echo "python_version=$PY_VER"
   echo "pip_version=$PIP_VER"
   echo "node_version=$NODE_VER"
@@ -280,6 +327,7 @@ NPM_VER="$(npm --version)"
     | awk '/^Name:|^Version:/{print}'
   echo "dataset_windows_count=$WINDOWS_COUNT"
   echo "gguf_sha256=$GGUF_SHA256_ACTUAL"
+  echo "convlstm_sha256=$CONVLSTM_SHA256_ACTUAL"
   echo "env_file=$ENV_FILE"
 } > "$REPORT_FILE"
 
@@ -288,5 +336,5 @@ log "Wrote setup report: $REPORT_FILE"
 
 echo
 echo "Next run command:"
-echo "cd /workspace/Geospatial-Forecasting"
+echo "cd $REPO_DIR"
 echo "python scripts/run_runpod_stack.py --api-base-url \"<RunPod 8000 proxy URL>\" --frontend-origin \"<RunPod 5173 proxy URL>\""

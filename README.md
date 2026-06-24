@@ -233,23 +233,72 @@ Notes:
 - If local durable sessions are implemented, they should use this app's own CSV/JSON contract.
 - See `docs/openremote_schema_mapping.md` for mapping notes and the proposed local CSV session-store contract.
 
-## RunPod frozen runtime setup (reproducible)
+## RunPod frozen runtime setup
 
-For a fresh RunPod pod, copy and run the repository setup script from `/workspace`:
+`/workspace` is the default RunPod runtime root, but it is not the only supported location. The setup flow resolves paths from environment variables so the same scripts can run on RunPod or a portable local machine:
+
+- `PLUME_RUNTIME_ROOT` defaults to `/workspace`.
+- `PLUME_REPO_DIR` defaults to `$PLUME_RUNTIME_ROOT/Geospatial-Forecasting`.
+- `PLUME_DATASET_ROOT` defaults to `$PLUME_RUNTIME_ROOT/Dataset`.
+- `PLUME_LLM_RUNTIME_ROOT` defaults to `$PLUME_RUNTIME_ROOT/llm_runtime`.
+- `PLUME_RUNTIME_ENV_FILE` defaults to `$PLUME_RUNTIME_ROOT/geospatial_runtime_env.sh`.
+
+The setup script installs OS, Python, and frontend dependencies, then runs `scripts/bootstrap_runtime_assets.py` before validating local assets. The script supports fresh-environment asset bootstrap once the required Hugging Face and Kaggle asset identifiers are provided. If required assets already exist locally and pass validation, setup does not require Hugging Face repo IDs, filenames, or Kaggle slugs. Runtime uses local files afterward.
+
+Asset download is controlled by setup-time environment variables:
+
+- `PLUME_SETUP_DOWNLOAD_ASSETS` defaults to `true`; set to `false` to validate local assets only.
+- `PLUME_SETUP_OFFLINE` defaults to `false`; set to `true` to skip network downloads and validate local assets only.
+- `PLUME_SETUP_FORCE_DOWNLOAD` defaults to `false`; set to `true` to redownload even when assets already exist.
+- `PLUME_LLM_HF_REPO_ID` and `PLUME_LLM_HF_FILENAME` identify the GGUF LLM on Hugging Face.
+- `PLUME_CONVLSTM_HF_REPO_ID` and `PLUME_CONVLSTM_HF_FILENAME` identify the ConvLSTM checkpoint on Hugging Face.
+- `PLUME_KAGGLE_DATASET_SLUG` identifies the HYSPLIT/ConvLSTM dataset on Kaggle.
+- `PLUME_KAGGLE_MATERIALIZE_MODE` defaults to `copy`; use `move` for an empty/missing target to avoid duplicate dataset storage, or `symlink` when the target path does not already exist.
+- `PLUME_LLM_SHA256_EXPECTED` defaults to the current GGUF hash used by setup validation; set it to a different hash for another GGUF, or set it to an empty string to disable GGUF SHA validation.
+- `PLUME_CONVLSTM_SHA256_EXPECTED` is optional.
+
+Secrets are setup-time only and must not be committed. `HF_TOKEN` may be used for private Hugging Face assets, and `KAGGLE_USERNAME` / `KAGGLE_KEY` may be used for Kaggle authentication. The generated runtime env file intentionally does not export `HF_TOKEN`, `HUGGINGFACEHUB_API_TOKEN`, `KAGGLE_USERNAME`, or `KAGGLE_KEY`.
+
+The bootstrap script is infrastructure-ready, but final fresh-pod reproducibility requires uploading the real assets first and setting real Hugging Face/Kaggle identifiers. Placeholder values below are examples only; do not use them as executable defaults.
+
+RunPod example:
 
 ```bash
-cp /workspace/Geospatial-Forecasting/scripts/setup_pod_runtime.sh /workspace/setup_pod_runtime.sh
-bash /workspace/setup_pod_runtime.sh
+export HF_TOKEN="..."
+export KAGGLE_USERNAME="..."
+export KAGGLE_KEY="..."
+export PLUME_LLM_HF_REPO_ID="<huggingface-owner-or-org>/<llm-repo>"
+export PLUME_LLM_HF_FILENAME="<model-file>.gguf"
+export PLUME_CONVLSTM_HF_REPO_ID="<huggingface-owner-or-org>/<convlstm-repo>"
+export PLUME_CONVLSTM_HF_FILENAME="<checkpoint-file>.pt"
+export PLUME_KAGGLE_DATASET_SLUG="<kaggle-owner>/<dataset-name>"
+bash /workspace/Geospatial-Forecasting/scripts/setup_pod_runtime.sh
+```
+
+Portable/local example:
+
+```bash
+export PLUME_RUNTIME_ROOT="$HOME/geospatial-runtime"
+export PLUME_REPO_DIR="$HOME/projects/Geospatial-Forecasting"
+export HF_TOKEN="..."
+export KAGGLE_USERNAME="..."
+export KAGGLE_KEY="..."
+export PLUME_LLM_HF_REPO_ID="<huggingface-owner-or-org>/<llm-repo>"
+export PLUME_LLM_HF_FILENAME="<model-file>.gguf"
+export PLUME_CONVLSTM_HF_REPO_ID="<huggingface-owner-or-org>/<convlstm-repo>"
+export PLUME_CONVLSTM_HF_FILENAME="<checkpoint-file>.pt"
+export PLUME_KAGGLE_DATASET_SLUG="<kaggle-owner>/<dataset-name>"
+bash "$PLUME_REPO_DIR/scripts/setup_pod_runtime.sh"
 ```
 
 Then launch the app stack:
 
 ```bash
-cd /workspace/Geospatial-Forecasting
+cd "$PLUME_REPO_DIR"
 python scripts/run_runpod_stack.py --api-base-url "<RunPod 8000 proxy URL>" --frontend-origin "<RunPod 5173 proxy URL>"
 ```
 
-The setup script prepares dependencies, validates dataset + GGUF artifacts, writes `/workspace/geospatial_runtime_env.sh`, and does **not** start API/frontend/worker processes.
+The setup script prepares dependencies, validates dataset, GGUF, and ConvLSTM checkpoint artifacts, writes the resolved runtime env file, and does **not** start API/frontend/worker processes.
 
 ## Installation
 Use Python 3.11.
