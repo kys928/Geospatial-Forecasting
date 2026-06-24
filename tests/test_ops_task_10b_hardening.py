@@ -338,7 +338,6 @@ def test_auto_enqueue_cooldown_and_readiness_block(monkeypatch, tmp_path: Path):
     assert cooldown["reason"] == "cooldown"
     assert cooldown["cooldown_remaining_seconds"] > 0
 
-    # Rewrite terminal job outside cooldown and verify blocked readiness stops enqueue.
     payload = store.load()
     payload["jobs"][0]["finished_at"] = (datetime.now(UTC) - timedelta(hours=2)).isoformat()
     store.save(payload)

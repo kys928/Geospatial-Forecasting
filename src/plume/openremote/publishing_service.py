@@ -63,10 +63,6 @@ class OpenRemotePublishingService:
         self.forecast_attribute_names = forecast_attribute_names or {}
         self.forecast_attribute_mode = forecast_attribute_mode
 
-    # ----------------------------
-    # Public API
-    # ----------------------------
-
     async def publish_forecast_result(
         self,
         result: Any,
@@ -98,7 +94,6 @@ class OpenRemotePublishingService:
             longitude=float(self._get_attr(scenario, "longitude")),
         )
 
-        # 1) optional source asset
         source_publish_result: dict[str, Any] | None = None
         resolved_source_asset_id = source_asset_id
 
@@ -113,7 +108,7 @@ class OpenRemotePublishingService:
                 pollutant_type=pollutant_type or self._safe_str(self._get_attr(scenario, "pollution_type", None)) or "unknown",
                 release_rate=self._get_optional_float(scenario, "emissions_rate"),
                 release_height=self._get_optional_float(scenario, "release_height"),
-                source_status=source_status,  # pydantic accepts enum-compatible str
+                source_status=source_status,
                 last_observation_time=issued_at,
                 scenario_metadata=self._scenario_metadata(scenario),
             )
@@ -125,13 +120,12 @@ class OpenRemotePublishingService:
                 or resolved_source_asset_id
             )
 
-        # 2) forecast run asset
         forecast_publish_result: dict[str, Any] | None = None
         forecast_asset_id: str | None = None
 
         if publish_forecast_asset:
             forecast_model = ForecastRunAssetModel(
-                asset_id=None,  # let OR create it unless you already have a stable ID
+                asset_id=None,
                 name=f"Forecast {forecast_run_id}",
                 realm=self.realm,
                 parent_id=self.forecast_asset_parent_id or self.default_site_parent_id,
@@ -424,7 +418,6 @@ class OpenRemotePublishingService:
         if max_conc is None:
             return AlertLevel.NONE
 
-        # Demo heuristic. Replace later with your real domain thresholds.
         try:
             value = float(max_conc)
         except (TypeError, ValueError):
@@ -439,10 +432,6 @@ class OpenRemotePublishingService:
         if value < 1e-2:
             return AlertLevel.HIGH
         return AlertLevel.CRITICAL
-
-    # ----------------------------
-    # Normalization helpers
-    # ----------------------------
 
     def _get_optional_float(self, obj: Any, attr: str) -> float | None:
         value = self._get_attr(obj, attr, None)
