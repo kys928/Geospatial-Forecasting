@@ -253,7 +253,8 @@ Asset download is controlled by setup-time environment variables:
 - `PLUME_LLM_HF_REPO_ID` and `PLUME_LLM_HF_FILENAME` identify the GGUF LLM on Hugging Face.
 - `PLUME_CONVLSTM_HF_REPO_ID` and `PLUME_CONVLSTM_HF_FILENAME` identify the ConvLSTM checkpoint on Hugging Face.
 - `PLUME_KAGGLE_DATASET_SLUG` identifies the HYSPLIT/ConvLSTM dataset on Kaggle.
-- `PLUME_LLM_SHA256_EXPECTED` defaults to the current GGUF hash used by setup validation.
+- `PLUME_KAGGLE_MATERIALIZE_MODE` defaults to `copy`; use `move` for an empty/missing target to avoid duplicate dataset storage, or `symlink` when the target path does not already exist.
+- `PLUME_LLM_SHA256_EXPECTED` defaults to the current GGUF hash used by setup validation; set it to a different hash for another GGUF, or set it to an empty string to disable GGUF SHA validation.
 - `PLUME_CONVLSTM_SHA256_EXPECTED` is optional.
 
 Secrets are setup-time only and must not be committed. `HF_TOKEN` may be used for private Hugging Face assets, and `KAGGLE_USERNAME` / `KAGGLE_KEY` may be used for Kaggle authentication. The generated runtime env file intentionally does not export `HF_TOKEN`, `HUGGINGFACEHUB_API_TOKEN`, `KAGGLE_USERNAME`, or `KAGGLE_KEY`.

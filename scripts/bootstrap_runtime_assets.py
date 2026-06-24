@@ -49,6 +49,7 @@ class Config:
     force_download: bool
     llm_sha256_expected: str | None
     convlstm_sha256_expected: str | None
+    kaggle_materialize_mode: str
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -93,6 +94,7 @@ class Config:
             force_download=env_bool("PLUME_SETUP_FORCE_DOWNLOAD", False),
             llm_sha256_expected=os.environ.get("PLUME_LLM_SHA256_EXPECTED", DEFAULT_LLM_SHA256) or None,
             convlstm_sha256_expected=os.environ.get("PLUME_CONVLSTM_SHA256_EXPECTED") or None,
+            kaggle_materialize_mode=os.environ.get("PLUME_KAGGLE_MATERIALIZE_MODE", "copy").strip().lower() or "copy",
         )
 
     @property
@@ -131,6 +133,15 @@ def dataset_valid(path: Path) -> bool:
     return manifest and windows_manifest and windows_dir and windows_count > 0
 
 
+def sanitized_exception_message(exc: Exception) -> str:
+    message = f"{exc.__class__.__name__}: {exc}"
+    for secret_name in ("HF_TOKEN", "HUGGINGFACEHUB_API_TOKEN", "KAGGLE_USERNAME", "KAGGLE_KEY"):
+        secret_value = os.environ.get(secret_name)
+        if secret_value:
+            message = message.replace(secret_value, "<redacted>")
+    return message
+
+
 def require_env(names: Iterable[str]) -> list[str]:
     missing = [name for name in names if not os.environ.get(name)]
     if missing:
@@ -148,7 +159,33 @@ def copy_file_to_target(source: Path, target: Path) -> None:
     tmp_target.replace(target)
 
 
-def copy_dataset_to_target(source: Path, target: Path) -> None:
+def path_has_entries(path: Path) -> bool:
+    if not path.exists():
+        return False
+    if not path.is_dir():
+        return True
+    return any(path.iterdir())
+
+
+def materialize_dataset_to_target(source: Path, target: Path, mode: str) -> None:
+    if dataset_valid(target):
+        return
+    if mode not in {"copy", "move", "symlink"}:
+        raise BootstrapError("PLUME_KAGGLE_MATERIALIZE_MODE must be one of: copy, move, symlink")
+    if mode == "symlink":
+        if target.exists() or target.is_symlink():
+            raise BootstrapError("Cannot symlink Kaggle dataset because target path already exists and is not valid")
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.symlink_to(source, target_is_directory=True)
+        return
+    if mode == "move":
+        if target.exists() and path_has_entries(target):
+            raise BootstrapError("Cannot move Kaggle dataset because target path already exists and is not empty")
+        if target.exists():
+            target.rmdir()
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(source), str(target))
+        return
     target.mkdir(parents=True, exist_ok=True)
     for item in source.iterdir():
         dest = target / item.name
@@ -163,16 +200,27 @@ def download_hf_file(repo_env: str, filename_env: str, target: Path) -> None:
     from huggingface_hub import hf_hub_download
 
     token = os.environ.get("HF_TOKEN") or os.environ.get("HUGGINGFACEHUB_API_TOKEN")
-    downloaded = hf_hub_download(repo_id=repo_id, filename=filename, token=token)
-    copy_file_to_target(Path(downloaded), target)
+    try:
+        downloaded = hf_hub_download(repo_id=repo_id, filename=filename, token=token)
+        copy_file_to_target(Path(downloaded), target)
+    except Exception as exc:  # noqa: BLE001 - wrap third-party download failures without leaking secrets.
+        raise BootstrapError(
+            f"Hugging Face download failed for {repo_env}/{filename_env}: {sanitized_exception_message(exc)}"
+        ) from exc
 
 
 def download_kaggle_dataset(target: Path) -> None:
     (slug,) = require_env(["PLUME_KAGGLE_DATASET_SLUG"])
     import kagglehub
 
-    downloaded = kagglehub.dataset_download(slug)
-    copy_dataset_to_target(Path(downloaded), target)
+    mode = os.environ.get("PLUME_KAGGLE_MATERIALIZE_MODE", "copy").strip().lower() or "copy"
+    try:
+        downloaded = kagglehub.dataset_download(slug)
+        materialize_dataset_to_target(Path(downloaded), target, mode)
+    except Exception as exc:  # noqa: BLE001 - wrap third-party download failures without leaking secrets.
+        if isinstance(exc, BootstrapError):
+            raise
+        raise BootstrapError(f"Kaggle dataset download failed: {sanitized_exception_message(exc)}") from exc
 
 
 def maybe_download_assets(cfg: Config) -> None:
@@ -200,6 +248,7 @@ def print_report(cfg: Config) -> None:
     if cfg.convlstm_checkpoint_path.is_file():
         print(f"  convlstm_sha256: {sha256_file(cfg.convlstm_checkpoint_path)}")
     print(f"  dataset_path: {cfg.dataset_path}")
+    print(f"  kaggle_materialize_mode: {cfg.kaggle_materialize_mode}")
     print(f"  dataset_manifest_exists: {manifest}")
     print(f"  windows_manifest_exists: {windows_manifest}")
     print(f"  windows_count: {windows_count}")

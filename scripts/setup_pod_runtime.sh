@@ -12,7 +12,11 @@ PLUME_LLM_RUNTIME_ROOT="${PLUME_LLM_RUNTIME_ROOT:-$PLUME_RUNTIME_ROOT/llm_runtim
 DATASET_DIR="${PLUME_FULL_DATASET_PATH:-$PLUME_DATASET_ROOT/hysplit-plume-convlstm-multiyear-2024-2026}"
 GGUF_PATH="${PLUME_LOCAL_LLM_GGUF_PATH:-$PLUME_LLM_RUNTIME_ROOT/models/Qwen_Qwen2.5-7B-Instruct.Q4_K_M.gguf}"
 CONVLSTM_CHECKPOINT_PATH="${PLUME_CONVLSTM_CHECKPOINT_PATH:-$REPO_DIR/artifacts/models/convlstm_multistep_autoreg_two_stage_v1/best_full_checkpoint.pt}"
-GGUF_SHA256_EXPECTED="${PLUME_LLM_SHA256_EXPECTED:-11e1c92aa0175db460399af847179825301a1a91a31da01cae12a2386fcbf3a1}"
+if [[ -v PLUME_LLM_SHA256_EXPECTED ]]; then
+  GGUF_SHA256_EXPECTED="$PLUME_LLM_SHA256_EXPECTED"
+else
+  GGUF_SHA256_EXPECTED="11e1c92aa0175db460399af847179825301a1a91a31da01cae12a2386fcbf3a1"
+fi
 export PLUME_RUNTIME_ROOT PLUME_REPO_DIR PLUME_DATASET_ROOT PLUME_LLM_RUNTIME_ROOT
 export PLUME_RUNTIME_ENV_FILE="$ENV_FILE"
 export PLUME_FULL_DATASET_PATH="$DATASET_DIR"
@@ -200,10 +204,14 @@ fi
 log "Validating GGUF file and SHA256"
 [[ -f "$GGUF_PATH" ]] || fail "GGUF missing: $GGUF_PATH"
 GGUF_SHA256_ACTUAL="$(sha256sum "$GGUF_PATH" | awk '{print $1}')"
-if [[ "$GGUF_SHA256_ACTUAL" != "$GGUF_SHA256_EXPECTED" ]]; then
-  fail "GGUF hash mismatch. Expected $GGUF_SHA256_EXPECTED, got $GGUF_SHA256_ACTUAL"
+if [[ -n "$GGUF_SHA256_EXPECTED" ]]; then
+  if [[ "$GGUF_SHA256_ACTUAL" != "$GGUF_SHA256_EXPECTED" ]]; then
+    fail "GGUF hash mismatch. Expected $GGUF_SHA256_EXPECTED, got $GGUF_SHA256_ACTUAL"
+  fi
+  log "GGUF SHA256 matches expected"
+else
+  warn "GGUF SHA256 validation disabled because PLUME_LLM_SHA256_EXPECTED is set to an empty string"
 fi
-log "GGUF SHA256 matches expected"
 
 log "Validating ConvLSTM checkpoint"
 [[ -f "$CONVLSTM_CHECKPOINT_PATH" ]] || fail "ConvLSTM checkpoint missing: $CONVLSTM_CHECKPOINT_PATH"
