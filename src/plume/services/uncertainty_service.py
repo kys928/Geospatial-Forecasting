@@ -16,11 +16,6 @@ def build_impact_extent_uncertainty(
     sample_count: int = 100,
     seed: int = 1729,
 ) -> dict[str, Any]:
-    """Build deterministic impact-extent uncertainty from forecast output metrics.
-
-    This helper perturbs the already-computed affected area. It does not rerun any
-    forecasting model and does not compare against observations.
-    """
     central_estimate_ha = _extract_affected_area_hectares(plume_metrics)
     if central_estimate_ha is None:
         return {}

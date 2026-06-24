@@ -14,7 +14,6 @@ import numpy as np
 
 
 def forecast_to_openremote_attributes(result):
-    """Map core forecast fields to generic OpenRemote-like attributes."""
     grid = result.forecast.concentration_grid
     return {
         "forecastId": result.forecast_id,
@@ -31,7 +30,6 @@ def forecast_to_openremote_attributes(result):
 
 
 def forecast_to_openremote_layer(result):
-    """Build a generic metadata layer; not a validated OpenRemote schema object."""
     min_lat, max_lat, min_lon, max_lon = result.forecast.grid_spec.boundary_limits
     return {
         "type": "raster-metadata",
@@ -50,7 +48,6 @@ def forecast_to_openremote_layer(result):
 
 
 def forecast_to_openremote_payload(result):
-    """Return a provisional generic payload; this is not a live integration contract."""
     return {
         "asset": {
             "attributes": forecast_to_openremote_attributes(result),

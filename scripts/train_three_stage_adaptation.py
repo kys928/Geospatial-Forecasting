@@ -1,17 +1,4 @@
 #!/usr/bin/env python3
-"""Manual CLI/smoke runner for robust three-stage ConvLSTM adaptation training.
-
-Example continuation command (paths are examples only, not defaults):
-
-python scripts/train_three_stage_adaptation.py \
-  --reference-dataset-dir /workspace/online_sets/online_learning_subset \
-  --output-dir /workspace/Geospatial-Forecasting/runs/convlstm_multistep_three_stage_robust_v2_from_stage2 \
-  --resume-checkpoint /workspace/Geospatial-Forecasting/runs/convlstm_multistep_three_stage_robust_v1/stage_transition_after_stage2_autoregressive_teacher_forcing_full_checkpoint.pt \
-  --resume-mode model_only \
-  --start-stage stage3 \
-  --device cuda \
-  --max-epochs-stage3 8
-"""
 
 from __future__ import annotations
 

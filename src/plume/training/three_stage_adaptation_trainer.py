@@ -1,9 +1,3 @@
-"""Standalone robust three-stage ConvLSTM adaptation trainer.
-
-The trainer consumes Phase 5A adaptation dataset manifests and writes local run
-artifacts only. It does not promote models, mutate registries, start workers, or
-change serving behavior.
-"""
 
 from __future__ import annotations
 
@@ -18,7 +12,7 @@ from typing import Any, Callable, Literal
 
 from plume.training.adaptation_dataset import AdaptationNPZDataset, AdaptationSample
 
-try:  # Keep module importable when torch is absent.
+try:
     import torch
     from torch import nn
     from torch.utils.data import DataLoader
@@ -33,7 +27,7 @@ ResumeMode = Literal["none", "model_only"]
 
 
 class TrainingCancelled(RuntimeError):
-    """Raised when cooperative adaptation training cancellation is requested."""
+    pass
 
 
 MODEL_CONTRACT: dict[str, Any] = {

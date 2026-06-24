@@ -289,11 +289,7 @@ def _npz_scalar(data: np.lib.npyio.NpzFile, *keys: str) -> object | None:
 
 
 def load_dataset_window_runtime_context(path: str | Path | None) -> dict[str, object]:
-    """Extract operator-facing meteorology/source/provenance from the NPZ window used for ConvLSTM inference.
-
-    This intentionally does not affect model inference. It only preserves the context of the input
-    window so Forecast Overview and AI Decision Support stop showing "Not available".
-    """
+    """Extract context from the NPZ window used as ConvLSTM input without affecting inference."""
     if path is None:
         return {"meteorology": {}, "source": {}, "raw_reference": {}}
 
@@ -535,7 +531,6 @@ class AdaptationResumeSelection:
 
 
 class RetrainingJobDeferred(RuntimeError):
-    """Raised when a claimed retraining job should wait instead of train."""
 
     def __init__(self, message: str, *, metadata: dict[str, object] | None = None) -> None:
         super().__init__(message)
@@ -543,7 +538,7 @@ class RetrainingJobDeferred(RuntimeError):
 
 
 class RetrainingJobCancelled(RuntimeError):
-    """Raised when an operator requested cooperative training cancellation."""
+    pass
 
 
 class RetrainingJobStore:
@@ -1541,7 +1536,6 @@ def evaluate_adaptation_candidate_for_registry(
     candidate_model_id: str,
     thresholds: AdaptationPromotionThresholds | None = None,
 ) -> dict[str, object]:
-    """Evaluate an adaptation candidate without mutating registry state."""
     payload = registry.load()
     models = payload["models"]
     candidate = next((m for m in models if m.get("model_id") == candidate_model_id), None)
@@ -1562,7 +1556,6 @@ def delete_adaptation_checkpoint_file(
     actor: str = "api_operator",
     comment: str | None = None,
 ) -> dict[str, object]:
-    """Delete a non-active adaptation checkpoint file and purge its registry record."""
     payload = registry.load()
     active_id = _optional_str(payload.get("active_model_id"))
     models = payload["models"]
@@ -1693,7 +1686,6 @@ def approve_and_activate_adaptation_candidate(
     actor: str,
     comment: str | None = None,
 ) -> dict[str, object]:
-    """Approve, validate, and activate an adaptation candidate through service-layer flow."""
     payload = registry.load()
     models = payload["models"]
     record = next((m for m in models if m.get("model_id") == model_id), None)
@@ -2012,12 +2004,10 @@ def _is_effectively_active_retraining_job(job: dict[str, object], *, now: dateti
 
 
 def list_blocking_retraining_jobs(jobs: Iterable[dict[str, object]], *, now: datetime | None = None) -> list[dict[str, object]]:
-    """Return retraining jobs that block automatic retraining enqueue."""
     return [dict(job) for job in jobs if isinstance(job, dict) and _is_effectively_active_retraining_job(job, now=now)]
 
 
 def has_blocking_retraining_job(jobs: Iterable[dict[str, object]], *, now: datetime | None = None) -> bool:
-    """Return whether any existing retraining job should defer automatic enqueue."""
     return any(_is_effectively_active_retraining_job(job, now=now) for job in jobs if isinstance(job, dict))
 
 
@@ -2045,7 +2035,6 @@ def try_recover_stale_active_jobs(
     stale_after_seconds: float | None = None,
     now: datetime | None = None,
 ) -> dict[str, object]:
-    """Recover stale active jobs without making read/status paths lock-fragile."""
     try:
         result = job_store.recover_stale_active_jobs(stale_after_seconds=stale_after_seconds, now=now)
         return {**result, "job_store_busy": False, "recovery_skipped_reason": None}
@@ -2108,7 +2097,6 @@ def cleanup_stale_automatic_retraining_backlog(
     now: datetime | None = None,
     stale_after_seconds: int | None = None,
 ) -> dict[str, object]:
-    """Cancel stale automatic queued/waiting backlog jobs without deleting records."""
     reference = now or datetime.now(timezone.utc)
     threshold = int(stale_after_seconds if stale_after_seconds is not None else _automatic_backlog_stale_seconds())
     threshold = max(60, threshold)
@@ -2180,7 +2168,6 @@ def maybe_enqueue_automatic_adaptation_job(
     registry: ModelRegistry | None = None,
     now: datetime | None = None,
 ) -> dict[str, object]:
-    """Idempotently enqueue one automatic adaptation job when readiness is green."""
     current_time = now or datetime.now(timezone.utc)
     active_recovery = job_store.recover_stale_active_jobs(now=current_time)
     if int(active_recovery.get("recovered_count", 0)) > 0:
@@ -2419,11 +2406,6 @@ def run_adaptation_retraining_job(
     registry: ModelRegistry | None = None,
     job_store: RetrainingJobStore | None = None,
 ) -> dict[str, object]:
-    """Run the robust automatic adaptation trainer for one claimed job.
-
-    This path only produces a candidate run artifact. It does not promote,
-    activate, delete, or serve checkpoints.
-    """
     adaptation_config_path = _adaptation_config_path(config_dir)
     readiness_config = AdaptationReadinessConfig.from_yaml(adaptation_config_path)
     training_cfg_payload = _load_adaptation_training_payload(adaptation_config_path)

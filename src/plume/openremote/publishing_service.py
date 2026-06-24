@@ -26,13 +26,6 @@ from plume.openremote.forecast_asset_contract import build_forecast_attribute_pa
 
 
 class OpenRemotePublishingService:
-    """
-    Thin orchestration service which:
-    1. converts internal forecast results into OpenRemote-facing asset payloads
-    2. publishes them through OpenRemoteResultSink
-
-    This is intentionally narrow and provisional.
-    """
 
     def __init__(
         self,
@@ -76,11 +69,6 @@ class OpenRemotePublishingService:
         publish_source_asset: bool = True,
         publish_forecast_asset: bool = True,
     ) -> dict[str, Any]:
-        """
-        Publish a forecast result into OpenRemote.
-
-        Returns a small summary dict with any created/updated asset identifiers.
-        """
         scenario = self._get_attr(result.forecast, "scenario")
         grid_spec = self._get_attr(result.forecast, "grid_spec")
         execution_metadata = self._normalize_mapping(getattr(result, "execution_metadata", {}) or {})
@@ -230,7 +218,7 @@ class OpenRemotePublishingService:
             sensor_type=sensor_type,
             observed_unit=observed_unit,
             pollutant_type=pollutant_type,
-            quality_flag=quality_flag,  # enum-compatible str
+            quality_flag=quality_flag,
             observation_metadata=observation_metadata or {},
         )
         payload = build_sensor_asset_payload(model)
@@ -271,7 +259,7 @@ class OpenRemotePublishingService:
             zone_geometry=zone_geometry,
             zone_type=zone_type,
             latest_forecast_run_id=latest_forecast_run_id,
-            risk_level=risk_level,  # enum-compatible str
+            risk_level=risk_level,
         )
         payload = build_forecast_zone_asset_payload(model)
         return await self.sink.upsert_asset(payload)
@@ -282,18 +270,11 @@ class OpenRemotePublishingService:
         zone_asset_id: str,
         series: Iterable[tuple],
     ) -> dict[str, Any]:
-        """
-        series: iterable[(timestamp, value)]
-        """
         write = build_zone_predicted_concentration_write(
             asset_id=zone_asset_id,
             datapoints=list(series),
         )
         return await self.sink.write_predicted_datapoints(write)
-
-    # ----------------------------
-    # Extraction / mapping helpers
-    # ----------------------------
 
     def _extract_summary_stats(self, result: Any) -> dict[str, Any]:
         raw = getattr(result, "summary_statistics", {}) or {}
@@ -333,9 +314,6 @@ class OpenRemotePublishingService:
         return None
 
     def _extract_raster_metadata(self, result: Any) -> dict[str, Any]:
-        """
-        Keep this minimal and JSON-safe.
-        """
         forecast = result.forecast
         grid_spec = self._get_attr(forecast, "grid_spec")
         return {
@@ -359,10 +337,6 @@ class OpenRemotePublishingService:
         return ref
 
     def _build_footprint_geojson(self, result: Any) -> dict[str, Any] | None:
-        """
-        Fallback source-location geometry for legacy asset publishing.
-        Not used for forecastGeoJson attribute publishing when exported GeoJSON is supplied.
-        """
         scenario = self._get_attr(result.forecast, "scenario")
         lat = self._get_attr(scenario, "latitude", None)
         lon = self._get_attr(scenario, "longitude", None)

@@ -32,7 +32,6 @@ class ConvLSTMInputAdapterResult:
 
 
 class ConvLSTMInputAdapter:
-    """Prepare canonical ConvLSTM inference tensors in (T, C, H, W) order."""
 
     def __init__(self, *, sequence_length: int, input_channels: int, input_mode: str = "degraded"):
         if sequence_length != CONVLSTM_SEQUENCE_LENGTH:

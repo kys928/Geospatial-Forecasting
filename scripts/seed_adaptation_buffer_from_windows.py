@@ -1,10 +1,4 @@
 #!/usr/bin/env python3
-"""Seed accepted adaptation-buffer samples from a full windows NPZ dataset.
-
-This dev/ops utility simulates validated incoming samples at the adaptation
-buffer boundary. It writes through the existing adaptation buffer service when
---execute is supplied; dry-run is the default and performs no mutation.
-"""
 
 from __future__ import annotations
 

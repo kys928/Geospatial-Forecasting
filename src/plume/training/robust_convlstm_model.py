@@ -1,8 +1,3 @@
-"""Training-facing import for the robust multi-step ConvLSTM model.
-
-This module intentionally re-exports the model implementation used by serving
-so adaptation trainers do not duplicate architecture code.
-"""
 
 from __future__ import annotations
 

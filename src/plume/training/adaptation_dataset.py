@@ -1,9 +1,3 @@
-"""Dataset discovery and mixing helpers for adaptation training windows.
-
-This module builds manifests for future ConvLSTM adaptation training. It only
-loads canonical NPZ windows and records sample weights; it does not train,
-promote, activate, or serve models.
-"""
 
 from __future__ import annotations
 
@@ -29,7 +23,6 @@ INVALID_CONTRACT = "invalid"
 
 @dataclass(frozen=True)
 class AdaptationDatasetConfig:
-    """Configuration for canonical NPZ adaptation dataset manifests."""
 
     input_frames: int = 3
     input_channels: int = 10
@@ -67,7 +60,6 @@ class AdaptationDatasetConfig:
 
 @dataclass
 class AdaptationSample:
-    """One canonical NPZ sample selected for adaptation training or validation."""
 
     sample_id: str
     path: str
@@ -83,7 +75,6 @@ class AdaptationSample:
 
 @dataclass
 class AdaptationDatasetManifest:
-    """Train/validation sample manifest for adaptation dataset construction."""
 
     train_samples: list[AdaptationSample]
     val_samples: list[AdaptationSample]
@@ -103,14 +94,6 @@ def validate_npz_contract(
     path: Path | str,
     config: AdaptationDatasetConfig | None = None,
 ) -> dict[str, Any]:
-    """Validate canonical and legacy t+1 adaptation NPZ tensor contracts.
-
-    Canonical samples are complete four-horizon samples with target shape
-    ``(4, 1, 64, 64)``. Legacy t+1 samples with target shape
-    ``(1, 10, 64, 64)`` are recognized as single future frames that must be
-    assembled with three consecutive legacy windows from the same scenario; the
-    channel axis is never treated as forecast time.
-    """
 
     cfg = config or AdaptationDatasetConfig()
     npz_path = Path(path)
@@ -136,7 +119,7 @@ def validate_npz_contract(
                 reasons.append("missing required key: target")
             else:
                 shapes["target"] = tuple(data["target"].shape)
-    except Exception as exc:  # NPZ corruption should not crash manifest building.
+    except Exception as exc:
         reasons.append(f"failed to read npz: {exc}")
 
     if not reasons:
@@ -169,10 +152,6 @@ def discover_npz_samples(
     source: DatasetSource,
     weight: float,
 ) -> list[AdaptationSample]:
-    """Discover NPZ samples in the supported reference directory layouts.
-
-    The split is assigned by the caller. Duplicates are removed by resolved path.
-    """
 
     root_path = Path(root)
     if not root_path.exists():
@@ -209,7 +188,6 @@ def build_adaptation_dataset_manifest(
     adaptation_buffer: Any | None = None,
     config: AdaptationDatasetConfig | None = None,
 ) -> AdaptationDatasetManifest:
-    """Build a mixed train/validation manifest for future adaptation training."""
 
     cfg = config or AdaptationDatasetConfig()
     warnings: list[str] = []
@@ -284,12 +262,6 @@ def build_adaptation_dataset_manifest(
 
 
 class AdaptationNPZDataset:
-    """PyTorch-compatible Dataset-style loader for selected NPZ samples.
-
-    Torch is imported lazily. If it is unavailable, numpy arrays are returned.
-    The usable sample index is validated during construction so malformed or
-    incomplete samples are rejected before PyTorch's default collate sees them.
-    """
 
     def __init__(
         self,
@@ -575,7 +547,6 @@ def _sample_is_loadable(sample: AdaptationSample, config: AdaptationDatasetConfi
 
 
 def _metadata_for_default_collate(value: Any) -> Any:
-    """Return metadata containing only values accepted by PyTorch default_collate."""
     if value is None:
         return ""
     if isinstance(value, dict):

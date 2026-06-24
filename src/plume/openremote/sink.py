@@ -15,10 +15,6 @@ from plume.openremote.models import (
 
 
 class OpenRemoteResultSink(ABC):
-    """
-    Project-facing interface.
-    Keep it narrow and demoable.
-    """
 
     @abstractmethod
     async def upsert_asset(self, asset: ORAssetPayload) -> dict[str, Any]:
@@ -56,9 +52,6 @@ class OpenRemoteResultSink(ABC):
 
 
 class HttpOpenRemoteResultSink(OpenRemoteResultSink):
-    """
-    Thin HTTP sink with basic request/error hardening.
-    """
 
     def __init__(
         self,
@@ -84,11 +77,6 @@ class HttpOpenRemoteResultSink(OpenRemoteResultSink):
         return f"{self.base_url}{path}"
 
     def _asset_payload(self, asset: ORAssetPayload) -> dict[str, Any]:
-        """
-        The deployed OpenRemote versions used by projects typically expect `parentId`
-        rather than `parent_id`. We shape the payload accordingly while keeping this
-        adapter thin and version-cautious.
-        """
         payload = {
             "id": asset.id,
             "name": asset.name,
@@ -138,11 +126,6 @@ class HttpOpenRemoteResultSink(OpenRemoteResultSink):
         return response
 
     async def upsert_asset(self, asset: ORAssetPayload) -> dict[str, Any]:
-        """
-        Simplest contract:
-        - POST if no ID
-        - PUT if ID exists
-        """
         payload = self._asset_payload(asset)
         method = "PUT" if asset.id else "POST"
         response = await self._request(
@@ -183,11 +166,6 @@ class HttpOpenRemoteResultSink(OpenRemoteResultSink):
         self,
         writes: list[ORTimestampedAttributeWrite],
     ) -> list[dict[str, Any]]:
-        """
-        Endpoint name is based on the documented 'Update attribute values with timestamps' capability.
-        Some OpenRemote deployments/version lines can vary endpoint naming.
-        Adjust this path if your target deployment expects a different timestamped-write route.
-        """
         payload = [
             {
                 "id": w.asset_id,

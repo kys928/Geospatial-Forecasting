@@ -26,12 +26,6 @@ class ForecastRunResult:
 
 
 class ForecastService:
-    """Batch-oriented one-off forecast execution service.
-
-    This service preserves the existing Gaussian baseline run path for scripts and
-    current batch API endpoints. Online session/runtime behavior now lives in
-    OnlineForecastService and backend runtime implementations.
-    """
 
     def __init__(self, config: Config):
         self.config = config

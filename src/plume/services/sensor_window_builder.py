@@ -1,22 +1,3 @@
-"""Build canonical adaptation NPZ windows from raw sensor observations.
-
-This module converts raw point observations into sensor-derived pseudo-target
-plume grids for the adaptation buffer. It does not train, promote, load, or serve
-models.
-
-Canonical channel order for rasterized frames:
-
-- channel 0 = plume
-- channel 1 = u10
-- channel 2 = v10
-- channel 3 = wind_speed
-- channel 4 = wind_dir_sin
-- channel 5 = wind_dir_cos
-- channel 6 = pblh
-- channel 7 = surface_pressure
-- channel 8 = rh2m
-- channel 9 = t2m
-"""
 
 from __future__ import annotations
 
@@ -54,7 +35,6 @@ _SAMPLE_ID_SAFE_RE = re.compile(r"[^A-Za-z0-9_.-]+")
 
 
 class RawObservation(TypedDict, total=False):
-    """Flexible raw sensor observation accepted by :class:`SensorWindowBuilder`."""
 
     timestamp: str
     sensor_id: str
@@ -66,7 +46,6 @@ class RawObservation(TypedDict, total=False):
 
 @dataclass(frozen=True)
 class SensorWindowBuilderConfig:
-    """Configuration for sensor-observation rasterization and NPZ building."""
 
     output_dir: Path | str = "artifacts/adaptation_windows"
     grid_size: int = GRID_SIZE
@@ -100,7 +79,6 @@ class SensorWindowBuilderConfig:
 
 @dataclass
 class RasterQuality:
-    """Quality counters from one rasterized observation frame."""
 
     valid_observation_count: int = 0
     invalid_observation_count: int = 0
@@ -111,7 +89,6 @@ class RasterQuality:
 
 @dataclass
 class QualityReport:
-    """JSON-serializable quality report for one built window."""
 
     sample_id: str
     ok: bool
@@ -134,7 +111,6 @@ class QualityReport:
 
 @dataclass
 class WindowBuildResult:
-    """Result of building one canonical adaptation training window."""
 
     sample_id: str
     ok: bool
@@ -144,7 +120,6 @@ class WindowBuildResult:
 
 
 class SensorWindowBuilder:
-    """Convert raw sensor observations into canonical ConvLSTM adaptation windows."""
 
     def __init__(self, config: SensorWindowBuilderConfig | None = None) -> None:
         self.config = config or SensorWindowBuilderConfig()
@@ -156,13 +131,6 @@ class SensorWindowBuilder:
         *,
         return_quality: bool = False,
     ) -> np.ndarray | tuple[np.ndarray, RasterQuality]:
-        """Rasterize raw point observations into a ``(10, 64, 64)`` frame.
-
-        Coordinates in ``[0, 63]`` are rounded to the nearest grid cell.
-        Coordinates where both ``x`` and ``y`` are in ``[0, 1]`` are treated as
-        normalized coordinates and scaled to ``[0, 63]``. Invalid or out-of-range
-        coordinates are skipped and counted in the frame quality metadata.
-        """
         grid_size = self.config.grid_size
         sums = np.zeros((self.config.input_channel_count, grid_size, grid_size), dtype=np.float32)
         counts = np.zeros((grid_size, grid_size), dtype=np.float32)
@@ -206,7 +174,6 @@ class SensorWindowBuilder:
         sample_id: str | None = None,
         output_dir: Path | str | None = None,
     ) -> WindowBuildResult:
-        """Build one ``sample_id.npz`` file plus a JSON quality report."""
         sample_id = self._clean_sample_id(sample_id or uuid4().hex)
         destination_dir = Path(output_dir) if output_dir is not None else Path(self.config.output_dir)
         destination_dir.mkdir(parents=True, exist_ok=True)
@@ -279,7 +246,6 @@ class SensorWindowBuilder:
         *,
         sample_id_prefix: str | None = None,
     ) -> list[WindowBuildResult]:
-        """Build consecutive windows from JSONL observations grouped by timestamp."""
         observations_path = Path(raw_observations_path)
         groups: dict[str, list[dict[str, Any]]] = {}
         with observations_path.open("r", encoding="utf-8") as handle:
@@ -315,7 +281,6 @@ class SensorWindowBuilder:
         buffer: AdaptationBuffer,
         built_window: WindowBuildResult,
     ) -> AdaptationSampleRecord:
-        """Register a built NPZ as pending in an :class:`AdaptationBuffer`."""
         if not built_window.ok or built_window.npz_path is None:
             raise ValueError(f"Cannot register failed window: {built_window.sample_id}")
         quality_report = built_window.quality_report.to_dict()
@@ -370,7 +335,6 @@ class SensorWindowBuilder:
         return numeric
 
     def _neighbor_fill(self, frame: np.ndarray, occupied: np.ndarray) -> np.ndarray:
-        """Very small optional numpy-only fill for immediate empty neighbors."""
         filled = frame.copy()
         rows, cols = np.where(occupied)
         for row, col in zip(rows, cols, strict=False):
