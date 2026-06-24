@@ -179,7 +179,7 @@ def test_main_returns_1_and_prints_on_child_exit(monkeypatch, capsys):
     assert "[stack] api exited with code 7; shutting down stack." in out
 
 
-def _runpod_process_name(cmd):
+def _stack_process_name(cmd):
     if cmd[0] == "npm":
         return "frontend"
     if any("run_execution_worker.py" in part for part in cmd):
@@ -187,8 +187,8 @@ def _runpod_process_name(cmd):
     return "api"
 
 
-def test_runpod_worker_exit_warns_once_and_keeps_stack_until_interrupt(monkeypatch, tmp_path, capsys):
-    module = _load_module("run_runpod_stack.py")
+def test_stack_worker_exit_warns_once_and_keeps_stack_until_interrupt(monkeypatch, tmp_path, capsys):
+    module = _load_module("run_stack.py")
     module.RUNTIME_ENV_PATH = tmp_path / "missing_runtime_env.sh"
 
     class _Proc:
@@ -213,7 +213,7 @@ def test_runpod_worker_exit_warns_once_and_keeps_stack_until_interrupt(monkeypat
     started = []
 
     def _fake_popen(cmd, **_kwargs):
-        name = _runpod_process_name(cmd)
+        name = _stack_process_name(cmd)
         proc = _Proc(name)
         started.append(proc)
         return proc
@@ -239,8 +239,8 @@ def test_runpod_worker_exit_warns_once_and_keeps_stack_until_interrupt(monkeypat
     assert [proc.terminated for proc in started] == [True, False, True]
 
 
-def test_runpod_api_exit_remains_fatal(monkeypatch, tmp_path, capsys):
-    module = _load_module("run_runpod_stack.py")
+def test_stack_api_exit_remains_fatal(monkeypatch, tmp_path, capsys):
+    module = _load_module("run_stack.py")
     module.RUNTIME_ENV_PATH = tmp_path / "missing_runtime_env.sh"
 
     class _Proc:
@@ -264,7 +264,7 @@ def test_runpod_api_exit_remains_fatal(monkeypatch, tmp_path, capsys):
     started = []
 
     def _fake_popen(cmd, **_kwargs):
-        name = _runpod_process_name(cmd)
+        name = _stack_process_name(cmd)
         proc = _Proc(name)
         started.append(proc)
         return proc
@@ -279,8 +279,8 @@ def test_runpod_api_exit_remains_fatal(monkeypatch, tmp_path, capsys):
     assert [proc.terminated for proc in started] == [False, True, True]
 
 
-def test_runpod_frontend_exit_remains_fatal(monkeypatch, tmp_path, capsys):
-    module = _load_module("run_runpod_stack.py")
+def test_stack_frontend_exit_remains_fatal(monkeypatch, tmp_path, capsys):
+    module = _load_module("run_stack.py")
     module.RUNTIME_ENV_PATH = tmp_path / "missing_runtime_env.sh"
 
     class _Proc:
@@ -304,7 +304,7 @@ def test_runpod_frontend_exit_remains_fatal(monkeypatch, tmp_path, capsys):
     started = []
 
     def _fake_popen(cmd, **_kwargs):
-        name = _runpod_process_name(cmd)
+        name = _stack_process_name(cmd)
         proc = _Proc(name)
         started.append(proc)
         return proc
