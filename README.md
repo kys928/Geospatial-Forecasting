@@ -165,14 +165,14 @@ When `PLUME_SERVE_FRONTEND=true`, FastAPI serves built assets only if the config
 Existing convenience launchers remain available for their original workflows:
 
 ```bash
-# RunPod pod demos / convenience orchestration
-python scripts/run_runpod_stack.py ...
+# Generic app-stack convenience orchestration for RunPod or portable deployments
+python scripts/run_stack.py ...
 
 # Local development two-process workflow
 python scripts/run_local_stack.py
 ```
 
-Use `scripts/run_runpod_stack.py` for RunPod/dev convenience, `scripts/run_local_stack.py` for local development, and `scripts/run_app_service.py` for the generic production/OpenRemote-friendly FastAPI process.
+Use `scripts/run_stack.py` for generic app-stack convenience on RunPod or portable deployments, `scripts/run_local_stack.py` for local development, and `scripts/run_app_service.py` for the generic production/OpenRemote-friendly FastAPI process.
 
 ## Config
 Backend/session behavior is configured in `configs/backend.yaml`:
@@ -347,14 +347,16 @@ export PLUME_REPO_DIR="$HOME/projects/Geospatial-Forecasting"
 bash "$PLUME_REPO_DIR/scripts/setup_runtime.sh"
 ```
 
-Then launch the app stack:
+The runtime setup script prepares dependencies, validates dataset, GGUF, and ConvLSTM checkpoint artifacts, writes the resolved runtime env file, and does **not** start API/frontend/worker processes.
+
+## Launch app stack
+
+After runtime setup completes, launch the generic app stack when you are ready to start API, worker, and frontend processes. The same launcher can be used for RunPod proxy deployments or portable/local runtime roots. For RunPod browser access, pass externally accessible proxy URLs:
 
 ```bash
 cd "$PLUME_REPO_DIR"
-python scripts/run_runpod_stack.py --api-base-url "<RunPod 8000 proxy URL>" --frontend-origin "<RunPod 5173 proxy URL>"
+python scripts/run_stack.py --api-base-url "<RunPod 8000 proxy URL>" --frontend-origin "<RunPod 5173 proxy URL>"
 ```
-
-The runtime setup script prepares dependencies, validates dataset, GGUF, and ConvLSTM checkpoint artifacts, writes the resolved runtime env file, and does **not** start API/frontend/worker processes.
 
 ## Installation
 Use Python 3.11.

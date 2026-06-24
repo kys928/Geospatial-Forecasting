@@ -285,10 +285,6 @@ else
   fi
 fi
 
-if [[ -z "${VITE_API_BASE_URL:-}" || -z "${PLUME_CORS_ALLOW_ORIGINS:-}" ]]; then
-  warn "VITE_API_BASE_URL and/or PLUME_CORS_ALLOW_ORIGINS not set in current shell."
-  warn "You must pass --api-base-url and --frontend-origin to run_runpod_stack.py."
-fi
 
 mkdir -p "$(dirname "$ENV_FILE")" "$(dirname "$REPORT_FILE")"
 cat > "$ENV_FILE" <<EOF_ENV
@@ -377,8 +373,3 @@ NPM_VER="$(npm --version)"
 
 log "Wrote runtime env file: $ENV_FILE"
 log "Wrote setup report: $REPORT_FILE"
-
-echo
-echo "Next run command:"
-echo "cd $REPO_DIR"
-echo "python scripts/run_runpod_stack.py --api-base-url \"<RunPod 8000 proxy URL>\" --frontend-origin \"<RunPod 5173 proxy URL>\""

@@ -20,7 +20,7 @@ class ProcessSpec:
 
 
 def _build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Run full RunPod app stack (API, worker, frontend).")
+    parser = argparse.ArgumentParser(description="Run full app stack (API, worker, frontend).")
     parser.add_argument("--api-host", default="0.0.0.0")
     parser.add_argument("--api-port", type=int, default=8000)
     parser.add_argument("--frontend-host", default="0.0.0.0")
@@ -69,7 +69,7 @@ def _resolve_vite_api_base_url(args: argparse.Namespace, env: dict[str, str]) ->
         return env["VITE_API_BASE_URL"]
     print(
         "[stack] warning: VITE_API_BASE_URL not set; defaulting to http://127.0.0.1:8000. "
-        "Browser proxy access may fail unless VITE_API_BASE_URL points to the RunPod 8000 proxy URL."
+        "Browser proxy access may fail unless VITE_API_BASE_URL points to the externally accessible API URL."
     )
     return "http://127.0.0.1:8000"
 
@@ -182,10 +182,10 @@ def _print_startup_summary(args: argparse.Namespace, env: dict[str, str]) -> Non
     print(f"  windows count: {window_count}")
     print("Frontend API base:")
     print(f"  VITE_API_BASE_URL={env['VITE_API_BASE_URL']}")
-    print("RunPod reminder:")
+    print("Access reminder:")
     print("  Expose HTTP ports 8000 and 5173.")
-    print("  In browser, open the 5173 RunPod proxy URL.")
-    print("  VITE_API_BASE_URL must point to the 8000 RunPod proxy URL for browser access.")
+    print("  In browser, open the externally accessible frontend URL.")
+    print("  VITE_API_BASE_URL must point to the externally accessible API URL for browser access.")
 
 
 def main(argv: list[str] | None = None) -> int:
