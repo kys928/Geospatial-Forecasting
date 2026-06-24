@@ -17,7 +17,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
 
+DEFAULT_HF_REPO_ID = "DavidDulovic/geospatial-plume-runtime-assets"
+DEFAULT_LLM_HF_FILENAME = "models/Qwen_Qwen2.5-7B-Instruct.Q4_K_M.gguf"
+DEFAULT_CONVLSTM_HF_FILENAME = "models/convlstm_multistep_three_stage_robust_v3c_tiny_recall_lift/final_full_checkpoint.pt"
 DEFAULT_LLM_SHA256 = "11e1c92aa0175db460399af847179825301a1a91a31da01cae12a2386fcbf3a1"
+DEFAULT_CONVLSTM_SHA256 = "3697c237f2f86de58cc313f822e7d998c975267ff4d221a481a46a4b92e5f748"
 
 
 class BootstrapError(RuntimeError):
@@ -45,6 +49,9 @@ class Config:
     llm_path: Path
     convlstm_checkpoint_path: Path
     download_assets: bool
+    download_model_assets: bool
+    download_dataset: bool
+    require_dataset: bool
     offline: bool
     force_download: bool
     llm_sha256_expected: str | None
@@ -77,8 +84,8 @@ class Config:
                     repo_dir
                     / "artifacts"
                     / "models"
-                    / "convlstm_multistep_autoreg_two_stage_v1"
-                    / "best_full_checkpoint.pt"
+                    / "convlstm_multistep_three_stage_robust_v3c_tiny_recall_lift"
+                    / "final_full_checkpoint.pt"
                 ),
             )
         )
@@ -91,16 +98,27 @@ class Config:
             llm_path=llm_path,
             convlstm_checkpoint_path=convlstm_checkpoint_path,
             download_assets=env_bool("PLUME_SETUP_DOWNLOAD_ASSETS", True),
+            download_model_assets=env_bool("PLUME_SETUP_DOWNLOAD_MODEL_ASSETS", True),
+            download_dataset=env_bool("PLUME_SETUP_DOWNLOAD_DATASET", False),
+            require_dataset=env_bool("PLUME_SETUP_REQUIRE_DATASET", False),
             offline=env_bool("PLUME_SETUP_OFFLINE", False),
             force_download=env_bool("PLUME_SETUP_FORCE_DOWNLOAD", False),
             llm_sha256_expected=os.environ.get("PLUME_LLM_SHA256_EXPECTED", DEFAULT_LLM_SHA256) or None,
-            convlstm_sha256_expected=os.environ.get("PLUME_CONVLSTM_SHA256_EXPECTED") or None,
+            convlstm_sha256_expected=os.environ.get("PLUME_CONVLSTM_SHA256_EXPECTED", DEFAULT_CONVLSTM_SHA256) or None,
             kaggle_materialize_mode=os.environ.get("PLUME_KAGGLE_MATERIALIZE_MODE", "copy").strip().lower() or "copy",
         )
 
     @property
     def network_enabled(self) -> bool:
         return self.download_assets and not self.offline
+
+    @property
+    def model_download_enabled(self) -> bool:
+        return self.network_enabled and self.download_model_assets
+
+    @property
+    def dataset_download_enabled(self) -> bool:
+        return self.network_enabled and self.download_dataset
 
 
 def sha256_file(path: Path) -> str:
@@ -141,6 +159,13 @@ def sanitized_exception_message(exc: Exception) -> str:
         if secret_value:
             message = message.replace(secret_value, "<redacted>")
     return message
+
+
+def defaulted_env(name: str, default: str) -> str:
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    return value
 
 
 def require_env(names: Iterable[str]) -> list[str]:
@@ -197,7 +222,12 @@ def materialize_dataset_to_target(source: Path, target: Path, mode: str) -> None
 
 
 def download_hf_file(repo_env: str, filename_env: str, target: Path) -> None:
-    repo_id, filename = require_env([repo_env, filename_env])
+    repo_default = DEFAULT_HF_REPO_ID
+    filename_default = DEFAULT_LLM_HF_FILENAME if repo_env == "PLUME_LLM_HF_REPO_ID" else DEFAULT_CONVLSTM_HF_FILENAME
+    repo_id = defaulted_env(repo_env, repo_default)
+    filename = defaulted_env(filename_env, filename_default)
+    if not repo_id or not filename:
+        raise BootstrapError(f"Missing required Hugging Face asset source: {repo_env} and {filename_env}")
     from huggingface_hub import hf_hub_download
 
     token = os.environ.get("HF_TOKEN") or os.environ.get("HUGGINGFACEHUB_API_TOKEN")
@@ -225,14 +255,27 @@ def download_kaggle_dataset(target: Path) -> None:
 
 
 def maybe_download_assets(cfg: Config) -> None:
-    if not cfg.network_enabled:
+    if cfg.model_download_enabled:
+        if cfg.force_download or not file_valid(cfg.llm_path, cfg.llm_sha256_expected):
+            download_hf_file("PLUME_LLM_HF_REPO_ID", "PLUME_LLM_HF_FILENAME", cfg.llm_path)
+        if cfg.force_download or not file_valid(cfg.convlstm_checkpoint_path, cfg.convlstm_sha256_expected):
+            download_hf_file("PLUME_CONVLSTM_HF_REPO_ID", "PLUME_CONVLSTM_HF_FILENAME", cfg.convlstm_checkpoint_path)
+
+    if dataset_valid(cfg.dataset_path):
         return
-    if cfg.force_download or not file_valid(cfg.llm_path, cfg.llm_sha256_expected):
-        download_hf_file("PLUME_LLM_HF_REPO_ID", "PLUME_LLM_HF_FILENAME", cfg.llm_path)
-    if cfg.force_download or not file_valid(cfg.convlstm_checkpoint_path, cfg.convlstm_sha256_expected):
-        download_hf_file("PLUME_CONVLSTM_HF_REPO_ID", "PLUME_CONVLSTM_HF_FILENAME", cfg.convlstm_checkpoint_path)
-    if cfg.force_download or not dataset_valid(cfg.dataset_path):
-        download_kaggle_dataset(cfg.dataset_path)
+    if not cfg.dataset_download_enabled:
+        print(
+            f"[bootstrap][warn] Dataset is missing or invalid at {cfg.dataset_path}; "
+            "Kaggle dataset download is disabled and dataset is not materialized."
+        )
+        return
+    if not os.environ.get("PLUME_KAGGLE_DATASET_SLUG"):
+        message = "PLUME_SETUP_DOWNLOAD_DATASET=true but PLUME_KAGGLE_DATASET_SLUG is not set"
+        if cfg.require_dataset:
+            raise BootstrapError(message)
+        print(f"[bootstrap][warn] {message}; skipping optional dataset download.")
+        return
+    download_kaggle_dataset(cfg.dataset_path)
 
 
 def print_report(cfg: Config) -> None:
@@ -249,6 +292,15 @@ def print_report(cfg: Config) -> None:
     if cfg.convlstm_checkpoint_path.is_file():
         print(f"  convlstm_sha256: {sha256_file(cfg.convlstm_checkpoint_path)}")
     print(f"  dataset_path: {cfg.dataset_path}")
+    print(f"  download_assets: {cfg.download_assets}")
+    print(f"  offline: {cfg.offline}")
+    print(f"  download_model_assets: {cfg.download_model_assets}")
+    print(f"  download_dataset: {cfg.download_dataset}")
+    print(f"  require_dataset: {cfg.require_dataset}")
+    print(f"  llm_hf_repo_id: {defaulted_env('PLUME_LLM_HF_REPO_ID', DEFAULT_HF_REPO_ID)}")
+    print(f"  llm_hf_filename: {defaulted_env('PLUME_LLM_HF_FILENAME', DEFAULT_LLM_HF_FILENAME)}")
+    print(f"  convlstm_hf_repo_id: {defaulted_env('PLUME_CONVLSTM_HF_REPO_ID', DEFAULT_HF_REPO_ID)}")
+    print(f"  convlstm_hf_filename: {defaulted_env('PLUME_CONVLSTM_HF_FILENAME', DEFAULT_CONVLSTM_HF_FILENAME)}")
     print(f"  kaggle_materialize_mode: {cfg.kaggle_materialize_mode}")
     print(f"  dataset_manifest_exists: {manifest}")
     print(f"  windows_manifest_exists: {windows_manifest}")
@@ -262,7 +314,11 @@ def validate_required_assets(cfg: Config) -> None:
     if not file_valid(cfg.convlstm_checkpoint_path, cfg.convlstm_sha256_expected):
         errors.append(f"ConvLSTM checkpoint missing or failed SHA256 validation: {cfg.convlstm_checkpoint_path}")
     if not dataset_valid(cfg.dataset_path):
-        errors.append(f"Dataset missing required manifests/windows: {cfg.dataset_path}")
+        message = f"Dataset missing required manifests/windows: {cfg.dataset_path}"
+        if cfg.require_dataset:
+            errors.append(message)
+        else:
+            print(f"[bootstrap][warn] {message}; continuing because PLUME_SETUP_REQUIRE_DATASET=false")
     if errors:
         raise BootstrapError("\n".join(errors))
 
@@ -270,8 +326,8 @@ def validate_required_assets(cfg: Config) -> None:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Materialize and validate local runtime assets. Downloads are driven only by "
-            "environment variables; no asset repository IDs or dataset slugs are hardcoded."
+            "Materialize and validate local runtime assets. Model assets default to the public "
+            "Hugging Face runtime asset repo; Kaggle dataset slugs remain operator-provided."
         )
     )
     parser.add_argument("--report-only", action="store_true", help="Print resolved asset status without downloading or failing validation.")
@@ -289,12 +345,7 @@ def main() -> int:
             validate_required_assets(cfg)
     except BootstrapError as exc:
         print(f"[bootstrap][error] {exc}", file=sys.stderr)
-        print(
-            "[bootstrap][info] Bootstrap infrastructure is ready, but final fresh-pod "
-            "reproducibility requires uploading assets first and setting the real "
-            "Hugging Face/Kaggle identifiers.",
-            file=sys.stderr,
-        )
+        print("[bootstrap][info] Check PLUME_SETUP_* download/require flags and configured asset paths.", file=sys.stderr)
         return 1
     return 0
 

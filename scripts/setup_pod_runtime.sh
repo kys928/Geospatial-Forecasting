@@ -13,18 +13,29 @@ PLUME_DATASET_ROOT="${PLUME_DATASET_ROOT:-$PLUME_RUNTIME_ROOT/Dataset}"
 PLUME_LLM_RUNTIME_ROOT="${PLUME_LLM_RUNTIME_ROOT:-$PLUME_RUNTIME_ROOT/llm_runtime}"
 DATASET_DIR="${PLUME_FULL_DATASET_PATH:-$PLUME_DATASET_ROOT/hysplit-plume-convlstm-multiyear-2024-2026}"
 GGUF_PATH="${PLUME_LOCAL_LLM_GGUF_PATH:-$PLUME_LLM_RUNTIME_ROOT/models/Qwen_Qwen2.5-7B-Instruct.Q4_K_M.gguf}"
-CONVLSTM_CHECKPOINT_PATH="${PLUME_CONVLSTM_CHECKPOINT_PATH:-$REPO_DIR/artifacts/models/convlstm_multistep_autoreg_two_stage_v1/best_full_checkpoint.pt}"
+CONVLSTM_CHECKPOINT_PATH="${PLUME_CONVLSTM_CHECKPOINT_PATH:-$REPO_DIR/artifacts/models/convlstm_multistep_three_stage_robust_v3c_tiny_recall_lift/final_full_checkpoint.pt}"
 if [[ -v PLUME_LLM_SHA256_EXPECTED ]]; then
   GGUF_SHA256_EXPECTED="$PLUME_LLM_SHA256_EXPECTED"
 else
   GGUF_SHA256_EXPECTED="11e1c92aa0175db460399af847179825301a1a91a31da01cae12a2386fcbf3a1"
 fi
+if [[ -v PLUME_CONVLSTM_SHA256_EXPECTED ]]; then
+  CONVLSTM_SHA256_EXPECTED="$PLUME_CONVLSTM_SHA256_EXPECTED"
+else
+  CONVLSTM_SHA256_EXPECTED="3697c237f2f86de58cc313f822e7d998c975267ff4d221a481a46a4b92e5f748"
+fi
+PLUME_SETUP_DOWNLOAD_ASSETS="${PLUME_SETUP_DOWNLOAD_ASSETS:-true}"
+PLUME_SETUP_DOWNLOAD_MODEL_ASSETS="${PLUME_SETUP_DOWNLOAD_MODEL_ASSETS:-true}"
+PLUME_SETUP_DOWNLOAD_DATASET="${PLUME_SETUP_DOWNLOAD_DATASET:-false}"
+PLUME_SETUP_REQUIRE_DATASET="${PLUME_SETUP_REQUIRE_DATASET:-false}"
 export PLUME_RUNTIME_ROOT PLUME_REPO_DIR PLUME_DATASET_ROOT PLUME_LLM_RUNTIME_ROOT
 export PLUME_RUNTIME_ENV_FILE="$ENV_FILE"
 export PLUME_FULL_DATASET_PATH="$DATASET_DIR"
 export PLUME_LOCAL_LLM_GGUF_PATH="$GGUF_PATH"
 export PLUME_CONVLSTM_CHECKPOINT_PATH="$CONVLSTM_CHECKPOINT_PATH"
 export PLUME_LLM_SHA256_EXPECTED="$GGUF_SHA256_EXPECTED"
+export PLUME_CONVLSTM_SHA256_EXPECTED="$CONVLSTM_SHA256_EXPECTED"
+export PLUME_SETUP_DOWNLOAD_ASSETS PLUME_SETUP_DOWNLOAD_MODEL_ASSETS PLUME_SETUP_DOWNLOAD_DATASET PLUME_SETUP_REQUIRE_DATASET
 EXPECTED_WINDOWS_COUNT=40215
 NUMPY_VERSION="2.4.4"
 LLAMA_CPP_VERSION="0.3.22"
@@ -187,20 +198,41 @@ cd "$REPO_DIR"
 log "Bootstrapping runtime assets"
 python3 scripts/bootstrap_runtime_assets.py
 
-log "Validating dataset"
-[[ -d "$DATASET_DIR" ]] || fail "Dataset directory missing: $DATASET_DIR"
-[[ -f "$DATASET_DIR/dataset_manifest.csv" ]] || fail "dataset_manifest.csv missing"
-[[ -f "$DATASET_DIR/windows_manifest_enriched.csv" ]] || fail "windows_manifest_enriched.csv missing"
-[[ -d "$DATASET_DIR/windows" ]] || fail "windows directory missing"
-
-WINDOWS_COUNT="$(find "$DATASET_DIR/windows" -maxdepth 1 -name '*.npz' | wc -l | tr -d ' ')"
-if [[ "$WINDOWS_COUNT" == "0" ]]; then
-  fail "No .npz windows found in dataset windows directory"
+log "Validating optional dataset"
+DATASET_AVAILABLE="true"
+DATASET_INVALID_REASON=""
+if [[ ! -d "$DATASET_DIR" ]]; then
+  DATASET_AVAILABLE="false"
+  DATASET_INVALID_REASON="Dataset directory missing: $DATASET_DIR"
+elif [[ ! -f "$DATASET_DIR/dataset_manifest.csv" ]]; then
+  DATASET_AVAILABLE="false"
+  DATASET_INVALID_REASON="dataset_manifest.csv missing"
+elif [[ ! -f "$DATASET_DIR/windows_manifest_enriched.csv" ]]; then
+  DATASET_AVAILABLE="false"
+  DATASET_INVALID_REASON="windows_manifest_enriched.csv missing"
+elif [[ ! -d "$DATASET_DIR/windows" ]]; then
+  DATASET_AVAILABLE="false"
+  DATASET_INVALID_REASON="windows directory missing"
 fi
-if [[ "$WINDOWS_COUNT" != "$EXPECTED_WINDOWS_COUNT" ]]; then
-  warn "Dataset window count is $WINDOWS_COUNT (expected $EXPECTED_WINDOWS_COUNT)"
-else
-  log "Dataset window count matches expected: $WINDOWS_COUNT"
+
+WINDOWS_COUNT="0"
+if [[ "$DATASET_AVAILABLE" == "true" ]]; then
+  WINDOWS_COUNT="$(find "$DATASET_DIR/windows" -maxdepth 1 -name '*.npz' | wc -l | tr -d ' ')"
+  if [[ "$WINDOWS_COUNT" == "0" ]]; then
+    DATASET_AVAILABLE="false"
+    DATASET_INVALID_REASON="No .npz windows found in dataset windows directory"
+  elif [[ "$WINDOWS_COUNT" != "$EXPECTED_WINDOWS_COUNT" ]]; then
+    warn "Dataset window count is $WINDOWS_COUNT (expected $EXPECTED_WINDOWS_COUNT)"
+  else
+    log "Dataset window count matches expected: $WINDOWS_COUNT"
+  fi
+fi
+
+if [[ "$DATASET_AVAILABLE" != "true" ]]; then
+  if [[ "$PLUME_SETUP_REQUIRE_DATASET" == "true" ]]; then
+    fail "$DATASET_INVALID_REASON"
+  fi
+  warn "$DATASET_INVALID_REASON; dataset scenario mode will be disabled"
 fi
 
 log "Validating GGUF file and SHA256"
@@ -218,8 +250,13 @@ fi
 log "Validating ConvLSTM checkpoint"
 [[ -f "$CONVLSTM_CHECKPOINT_PATH" ]] || fail "ConvLSTM checkpoint missing: $CONVLSTM_CHECKPOINT_PATH"
 CONVLSTM_SHA256_ACTUAL="$(sha256sum "$CONVLSTM_CHECKPOINT_PATH" | awk '{print $1}')"
-if [[ -n "${PLUME_CONVLSTM_SHA256_EXPECTED:-}" && "$CONVLSTM_SHA256_ACTUAL" != "$PLUME_CONVLSTM_SHA256_EXPECTED" ]]; then
-  fail "ConvLSTM checkpoint hash mismatch. Expected $PLUME_CONVLSTM_SHA256_EXPECTED, got $CONVLSTM_SHA256_ACTUAL"
+if [[ -n "$CONVLSTM_SHA256_EXPECTED" ]]; then
+  if [[ "$CONVLSTM_SHA256_ACTUAL" != "$CONVLSTM_SHA256_EXPECTED" ]]; then
+    fail "ConvLSTM checkpoint hash mismatch. Expected $CONVLSTM_SHA256_EXPECTED, got $CONVLSTM_SHA256_ACTUAL"
+  fi
+  log "ConvLSTM SHA256 matches expected"
+else
+  warn "ConvLSTM SHA256 validation disabled because PLUME_CONVLSTM_SHA256_EXPECTED is set to an empty string"
 fi
 log "ConvLSTM checkpoint present"
 
@@ -268,7 +305,7 @@ unset PLUME_OPS_API_TOKEN
 unset VITE_OPS_API_TOKEN
 unset PLUME_OPS_READONLY_TOKEN
 
-export PLUME_DATASET_SCENARIO_MODE="enabled"
+export PLUME_DATASET_SCENARIO_MODE="$([[ "$DATASET_AVAILABLE" == "true" ]] && echo enabled || echo disabled)"
 export PLUME_FULL_DATASET_PATH="$DATASET_DIR"
 export PLUME_DATASET_MANIFEST_PATH="$DATASET_DIR/dataset_manifest.csv"
 export PLUME_WINDOWS_MANIFEST_ENRICHED_PATH="$DATASET_DIR/windows_manifest_enriched.csv"

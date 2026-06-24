@@ -279,35 +279,60 @@ The setup flow resolves paths from environment variables so the same scripts can
 - `PLUME_RUNTIME_ENV_FILE` defaults to `$PLUME_RUNTIME_ROOT/geospatial_runtime_env.sh`.
 - Operators can override all paths with `PLUME_RUNTIME_ROOT`, `PLUME_REPO_DIR`, `PLUME_FULL_DATASET_PATH`, `PLUME_LOCAL_LLM_GGUF_PATH`, and `PLUME_CONVLSTM_CHECKPOINT_PATH`.
 
-The setup script installs OS, Python, and frontend dependencies, then runs `scripts/bootstrap_runtime_assets.py` before validating local assets. The script supports fresh-environment asset bootstrap once the required Hugging Face and Kaggle asset identifiers are provided. If required assets already exist locally and pass validation, setup does not require Hugging Face repo IDs, filenames, or Kaggle slugs. Runtime uses local files afterward.
+The setup script installs OS, Python, and frontend dependencies, then runs `scripts/bootstrap_runtime_assets.py` before validating local model assets and optional dataset assets. Fresh setup downloads required model assets from the public Hugging Face runtime asset repo by default: `DavidDulovic/geospatial-plume-runtime-assets`. The default model assets are the Qwen GGUF file (`models/Qwen_Qwen2.5-7B-Instruct.Q4_K_M.gguf`) and the ConvLSTM tiny recall lift final checkpoint (`models/convlstm_multistep_three_stage_robust_v3c_tiny_recall_lift/final_full_checkpoint.pt`). Runtime uses local files after setup.
+
+The Kaggle dataset is large, optional, and **not downloaded by default**. Dataset playback/demo features need the dataset, but the model/API setup can still validate without downloading it. When the dataset is unavailable and `PLUME_SETUP_REQUIRE_DATASET=false`, generated runtime env sets `PLUME_DATASET_SCENARIO_MODE=disabled` so the app does not pretend dataset playback is available.
 
 Asset download is controlled by setup-time environment variables:
 
-- `PLUME_SETUP_DOWNLOAD_ASSETS` defaults to `true`; set to `false` to validate local assets only.
-- `PLUME_SETUP_OFFLINE` defaults to `false`; set to `true` to skip network downloads and validate local assets only.
-- `PLUME_SETUP_FORCE_DOWNLOAD` defaults to `false`; set to `true` to redownload even when assets already exist.
-- `PLUME_LLM_HF_REPO_ID` and `PLUME_LLM_HF_FILENAME` identify the GGUF LLM on Hugging Face.
-- `PLUME_CONVLSTM_HF_REPO_ID` and `PLUME_CONVLSTM_HF_FILENAME` identify the ConvLSTM checkpoint on Hugging Face.
-- `PLUME_KAGGLE_DATASET_SLUG` identifies the HYSPLIT/ConvLSTM dataset on Kaggle.
+- `PLUME_SETUP_DOWNLOAD_ASSETS` defaults to `true` and is the global master switch. Set it to `false` to disable model and dataset downloads.
+- `PLUME_SETUP_OFFLINE` defaults to `false`; set it to `true` to skip all network downloads and validate/report local assets only.
+- `PLUME_SETUP_DOWNLOAD_MODEL_ASSETS` defaults to `true`; when enabled, missing or invalid GGUF and ConvLSTM checkpoint files are downloaded from Hugging Face.
+- `PLUME_SETUP_DOWNLOAD_DATASET` defaults to `false`; when enabled, Kaggle download/materialization is allowed only if `PLUME_KAGGLE_DATASET_SLUG` is set by the operator.
+- `PLUME_SETUP_REQUIRE_DATASET` defaults to `false`; when enabled, setup fails if the dataset is missing or invalid.
+- `PLUME_SETUP_FORCE_DOWNLOAD` defaults to `false`; set to `true` to redownload enabled assets even when files already exist.
 - `PLUME_KAGGLE_MATERIALIZE_MODE` defaults to `copy`; use `move` for an empty/missing target to avoid duplicate dataset storage, or `symlink` when the target path does not already exist.
 - `PLUME_LLM_SHA256_EXPECTED` defaults to the current GGUF hash used by setup validation; set it to a different hash for another GGUF, or set it to an empty string to disable GGUF SHA validation.
-- `PLUME_CONVLSTM_SHA256_EXPECTED` is optional.
+- `PLUME_CONVLSTM_SHA256_EXPECTED` defaults to the tiny recall lift checkpoint hash; set it to a different hash for another checkpoint, or set it to an empty string to disable ConvLSTM SHA validation.
 
-Secrets are setup-time only and must not be committed. `HF_TOKEN` may be used for private Hugging Face assets, and `KAGGLE_USERNAME` / `KAGGLE_KEY` may be used for Kaggle authentication. The generated runtime env file intentionally does not export `HF_TOKEN`, `HUGGINGFACEHUB_API_TOKEN`, `KAGGLE_USERNAME`, or `KAGGLE_KEY`.
-
-The bootstrap script is infrastructure-ready, but final fresh-pod reproducibility requires uploading the real assets first and setting real Hugging Face/Kaggle identifiers. Placeholder values below are examples only; do not use them as executable defaults.
-
-RunPod example:
+Opt into the large Kaggle dataset download only when needed:
 
 ```bash
-export HF_TOKEN="..."
-export KAGGLE_USERNAME="..."
-export KAGGLE_KEY="..."
-export PLUME_LLM_HF_REPO_ID="<huggingface-owner-or-org>/<llm-repo>"
-export PLUME_LLM_HF_FILENAME="<model-file>.gguf"
-export PLUME_CONVLSTM_HF_REPO_ID="<huggingface-owner-or-org>/<convlstm-repo>"
-export PLUME_CONVLSTM_HF_FILENAME="<checkpoint-file>.pt"
-export PLUME_KAGGLE_DATASET_SLUG="<kaggle-owner>/<dataset-name>"
+export PLUME_SETUP_DOWNLOAD_DATASET=true
+export PLUME_KAGGLE_DATASET_SLUG="owner/dataset"
+```
+
+Require the dataset for setup:
+
+```bash
+export PLUME_SETUP_REQUIRE_DATASET=true
+```
+
+Disable all downloads:
+
+```bash
+export PLUME_SETUP_DOWNLOAD_ASSETS=false
+```
+
+Override model asset sources if needed:
+
+```bash
+export PLUME_LLM_HF_REPO_ID="DavidDulovic/geospatial-plume-runtime-assets"
+export PLUME_LLM_HF_FILENAME="models/Qwen_Qwen2.5-7B-Instruct.Q4_K_M.gguf"
+export PLUME_CONVLSTM_HF_REPO_ID="DavidDulovic/geospatial-plume-runtime-assets"
+export PLUME_CONVLSTM_HF_FILENAME="models/convlstm_multistep_three_stage_robust_v3c_tiny_recall_lift/final_full_checkpoint.pt"
+```
+
+Secrets are setup-time only and must not be committed. `HF_TOKEN` or `HUGGINGFACEHUB_API_TOKEN` may be used for private Hugging Face assets, and `KAGGLE_USERNAME` / `KAGGLE_KEY` may be used for explicit Kaggle authentication. The generated runtime env file intentionally does not export `HF_TOKEN`, `HUGGINGFACEHUB_API_TOKEN`, `KAGGLE_USERNAME`, or `KAGGLE_KEY`.
+
+RunPod example (models download by default; dataset remains disabled unless opted in):
+
+```bash
+# Optional for private overridden Hugging Face assets only:
+# export HF_TOKEN="..."
+# Optional large dataset download:
+# export PLUME_SETUP_DOWNLOAD_DATASET=true
+# export PLUME_KAGGLE_DATASET_SLUG="<kaggle-owner>/<dataset-name>"
 bash /workspace/Geospatial-Forecasting/scripts/setup_pod_runtime.sh
 ```
 
@@ -316,14 +341,9 @@ Portable/local example:
 ```bash
 export PLUME_RUNTIME_ROOT="$HOME/geospatial-runtime"
 export PLUME_REPO_DIR="$HOME/projects/Geospatial-Forecasting"
-export HF_TOKEN="..."
-export KAGGLE_USERNAME="..."
-export KAGGLE_KEY="..."
-export PLUME_LLM_HF_REPO_ID="<huggingface-owner-or-org>/<llm-repo>"
-export PLUME_LLM_HF_FILENAME="<model-file>.gguf"
-export PLUME_CONVLSTM_HF_REPO_ID="<huggingface-owner-or-org>/<convlstm-repo>"
-export PLUME_CONVLSTM_HF_FILENAME="<checkpoint-file>.pt"
-export PLUME_KAGGLE_DATASET_SLUG="<kaggle-owner>/<dataset-name>"
+# Optional large dataset download:
+# export PLUME_SETUP_DOWNLOAD_DATASET=true
+# export PLUME_KAGGLE_DATASET_SLUG="<kaggle-owner>/<dataset-name>"
 bash "$PLUME_REPO_DIR/scripts/setup_pod_runtime.sh"
 ```
 
