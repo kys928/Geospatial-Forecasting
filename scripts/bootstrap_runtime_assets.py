@@ -14,14 +14,35 @@ import os
 import shutil
 import sys
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable
+
+import yaml
 
 DEFAULT_HF_REPO_ID = "DavidDulovic/geospatial-plume-runtime-assets"
 DEFAULT_LLM_HF_FILENAME = "models/Qwen_Qwen2.5-7B-Instruct.Q4_K_M.gguf"
 DEFAULT_CONVLSTM_HF_FILENAME = "models/convlstm_multistep_three_stage_robust_v3c_tiny_recall_lift/final_full_checkpoint.pt"
 DEFAULT_LLM_SHA256 = "11e1c92aa0175db460399af847179825301a1a91a31da01cae12a2386fcbf3a1"
 DEFAULT_CONVLSTM_SHA256 = "3697c237f2f86de58cc313f822e7d998c975267ff4d221a481a46a4b92e5f748"
+DEFAULT_MODEL_REGISTRY_PATH = "artifacts/convlstm_ops/model_registry.json"
+DEFAULT_ACTIVE_MODEL_ID = "robust_pretrained_baseline_v3c_tiny_recall_lift"
+ROBUST_CONTRACT_FIELDS = {
+    "contract_version": "robust_convlstm_adaptation_v1",
+    "target_policy": "plume_only",
+    "normalization_mode": "robust_multistep",
+    "approval_status": "approved_for_activation",
+    "status": "active",
+}
+ROBUST_MODEL_CONTRACT = {
+    "model_name": "RobustMultiStepConvLSTMForecaster",
+    "forecast_mode": "direct_plus_autoregressive_multistep",
+    "input_shape": [3, 10, 64, 64],
+    "output_shape": [4, 1, 64, 64],
+    "has_direct_branch": True,
+    "has_autoregressive_branch": True,
+    "residual_rollout": True,
+}
 
 
 class BootstrapError(RuntimeError):
@@ -278,6 +299,141 @@ def maybe_download_assets(cfg: Config) -> None:
     download_kaggle_dataset(cfg.dataset_path)
 
 
+
+def _repo_relative_or_absolute(path: Path, repo_dir: Path) -> str:
+    resolved = path.resolve(strict=False)
+    repo_resolved = repo_dir.resolve(strict=False)
+    try:
+        return resolved.relative_to(repo_resolved).as_posix()
+    except ValueError:
+        return str(resolved)
+
+
+def _resolve_registry_path_from_backend_config(repo_dir: Path) -> Path:
+    config_path = repo_dir / "configs" / "backend.yaml"
+    registry_value = DEFAULT_MODEL_REGISTRY_PATH
+    if config_path.is_file():
+        payload = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+        if isinstance(payload, dict) and payload.get("model_registry_path"):
+            registry_value = str(payload["model_registry_path"])
+    registry_path = Path(os.path.expandvars(os.path.expanduser(registry_value)))
+    if not registry_path.is_absolute():
+        registry_path = repo_dir / registry_path
+    return registry_path.resolve(strict=False)
+
+
+def _append_registry_event(payload: dict[str, object], event: dict[str, object]) -> None:
+    events = payload.setdefault("events", [])
+    if not isinstance(events, list):
+        raise BootstrapError("Model registry events must be a list")
+    next_index = int(payload.get("next_event_index", len(events)))
+    events.append({**event, "event_index": next_index})
+    payload["next_event_index"] = next_index + 1
+
+
+def _active_record(payload: dict[str, object]) -> dict[str, object] | None:
+    active_id = payload.get("active_model_id")
+    models = payload.get("models", [])
+    if not isinstance(models, list):
+        raise BootstrapError("Model registry models must be a list")
+    if isinstance(active_id, str):
+        for record in models:
+            if isinstance(record, dict) and record.get("model_id") == active_id and record.get("status") == "active":
+                return record
+    for record in models:
+        if isinstance(record, dict) and record.get("status") == "active":
+            return record
+    return None
+
+
+def _resolved_record_path(record: dict[str, object], repo_dir: Path) -> Path | None:
+    value = record.get("path")
+    if not isinstance(value, str) or not value.strip():
+        return None
+    path = Path(os.path.expandvars(os.path.expanduser(value)))
+    if not path.is_absolute():
+        path = repo_dir / path
+    return path.resolve(strict=False)
+
+
+def ensure_active_convlstm_registry(cfg: Config) -> None:
+    if not file_valid(cfg.convlstm_checkpoint_path, cfg.convlstm_sha256_expected):
+        raise BootstrapError(
+            "Cannot seed or repair active ConvLSTM registry because validated checkpoint is "
+            f"missing or hash-invalid: {cfg.convlstm_checkpoint_path}"
+        )
+
+    from plume.services.convlstm_operations import ModelRegistry, resolve_active_model_artifact
+
+    registry_path = _resolve_registry_path_from_backend_config(cfg.repo_dir)
+    registry = ModelRegistry(registry_path)
+    payload = registry.load()
+    payload.setdefault("models", [])
+    payload.setdefault("events", [])
+    payload.setdefault("approval_audit", [])
+    models = payload["models"]
+    if not isinstance(models, list):
+        raise BootstrapError("Model registry models must be a list")
+
+    active = _active_record(payload)
+    checkpoint_value = _repo_relative_or_absolute(cfg.convlstm_checkpoint_path, cfg.repo_dir)
+    changed = False
+    if active is None:
+        model_id = str(payload.get("active_model_id") or DEFAULT_ACTIVE_MODEL_ID)
+        active = {
+            "model_id": model_id,
+            "path": checkpoint_value,
+            "source": "pretrained_baseline",
+            "model_family": "RobustMultiStepConvLSTMForecaster",
+            "prediction_engine": "torch_robust_multistep",
+            "model_contract": dict(ROBUST_MODEL_CONTRACT),
+            **ROBUST_CONTRACT_FIELDS,
+        }
+        models.append(active)
+        payload["active_model_id"] = model_id
+        _append_registry_event(payload, {
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "event_type": "runtime_active_registry_seeded",
+            "model_id": model_id,
+            "previous_path": None,
+            "new_path": checkpoint_value,
+            "reason": "missing_active_model",
+        })
+        changed = True
+    else:
+        current_path = _resolved_record_path(active, cfg.repo_dir)
+        if current_path is not None and current_path.is_file():
+            try:
+                resolve_active_model_artifact(registry_path)
+            except Exception as exc:  # noqa: BLE001
+                raise BootstrapError(f"Existing active ConvLSTM registry is not serving-compatible: {exc}") from exc
+            return
+        previous_path = active.get("path")
+        active.update(ROBUST_CONTRACT_FIELDS)
+        active.setdefault("model_id", DEFAULT_ACTIVE_MODEL_ID)
+        active.setdefault("source", "pretrained_baseline")
+        active.setdefault("model_family", "RobustMultiStepConvLSTMForecaster")
+        active.setdefault("prediction_engine", "torch_robust_multistep")
+        active.setdefault("model_contract", dict(ROBUST_MODEL_CONTRACT))
+        active["path"] = checkpoint_value
+        payload["active_model_id"] = active["model_id"]
+        _append_registry_event(payload, {
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "event_type": "runtime_active_checkpoint_path_repaired",
+            "model_id": active["model_id"],
+            "previous_path": previous_path,
+            "new_path": checkpoint_value,
+            "reason": "active_checkpoint_file_missing",
+        })
+        changed = True
+
+    if changed:
+        registry.save(payload)
+    try:
+        resolve_active_model_artifact(registry_path)
+    except Exception as exc:  # noqa: BLE001
+        raise BootstrapError(f"Active ConvLSTM registry is not serving-compatible after bootstrap repair: {exc}") from exc
+
 def print_report(cfg: Config) -> None:
     manifest, windows_manifest, _windows_dir, windows_count = dataset_status(cfg.dataset_path)
     print("Runtime asset report:")
@@ -343,6 +499,7 @@ def main() -> int:
         print_report(cfg)
         if not args.report_only:
             validate_required_assets(cfg)
+            ensure_active_convlstm_registry(cfg)
     except BootstrapError as exc:
         print(f"[bootstrap][error] {exc}", file=sys.stderr)
         print("[bootstrap][info] Check PLUME_SETUP_* download/require flags and configured asset paths.", file=sys.stderr)
