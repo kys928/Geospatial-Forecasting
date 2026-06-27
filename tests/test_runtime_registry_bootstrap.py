@@ -150,3 +150,19 @@ def test_stale_registry_fails_when_validated_checkpoint_missing_or_hash_invalid(
 
     payload = json.loads(registry_path.read_text(encoding="utf-8"))
     assert payload["models"][0]["path"] == STALE_PATH
+
+
+def test_use_model_registry_false_skips_seed_or_repair(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]):
+    repo_root = tmp_path / "repo-disabled"
+    repo_root.mkdir()
+    config = repo_root / "configs" / "backend.yaml"
+    config.parent.mkdir(parents=True)
+    config.write_text("use_model_registry: false\nmodel_registry_path: artifacts/convlstm_ops/model_registry.json\n", encoding="utf-8")
+    monkeypatch.setenv("PLUME_REPO_ROOT", str(repo_root))
+    missing_checkpoint = repo_root / GOOD_PATH
+
+    bootstrap.ensure_active_convlstm_registry(_cfg(repo_root, missing_checkpoint, "badsha"))
+
+    captured = capsys.readouterr()
+    assert "use_model_registry=false" in captured.out
+    assert not (repo_root / "artifacts" / "convlstm_ops" / "model_registry.json").exists()

@@ -309,13 +309,19 @@ def _repo_relative_or_absolute(path: Path, repo_dir: Path) -> str:
         return str(resolved)
 
 
-def _resolve_registry_path_from_backend_config(repo_dir: Path) -> Path:
+def _load_backend_config(repo_dir: Path) -> dict[str, object]:
     config_path = repo_dir / "configs" / "backend.yaml"
+    if not config_path.is_file():
+        return {}
+    payload = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _resolve_registry_path_from_backend_config(repo_dir: Path, backend_config: dict[str, object] | None = None) -> Path:
+    payload = backend_config if backend_config is not None else _load_backend_config(repo_dir)
     registry_value = DEFAULT_MODEL_REGISTRY_PATH
-    if config_path.is_file():
-        payload = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
-        if isinstance(payload, dict) and payload.get("model_registry_path"):
-            registry_value = str(payload["model_registry_path"])
+    if payload.get("model_registry_path"):
+        registry_value = str(payload["model_registry_path"])
     registry_path = Path(os.path.expandvars(os.path.expanduser(registry_value)))
     if not registry_path.is_absolute():
         registry_path = repo_dir / registry_path
@@ -357,6 +363,11 @@ def _resolved_record_path(record: dict[str, object], repo_dir: Path) -> Path | N
 
 
 def ensure_active_convlstm_registry(cfg: Config) -> None:
+    backend_config = _load_backend_config(cfg.repo_dir)
+    if backend_config.get("use_model_registry") is False:
+        print("[bootstrap][info] Skipping active ConvLSTM registry seed/repair because backend config has use_model_registry=false.")
+        return
+
     if not file_valid(cfg.convlstm_checkpoint_path, cfg.convlstm_sha256_expected):
         raise BootstrapError(
             "Cannot seed or repair active ConvLSTM registry because validated checkpoint is "
@@ -365,7 +376,7 @@ def ensure_active_convlstm_registry(cfg: Config) -> None:
 
     from plume.services.convlstm_operations import ModelRegistry, resolve_active_model_artifact
 
-    registry_path = _resolve_registry_path_from_backend_config(cfg.repo_dir)
+    registry_path = _resolve_registry_path_from_backend_config(cfg.repo_dir, backend_config)
     registry = ModelRegistry(registry_path)
     payload = registry.load()
     payload.setdefault("models", [])
