@@ -648,7 +648,7 @@ def test_default_model_registry_points_to_robust_pretrained_baseline():
     payload = json.loads(registry_path.read_text(encoding="utf-8"))
 
     active_model_id = "robust_pretrained_baseline_v3c_tiny_recall_lift"
-    expected_checkpoint = "artifacts/models/convlstm_multistep_three_stage_robust_v3c_tiny_recall_lift/v3b_final_baseline_full_checkpoint.pt"
+    expected_checkpoint = "artifacts/models/convlstm_multistep_three_stage_robust_v3c_tiny_recall_lift/final_full_checkpoint.pt"
 
     assert payload["active_model_id"] == active_model_id
     models = payload["models"]

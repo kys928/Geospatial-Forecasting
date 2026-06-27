@@ -59,7 +59,7 @@ python -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip
 pip install -e .
-pip install -e ".[test]"
+python -m pip install -e ".[test]"
 ```
 
 `requirements.txt` is kept as a compatibility/convenience requirements file for scripts or environments that expect one. Use it when you need a requirements-file install instead of the editable development workflow:
@@ -255,7 +255,8 @@ Run backend tests and syntax checks from the repository root:
 
 ```bash
 python -m compileall src scripts
-pytest -q
+python -m pip install -e ".[test]"
+python -m pytest -q
 ```
 
 Run the frontend build when validating UI changes or full development readiness:
@@ -276,7 +277,7 @@ Full runtime/model tests may require local assets, dataset files, CUDA configura
 python -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip
-pip install -e ".[test]"
+python -m pip install -e ".[test]"
 
 export PLUME_LLM_HF_REPO_ID="DavidDulovic/geospatial-plume-runtime-assets"
 export PLUME_LLM_HF_FILENAME="models/Qwen_Qwen2.5-7B-Instruct.Q4_K_M.gguf"

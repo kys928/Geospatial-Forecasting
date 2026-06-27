@@ -211,6 +211,74 @@ That is useful when the model files should be reproducible, while the dataset is
 
 The current bootstrap also has these model asset defaults built in, but writing them explicitly makes the runtime setup easier to verify.
 
+## Fresh RunPod `/workspace` Setup Sequence
+
+Use this sequence for a brand-new RunPod when you want the repository, runtime env file, downloaded model assets, Kaggle dataset, frontend build, and active ConvLSTM registry all validated in one pass.
+
+```bash
+apt-get update -y
+apt-get install -y git curl
+
+cd /workspace
+git clone --branch cleanup/safe-runtime-refactor https://github.com/kys928/Geospatial-Forecasting.git
+cd /workspace/Geospatial-Forecasting
+
+export PLUME_RUNTIME_ROOT="/workspace"
+export PLUME_REPO_DIR="/workspace/Geospatial-Forecasting"
+
+export PLUME_LLM_HF_REPO_ID="DavidDulovic/geospatial-plume-runtime-assets"
+export PLUME_LLM_HF_FILENAME="models/Qwen_Qwen2.5-7B-Instruct.Q4_K_M.gguf"
+export PLUME_LLM_SHA256_EXPECTED="11e1c92aa0175db460399af847179825301a1a91a31da01cae12a2386fcbf3a1"
+
+export PLUME_CONVLSTM_HF_REPO_ID="DavidDulovic/geospatial-plume-runtime-assets"
+export PLUME_CONVLSTM_HF_FILENAME="models/convlstm_multistep_three_stage_robust_v3c_tiny_recall_lift/final_full_checkpoint.pt"
+export PLUME_CONVLSTM_SHA256_EXPECTED="3697c237f2f86de58cc313f822e7d998c975267ff4d221a481a46a4b92e5f748"
+
+export PLUME_SETUP_DOWNLOAD_ASSETS="true"
+export PLUME_SETUP_DOWNLOAD_MODEL_ASSETS="true"
+export PLUME_SETUP_DOWNLOAD_DATASET="true"
+export PLUME_SETUP_REQUIRE_DATASET="true"
+export PLUME_KAGGLE_DATASET_SLUG="<owner>/<dataset-slug>"
+export KAGGLE_USERNAME="<kaggle-username>"
+read -r -s -p "Kaggle API key: " KAGGLE_KEY && export KAGGLE_KEY && echo
+
+bash scripts/setup_runtime.sh
+source /workspace/geospatial_runtime_env.sh
+```
+
+After setup completes, run the focused validation commands:
+
+```bash
+PYTHONPATH=src python -m compileall src scripts
+python -m pip install "pytest>=8.0,<9.0"
+PYTHONPATH=src python -m pytest -q tests/test_runtime_registry_bootstrap.py tests/test_active_convlstm_serving.py
+python - <<'PY'
+from plume.services.convlstm_operations import resolve_active_model_artifact
+print(resolve_active_model_artifact("artifacts/convlstm_ops/model_registry.json"))
+PY
+cd frontend && npm run build && cd -
+```
+
+To start the stack on RunPod, set the public proxy URLs for your pod ports and run the stack script:
+
+```bash
+export VITE_API_BASE_URL="https://<pod-id>-8000.proxy.runpod.net"
+export PLUME_PUBLIC_API_BASE_URL="https://<pod-id>-8000.proxy.runpod.net"
+export PLUME_PUBLIC_FRONTEND_BASE_URL="https://<pod-id>-5173.proxy.runpod.net"
+bash scripts/run_stack.sh
+```
+
+Then confirm the active session endpoint is not failing because of a stale checkpoint path:
+
+```bash
+curl -fsS -X POST "${PLUME_PUBLIC_API_BASE_URL}/sessions" \
+  -H 'content-type: application/json' \
+  -d '{}'
+```
+
+If you are validating a PR branch instead of `cleanup/safe-runtime-refactor`, replace the `git clone --branch ...` value with that PR branch name.
+
+
 ## Dataset Download Behavior
 
 Dataset downloading is separate from model downloading.
