@@ -257,10 +257,13 @@ class DatasetScenarioService:
         return result
 
     def _score_candidate(self, window_row: dict[str, str], manifest_row: dict[str, str], npz_path: Path) -> dict[str, Any] | None:
-        arr = np.load(npz_path)
-        input_data = arr["input"]
-        target = arr["target"]
-        prediction = predict_ridge_plume(input_data, self._get_ridge_artifact())
+        with np.load(npz_path, allow_pickle=False) as arr:
+            if "input" not in arr:
+                raise ValueError(f"Dataset window {npz_path} is missing required 'input' array.")
+            input_data = np.asarray(arr["input"], dtype=np.float32)
+            target = np.asarray(arr["target"], dtype=np.float32) if "target" in arr else None
+        self._validate_input_window(input_data, npz_path)
+        prediction, reference_source, ridge_artifact = self._score_reference_grid(input_data, target, npz_path)
         threshold = float(np.nanmax(prediction)) * 0.1 if float(np.nanmax(prediction)) > 0 else 0.0
         plume_cell_count = int(np.count_nonzero(prediction > threshold)) if threshold > 0 else int(np.count_nonzero(prediction > 0))
         plume_fraction = plume_cell_count / float(prediction.size or 1)
@@ -268,7 +271,7 @@ class DatasetScenarioService:
         max_score = float(np.nanmax(prediction))
         plume_strength = max_score + mean_score + plume_fraction * 10.0
         wind_speed = float(np.nanmedian(input_data[2, 3]))
-        payload = self._build_payload(window_row, manifest_row, input_data, target, prediction, plume_strength)
+        payload = self._build_payload(window_row, manifest_row, input_data, target, prediction, plume_strength, reference_source, ridge_artifact)
         source_lat = float(manifest_row.get("lat", 0) or 0)
         source_lon = float(manifest_row.get("lon", 0) or 0)
         in_demo_bbox = self._in_demo_bbox(source_lat, source_lon)
@@ -277,7 +280,7 @@ class DatasetScenarioService:
         window_sort_key = f"{manifest_row.get('start_time', '')}_{window_row.get('window_id', '')}"
         return {"plume_strength": plume_strength, "wind_speed": wind_speed, "payload": payload, "window_sort_key": window_sort_key, "plume_metrics": payload["plume_metrics"], "in_demo_bbox": in_demo_bbox, "candidate_key": (forecast_id, window_id)}
 
-    def _build_payload(self, window_row, manifest_row, input_data, target, prediction, plume_strength):
+    def _build_payload(self, window_row, manifest_row, input_data, target, prediction, plume_strength, reference_source: str, ridge_artifact: dict[str, Any] | None):
         last = input_data[-1]
         u10 = float(np.nanmedian(last[1])); v10 = float(np.nanmedian(last[2])); wspd = float(np.nanmedian(last[3]))
         sin_v = float(np.nanmedian(last[4])); cos_v = float(np.nanmedian(last[5]))
@@ -298,14 +301,21 @@ class DatasetScenarioService:
             risk = "low"
         elif plume_strength > 0:
             risk = "medium"
+        used_ridge = ridge_artifact is not None
+        model_name = "ridge_plume_baseline" if used_ridge else "dataset_reference_selector"
+        model_source = "dataset_input_inference" if used_ridge else reference_source
+        output_space = "ridge_prediction" if used_ridge else reference_source
+        inference_mode = "dataset_playback_ridge_demo" if used_ridge else "dataset_reference_selection"
+        model_version = str(ridge_artifact.get("model_version") or "ridge_baseline_pickle") if used_ridge else "dataset_native_reference_v1"
+        artifact_path = str(ridge_artifact.get("artifact_path", self.config.ridge_model_path)) if used_ridge else None
         return {
             "forecast": {"forecast_id": f"dataset_{window_row.get('window_id')}", "timestamp": start.isoformat(), "issued_at": start.isoformat(), "status": "plume detected above threshold" if float(np.nanmax(plume_channel)) > 0 else "no meaningful plume above threshold", "risk_level": risk, "input_source": "dataset_playback", "scenario_id": f"{manifest_row.get('scenario_id')}:{window_row.get('window_id')}", "forecast_source": "dataset_playback"},
             "conditions": {"u10m_ms": u10, "v10m_ms": v10, "wind_speed_ms": wspd, "wind_direction_deg": direction, "wind_direction_label": self._direction_label(direction), "pbl_height_m": float(np.nanmedian(last[6])), "surface_pressure_hpa": float(np.nanmedian(last[7])), "humidity_pct": float(np.nanmedian(last[8])), "temperature_c": float(np.nanmedian(last[9])) - 273.15, "meteorology_source": "kaggle_hysplit_enriched_npz", "meteorology_timestamp": start.isoformat()},
             "source": {"latitude": float(manifest_row.get("lat", 0)), "longitude": float(manifest_row.get("lon", 0)), "pollutant": "demo_release", "emission_rate": float(manifest_row.get("emission_rate", 0)), "release_height_m": float(manifest_row.get("height_m", 0)), "duration_minutes": run_hours * 60, "start_time": start.isoformat(), "end_time": (start + timedelta(hours=run_hours)).isoformat()},
             "plume_metrics": {"max_plume_score": float(np.nanmax(plume_channel)), "mean_plume_score": float(np.nanmean(plume_channel)), "detection_threshold": threshold, "plume_cell_count": affected, "plume_fraction": plume_fraction, "dominant_spread_direction": spread_direction, "max_concentration": float(np.nanmax(plume_channel)), "mean_concentration": float(np.nanmean(plume_channel)), "affected_cells_above_threshold": affected, "affected_area_m2": None, "affected_area_hectares": None, "threshold_used": threshold, "grid_rows": int(plume_channel.shape[-2]), "grid_columns": int(plume_channel.shape[-1])},
-            "runtime": {"backend": "dataset_playback", "model_name": "ridge_plume_baseline", "model_source": "dataset_input_inference", "model_version": str(self._get_ridge_artifact().get("model_version") or "ridge_baseline_pickle"), "forecast_source": "dataset_playback", "model_id": None, "model_family": "DatasetPlayback", "model_backend": "dataset_playback", "checkpoint_path": None, "inference_mode": "dataset_playback_ridge_demo", "fallback_used": False, "dataset_playback_enabled": True, "active_registry_model_id": None, "input_source": "dataset_playback", "fallback_reason": None, "generated_at": start.isoformat(), "output_space": "ridge_prediction", "input_mode": "dataset_stream_window", "missing_channels": [], "missing_frame_indices": [], "meteorology_available": True, "observations_available": False, "limitations": ["Dataset playback from Kaggle HYSPLIT/ConvLSTM dataset; not live OpenRemote data.", "Values are for demo/development playback.", "Plume values may be transformed dataset values unless model/output-space metadata defines physical units."]},
-            "provenance": {"forecast_source": "dataset_playback", "model_id": None, "model_family": "DatasetPlayback", "model_backend": "dataset_playback", "checkpoint_path": None, "inference_mode": "dataset_playback_ridge_demo", "fallback_used": False, "dataset_playback_enabled": True, "active_registry_model_id": None, "input_source": "dataset_playback", "fallback_reason": None, "generated_at": start.isoformat()},
-            "raw": {"source_file": str(window_row.get("source_file")), "manifest_row": manifest_row, "window_row": window_row, "input_shape": list(input_data.shape), "target_shape": list(target.shape), "prediction_shape": list(prediction.shape), "target_usage": "optional_reference_only", "channel_order": self.CHANNELS, "model_inference": {"model_name": "ridge_plume_baseline", "artifact_path": str(self._get_ridge_artifact().get("artifact_path", self.config.ridge_model_path)), "input_shape": list(input_data.shape), "prediction_shape": list(prediction.shape), "used_ridge_model": True, "output_space": "ridge_prediction", "threshold_method": "relative_to_prediction_peak", "threshold_description": "Cutoff used to decide which predicted grid cells are rendered as plume. This is a model-display threshold, not a physical safety threshold."}},
+            "runtime": {"backend": "dataset_playback", "model_name": model_name, "model_source": model_source, "model_version": model_version, "forecast_source": "dataset_playback", "model_id": None, "model_family": "DatasetPlayback", "model_backend": "dataset_playback", "checkpoint_path": None, "inference_mode": inference_mode, "fallback_used": False, "dataset_playback_enabled": True, "active_registry_model_id": None, "input_source": "dataset_playback", "fallback_reason": None, "generated_at": start.isoformat(), "output_space": output_space, "input_mode": "dataset_stream_window", "missing_channels": [], "missing_frame_indices": [], "meteorology_available": True, "observations_available": False, "used_ridge_model": used_ridge, "limitations": ["Dataset playback from Kaggle HYSPLIT/ConvLSTM dataset; not live OpenRemote data.", "Values are for demo/development playback.", "Plume values may be transformed dataset values unless model/output-space metadata defines physical units."]},
+            "provenance": {"forecast_source": "dataset_playback", "model_id": None, "model_family": "DatasetPlayback", "model_backend": "dataset_playback", "checkpoint_path": None, "inference_mode": inference_mode, "fallback_used": False, "dataset_playback_enabled": True, "active_registry_model_id": None, "input_source": "dataset_playback", "fallback_reason": None, "generated_at": start.isoformat(), "used_ridge_model": used_ridge, "model_name": model_name, "model_source": model_source, "output_space": output_space},
+            "raw": {"source_file": str(window_row.get("source_file")), "manifest_row": manifest_row, "window_row": window_row, "input_shape": list(input_data.shape), "target_shape": list(target.shape) if target is not None else None, "prediction_shape": list(prediction.shape), "target_usage": "ridge_demo_ignored" if used_ridge else reference_source, "channel_order": self.CHANNELS, "model_inference": {"model_name": model_name, "artifact_path": artifact_path, "input_shape": list(input_data.shape), "prediction_shape": list(prediction.shape), "used_ridge_model": used_ridge, "model_source": model_source, "output_space": output_space, "threshold_method": "relative_to_prediction_peak", "threshold_description": "Cutoff used to decide which predicted grid cells are rendered as plume. This is a model-display threshold, not a physical safety threshold."}},
         }
 
     def _in_demo_bbox(self, lat: float, lon: float) -> bool:
@@ -449,7 +459,10 @@ class DatasetScenarioService:
         if not npz_path.exists():
             raise FileNotFoundError(f"Dataset input window unavailable: {npz_path}")
         with np.load(npz_path, allow_pickle=False) as arr:
+            if "input" not in arr:
+                raise ValueError(f"Dataset window {npz_path} is missing required 'input' array.")
             input_data = np.asarray(arr["input"], dtype=np.float32)
+        self._validate_input_window(input_data, npz_path)
         return input_data, payload
 
     def raster_active(self) -> dict[str, Any]:
@@ -529,8 +542,14 @@ class DatasetScenarioService:
         npz_path = self.config.windows_dir / Path(sample_path).name
         if not npz_path.exists():
             raise KeyError("dataset sample file unavailable")
-        arr = np.load(npz_path)
-        return predict_ridge_plume(arr["input"], self._get_ridge_artifact())
+        with np.load(npz_path, allow_pickle=False) as arr:
+            if "input" not in arr:
+                raise ValueError(f"Dataset window {npz_path} is missing required 'input' array.")
+            input_data = np.asarray(arr["input"], dtype=np.float32)
+            target = np.asarray(arr["target"], dtype=np.float32) if "target" in arr else None
+        self._validate_input_window(input_data, npz_path)
+        grid, _, _ = self._score_reference_grid(input_data, target, npz_path)
+        return grid
 
     def _build_overlay(self, payload: dict[str, Any], plume: np.ndarray) -> dict[str, Any]:
         span_km = float(os.getenv("PLUME_DATASET_OVERLAY_SPAN_KM", "20"))
@@ -566,11 +585,11 @@ class DatasetScenarioService:
             lon_min,lon_max=lon_center-lon_step/2,lon_center+lon_step/2
             nv=(v/max_v if max_v>0 else 0.0)
             kind = "plume_band_high" if nv >= 0.66 else ("plume_band_medium" if nv >= 0.33 else "plume_band_low")
-            feats.append({"type":"Feature","geometry":{"type":"Polygon","coordinates":[[[lon_min,lat_min],[lon_max,lat_min],[lon_max,lat_max],[lon_min,lat_max],[lon_min,lat_min]]]},"properties":{"kind":kind,"value":v,"row":r,"col":c,"normalized_value":nv,"threshold":float(threshold),"source":"dataset_playback","model_source":"ridge_plume_baseline"}})
+            feats.append({"type":"Feature","geometry":{"type":"Polygon","coordinates":[[[lon_min,lat_min],[lon_max,lat_min],[lon_max,lat_max],[lon_min,lat_max],[lon_min,lat_min]]]},"properties":{"kind":kind,"value":v,"row":r,"col":c,"normalized_value":nv,"threshold":float(threshold),"source":"dataset_playback","model_source":payload.get("runtime", {}).get("model_source")}})
         feats.append({"type":"Feature","geometry":{"type":"Point","coordinates":[lon0,lat0]},"properties":{"kind":"source","title":"Release source"}})
         raw = payload.get("raw", {})
         plume_feature_count = len([f for f in feats if f.get("geometry", {}).get("type") == "Polygon"])
-        return {"type":"FeatureCollection","features":feats,"metadata":{"source":"dataset_playback","feature_count":len(feats),"plume_polygon_count":plume_feature_count,"source_latitude":lat0,"source_longitude":lon0,"model_source":"dataset_input_inference","output_space":"ridge_prediction","prediction_shape":raw.get("prediction_shape"),"input_shape":raw.get("input_shape"),"active_window_id":raw.get("window_row",{}).get("window_id"),"active_scenario_id":payload.get("forecast",{}).get("scenario_id"),"georeferencing":"approximate_source_centered_grid"}}
+        return {"type":"FeatureCollection","features":feats,"metadata":{"source":"dataset_playback","feature_count":len(feats),"plume_polygon_count":plume_feature_count,"source_latitude":lat0,"source_longitude":lon0,"model_source":payload.get("runtime", {}).get("model_source"),"output_space":payload.get("runtime", {}).get("output_space"),"prediction_shape":raw.get("prediction_shape"),"input_shape":raw.get("input_shape"),"active_window_id":raw.get("window_row",{}).get("window_id"),"active_scenario_id":payload.get("forecast",{}).get("scenario_id"),"georeferencing":"approximate_source_centered_grid"}}
 
     def _build_raster_payload(self, payload: dict[str, Any], plume: np.ndarray, scenario_key: str) -> dict[str, Any]:
         span_km = float(os.getenv("PLUME_DATASET_OVERLAY_SPAN_KM", "20"))
@@ -605,12 +624,73 @@ class DatasetScenarioService:
             "georeferencing_status": "approximate_source_centered_grid",
             "metadata": {
                 "source": "dataset_playback",
-                "model_source": "ridge_plume_baseline",
+                "model_source": payload.get("runtime", {}).get("model_source"),
                 "selected_scenario_id": scenario_key,
                 "active_window_id": raw.get("window_row", {}).get("window_id"),
-                "output_space": "ridge_prediction",
+                "output_space": payload.get("runtime", {}).get("output_space"),
             },
         }
+
+    def _score_reference_grid(self, input_data: np.ndarray, target: np.ndarray | None, npz_path: Path) -> tuple[np.ndarray, str, dict[str, Any] | None]:
+        ridge_artifact = self._get_optional_ridge_artifact()
+        if ridge_artifact is not None:
+            prediction = np.asarray(predict_ridge_plume(input_data, ridge_artifact), dtype=float)
+            if prediction.shape != (64, 64):
+                raise ValueError(f"Ridge prediction for {npz_path} must be shape (64, 64); got {prediction.shape}.")
+            return prediction, "ridge_prediction", ridge_artifact
+        return self._reference_plume_grid(target, input_data, npz_path)
+
+    @classmethod
+    def _reference_plume_grid(cls, target: np.ndarray | None, input_data: np.ndarray | None, npz_path: Path | str = "dataset window") -> tuple[np.ndarray, str, None]:
+        if target is not None:
+            try:
+                return cls._normalize_reference_grid(target, source_name="target"), "dataset_target_reference", None
+            except ValueError:
+                pass
+        if input_data is not None:
+            arr = np.asarray(input_data)
+            if arr.shape == (3, 10, 64, 64):
+                grid = np.asarray(arr[-1, 0], dtype=np.float32)
+                if np.all(np.isfinite(grid)):
+                    return grid, "dataset_input_reference", None
+            raise ValueError(f"Dataset window {npz_path} cannot provide fallback input plume grid; expected input shape (3, 10, 64, 64), got {arr.shape}.")
+        target_shape = None if target is None else np.asarray(target).shape
+        raise ValueError(f"Dataset window {npz_path} cannot provide a 2D plume reference grid from target shape {target_shape} or input data.")
+
+    @staticmethod
+    def _normalize_reference_grid(value: np.ndarray, *, source_name: str = "target") -> np.ndarray:
+        arr = np.asarray(value, dtype=np.float32)
+        # Multiple future target frames are collapsed with max-over-time so
+        # scenario ranking reflects plume strength anywhere in the forecast
+        # horizon while still producing one deterministic 64x64 display grid.
+        if arr.shape == (64, 64):
+            grid = arr
+        elif arr.ndim == 3 and arr.shape[-2:] == (64, 64):
+            grid = arr[0] if arr.shape[0] == 1 else np.nanmax(arr, axis=0)
+        elif arr.ndim == 4 and arr.shape[-2:] == (64, 64):
+            if arr.shape[1] < 1:
+                raise ValueError(f"Dataset {source_name} has no plume channel: shape {arr.shape}.")
+            plume_frames = arr[:, 0]
+            grid = plume_frames[0] if plume_frames.shape[0] == 1 else np.nanmax(plume_frames, axis=0)
+        else:
+            raise ValueError(f"Dataset {source_name} must normalize to (64, 64); got shape {arr.shape}.")
+        grid = np.asarray(grid, dtype=np.float32)
+        if grid.shape != (64, 64) or not np.all(np.isfinite(grid)):
+            raise ValueError(f"Dataset {source_name} must produce finite shape (64, 64); got shape {grid.shape}.")
+        return grid
+
+    @staticmethod
+    def _validate_input_window(input_data: np.ndarray, npz_path: Path | str) -> None:
+        if np.asarray(input_data).shape != (3, 10, 64, 64):
+            raise ValueError(f"Dataset input window {npz_path} must have shape (3, 10, 64, 64); got {np.asarray(input_data).shape}.")
+
+    def _get_optional_ridge_artifact(self) -> dict[str, Any] | None:
+        model_path = self.config.ridge_model_path.expanduser()
+        if not model_path.is_absolute():
+            model_path = (Path.cwd() / model_path).resolve()
+        if not model_path.exists():
+            return None
+        return self._get_ridge_artifact()
 
 
     def _get_ridge_artifact(self) -> dict[str, Any]:
