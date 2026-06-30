@@ -672,7 +672,9 @@ PLUME_WINDOWS_MANIFEST_ENRICHED_PATH
 PLUME_WINDOWS_DIR
 ```
 
-These paths support dataset playback and dataset-window workflows.
+These paths support dataset playback and dataset-window workflows. Active ConvLSTM dataset input-window selection uses the dataset `.npz` `input` array and, for scenario ranking/display metadata, a dataset-native plume reference derived from `target` when available or the latest input plume channel when target data is unusable.
+
+`artifacts/models/ridge_plume_baseline.pkl` is optional legacy/demo scoring only. Fresh runtime setup and active ConvLSTM dataset-window prediction do not require this Ridge pickle. If a valid Ridge artifact is present, dataset scenario previews may still use it for legacy demo scoring and mark `used_ridge_model=true`; otherwise metadata identifies dataset reference selection with `used_ridge_model=false`.
 
 ## Ops Authentication Defaults
 
