@@ -258,6 +258,8 @@ def reduce_batch_size_after_oom(current_batch_size: int, min_batch_size: int) ->
 def selection_score(metrics: dict[str, Any]) -> float:
     weights = {
         "val_rollout_weighted_mse": 1.0,
+        "val_rollout_weighted_mse_t3": 0.15,
+        "val_rollout_weighted_mse_t4": 0.25,
         "val_rollout_mae": 0.25,
         "val_rollout_mass_abs_error": 0.001,
         "val_rollout_peak_location_error": 0.002,
