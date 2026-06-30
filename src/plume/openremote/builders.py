@@ -210,9 +210,6 @@ def build_zone_predicted_concentration_write(
     asset_id: str,
     datapoints: list[tuple],
 ) -> ORPredictedDatapointWrite:
-    """
-    datapoints: list[(timestamp, value)]
-    """
     from plume.openremote.models import ORPredictedDatapoint
 
     return ORPredictedDatapointWrite(

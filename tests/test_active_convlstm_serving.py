@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 import json
 from pathlib import Path
+import shutil
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -358,6 +359,8 @@ convlstm_prediction_engine: torch_multistep
 convlstm_checkpoint_strict: false
 convlstm_device: cpu
 """, encoding="utf-8")
+    default_inference_config = Path(__file__).resolve().parents[1] / "configs" / "inference.yaml"
+    shutil.copy(default_inference_config, tmp_path / "inference.yaml")
 
     class InputOnlyDatasetService:
         def is_enabled(self):
@@ -648,7 +651,7 @@ def test_default_model_registry_points_to_robust_pretrained_baseline():
     payload = json.loads(registry_path.read_text(encoding="utf-8"))
 
     active_model_id = "robust_pretrained_baseline_v3c_tiny_recall_lift"
-    expected_checkpoint = "artifacts/models/convlstm_multistep_three_stage_robust_v3c_tiny_recall_lift/v3b_final_baseline_full_checkpoint.pt"
+    expected_checkpoint = "artifacts/models/convlstm_multistep_three_stage_robust_v3c_tiny_recall_lift/final_full_checkpoint.pt"
 
     assert payload["active_model_id"] == active_model_id
     models = payload["models"]

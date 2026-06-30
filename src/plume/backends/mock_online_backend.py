@@ -20,7 +20,6 @@ from plume.utils.config import Config
 
 
 class MockOnlineBackend(BaseBackend):
-    """Legacy/dev backend retained for deterministic local testing."""
 
     def __init__(self, config: Config):
         self.config = config

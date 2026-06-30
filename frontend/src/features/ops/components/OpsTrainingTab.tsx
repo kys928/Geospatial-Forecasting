@@ -393,7 +393,6 @@ export function OpsTrainingTab({ active = true }: { active?: boolean }) {
         statusState.refresh(false),
         refreshAdaptationTraining(false),
       ]).catch(() => {
-        // Keep the manual submit flow non-blocking; the next poll will retry.
       });
     } catch (e) {
       setManualNotice(

@@ -1,8 +1,3 @@
-"""GPU memory inspection helpers for adaptation training readiness.
-
-The helpers in this module only inspect CUDA availability and reported memory.
-They intentionally do not allocate tensors or start training work.
-"""
 
 from __future__ import annotations
 
@@ -16,7 +11,6 @@ _GIB = 1024**3
 
 @dataclass(frozen=True)
 class GpuMemorySnapshot:
-    """Serializable snapshot of CUDA memory availability for one device."""
 
     available: bool
     device: str = "cuda:0"
@@ -28,7 +22,6 @@ class GpuMemorySnapshot:
     reason: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        """Return a JSON-serializable dictionary representation."""
         return asdict(self)
 
 
@@ -39,11 +32,6 @@ def _bytes_to_gib(value: int | None) -> float | None:
 
 
 def get_gpu_memory_snapshot(device_index: int = 0, torch_module: Any | None = None) -> GpuMemorySnapshot:
-    """Inspect CUDA memory without allocating tensors.
-
-    ``torch_module`` is injectable so tests can provide a small fake instead of
-    requiring a real CUDA-enabled PyTorch installation.
-    """
     device = f"cuda:{device_index}"
     try:
         torch = torch_module if torch_module is not None else import_module("torch")
@@ -107,7 +95,6 @@ def has_min_free_vram(
     device_index: int = 0,
     torch_module: Any | None = None,
 ) -> tuple[bool, GpuMemorySnapshot]:
-    """Return whether CUDA has at least ``min_free_gib`` free VRAM."""
     snapshot = get_gpu_memory_snapshot(device_index=device_index, torch_module=torch_module)
     if not snapshot.available or snapshot.free_gib is None:
         return False, snapshot
@@ -121,12 +108,6 @@ def classify_training_device_readiness(
     device_index: int = 0,
     torch_module: Any | None = None,
 ) -> tuple[str, bool, str, GpuMemorySnapshot | None]:
-    """Classify training-device readiness as green/yellow/red.
-
-    Returns ``(status, passed, message, snapshot)``. CPU training never inspects
-    CUDA. CUDA training reports yellow for temporary resource pressure and red
-    for missing CUDA when CPU fallback is disabled.
-    """
     normalized_device = training_device.lower().strip()
     if normalized_device == "cpu":
         return "green", True, "CPU training device selected; GPU memory check skipped", None

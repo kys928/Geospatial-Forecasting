@@ -92,9 +92,7 @@ def test_adapter_ingests_complete_meteorology_in_canonical_order(sample_scenario
     assert result.metadata["input_completeness"]["status"] == "complete"
     assert result.metadata["meteorology_source_kind"] == "broadcast_frame_features"
     assert result.metadata["prediction_trust"] == "normal"
-    # channel 1 (u10m_ms) for first frame should be broadcasted 11.0
     assert float(result.tensor[0, 1, 10, 10]) == 11.0
-    # channel 9 (t02m_k) for third frame should be broadcasted 39.0
     assert float(result.tensor[2, 9, 5, 5]) == 39.0
 
 

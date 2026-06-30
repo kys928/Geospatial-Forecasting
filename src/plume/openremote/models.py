@@ -7,10 +7,6 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field, HttpUrl, ConfigDict
 
 
-# ----------------------------
-# Shared primitives
-# ----------------------------
-
 class ORAttributeRef(BaseModel):
     asset_id: str
     attribute_name: str
@@ -22,20 +18,12 @@ class ORMetaItem(BaseModel):
 
 
 class ORAttribute(BaseModel):
-    """
-    Project-side normalized representation of an OpenRemote attribute.
-    We keep this simple and JSON-friendly.
-    """
     name: str
     value: Any | None = None
     meta: list[ORMetaItem] = Field(default_factory=list)
 
 
 class ORAssetPayload(BaseModel):
-    """
-    Project-side normalized asset payload for create/update calls.
-    The exact JSON shape sent over HTTP can be adapted in builders/sink.
-    """
     model_config = ConfigDict(extra="allow")
 
     id: str | None = None
@@ -48,18 +36,12 @@ class ORAssetPayload(BaseModel):
 
 
 class ORAttributeWrite(BaseModel):
-    """
-    Maps to OpenRemote single or bulk attribute write semantics.
-    """
     asset_id: str
     attribute_name: str
     value: Any
 
 
 class ORTimestampedAttributeWrite(BaseModel):
-    """
-    For timestamped writes when you want historical datapoints aligned to a supplied timestamp.
-    """
     asset_id: str
     attribute_name: str
     value: Any
@@ -76,10 +58,6 @@ class ORPredictedDatapointWrite(BaseModel):
     attribute_name: str
     datapoints: list[ORPredictedDatapoint]
 
-
-# ----------------------------
-# Project asset type enums
-# ----------------------------
 
 class ProjectAssetType(str, Enum):
     SITE = "SiteAsset"
@@ -116,10 +94,6 @@ class QualityFlag(str, Enum):
     SUSPECT = "suspect"
     INVALID = "invalid"
 
-
-# ----------------------------
-# Domain-facing models
-# ----------------------------
 
 class GeoPoint(BaseModel):
     latitude: float

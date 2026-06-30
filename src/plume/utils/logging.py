@@ -6,7 +6,6 @@ _FORMAT = "%(asctime)s | %(levelname)s | %(name)s | %(message)s"
 
 
 def configure_logging(level: str = "INFO") -> None:
-    """Configure root logging once with a consistent console formatter."""
     root_logger = logging.getLogger()
 
     if not any(getattr(handler, "_plume_handler", False) for handler in root_logger.handlers):
@@ -25,7 +24,6 @@ def get_logger(name: str, level: str | None = None) -> logging.Logger:
     return logger
 
 
-# Backward-compatible alias for existing imports.
 def configure_logger(name: str, level: int = logging.INFO):
     configure_logging(logging.getLevelName(level))
     logger = logging.getLogger(name)

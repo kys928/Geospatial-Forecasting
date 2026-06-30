@@ -252,7 +252,6 @@ def test_low_medium_large_are_distinct_when_candidates_available(tmp_path: Path,
 
 def test_demo_bbox_preferred_for_large(tmp_path: Path, monkeypatch):
     _write_dataset(tmp_path)
-    # First two rows are outside configured bbox, third is inside and should be selected for large.
     manifest = tmp_path / "dataset_manifest.csv"
     rows = list(csv.DictReader(manifest.open("r", encoding="utf-8")))
     rows[0]["lat"], rows[0]["lon"] = "10", "10"
@@ -278,3 +277,63 @@ def test_compute_predicted_spread_direction_cardinals(tmp_path: Path):
     assert svc._compute_predicted_spread_direction(east, 0.1) == "E"
     assert svc._compute_predicted_spread_direction(nw, 0.1) == "NW"
     assert svc._compute_predicted_spread_direction(none, 0.1) == "No plume"
+
+
+def test_dataset_scenarios_work_without_ridge_artifact(tmp_path: Path):
+    _write_dataset(tmp_path)
+    missing_ridge = tmp_path / "missing_ridge.pkl"
+    svc = DatasetScenarioService(DatasetScenarioConfig("enabled", tmp_path / "dataset_manifest.csv", tmp_path / "windows_manifest_enriched.csv", tmp_path / "windows", 10, tmp_path / "state.json", tmp_path / "online_learning_subset", tmp_path / "playback_state.json", missing_ridge))
+
+    scenarios = svc.list_scenarios()
+    ids = {s["scenario_id"] for s in scenarios}
+    assert {"dataset_normal", "dataset_low_plume", "dataset_medium_plume", "dataset_large_plume"}.issubset(ids)
+    payload = svc.get_scenario("dataset_large_plume")
+    assert payload["runtime"]["used_ridge_model"] is False
+    assert payload["runtime"]["model_name"] == "dataset_reference_selector"
+    assert payload["runtime"]["model_source"] == "dataset_target_reference"
+    assert payload["raw"]["model_inference"]["used_ridge_model"] is False
+
+
+def test_active_input_window_works_without_ridge_artifact(tmp_path: Path):
+    _write_dataset(tmp_path)
+    svc = DatasetScenarioService(DatasetScenarioConfig("enabled", tmp_path / "dataset_manifest.csv", tmp_path / "windows_manifest_enriched.csv", tmp_path / "windows", 10, tmp_path / "state.json", tmp_path / "online_learning_subset", tmp_path / "playback_state.json", tmp_path / "missing_ridge.pkl"))
+    svc.activate("dataset_large_plume")
+
+    input_data, payload = svc.active_input_window()
+
+    assert input_data.shape == (3, 10, 64, 64)
+    assert payload["forecast"]
+    assert payload["raw"]
+    assert payload["source"]
+    assert payload["conditions"]
+    assert payload["runtime"]["used_ridge_model"] is False
+    assert payload["provenance"]["used_ridge_model"] is False
+
+
+def test_reference_grid_normalizes_supported_target_shapes():
+    base = np.arange(64 * 64, dtype=np.float32).reshape(64, 64)
+    cases = [
+        np.stack([base, base + 1, base + 2, base + 3])[:, None, :, :],
+        np.stack([base, base + 1, base + 2, base + 3]),
+        base[None, :, :],
+        base,
+    ]
+    for target in cases:
+        grid = DatasetScenarioService._normalize_reference_grid(target)
+        assert grid.shape == (64, 64)
+        assert np.all(np.isfinite(grid))
+    try:
+        DatasetScenarioService._normalize_reference_grid(np.zeros((2, 2), dtype=np.float32))
+        assert False
+    except ValueError as exc:
+        assert "(64, 64)" in str(exc)
+
+
+def test_reference_grid_falls_back_to_input_when_target_malformed(tmp_path: Path):
+    input_data = np.zeros((3, 10, 64, 64), dtype=np.float32)
+    input_data[-1, 0, 4, 5] = 7.0
+    grid, source, ridge = DatasetScenarioService._reference_plume_grid(np.zeros((2, 2), dtype=np.float32), input_data, tmp_path / "w.npz")
+    assert grid.shape == (64, 64)
+    assert grid[4, 5] == 7.0
+    assert source == "dataset_input_reference"
+    assert ridge is None

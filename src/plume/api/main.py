@@ -1,10 +1,14 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
+import logging
 import os
+from pathlib import Path
 
 from fastapi import FastAPI
+from fastapi.responses import FileResponse, Response
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 
 from plume.api.deps import (
     get_explain_service,
@@ -29,11 +33,56 @@ from plume.services.forecast_context_service import ForecastContextService
 from plume.services.dataset_scenario_service import DatasetScenarioService
 
 
-def _env_flag(name: str, *, default: bool) -> bool:
-    value = os.getenv(name)
+LOGGER = logging.getLogger(__name__)
+REPO_ROOT = Path(__file__).resolve().parents[3]
+
+
+def _parse_bool(value: str | None) -> bool:
     if value is None:
-        return default
+        return False
     return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _frontend_dist_dir() -> Path:
+    configured = os.getenv("PLUME_FRONTEND_DIST_DIR")
+    if configured:
+        return Path(configured).expanduser().resolve()
+    return REPO_ROOT / "frontend" / "dist"
+
+
+def _configure_frontend_serving(app: FastAPI) -> None:
+    if not _parse_bool(os.getenv("PLUME_SERVE_FRONTEND")):
+        return
+
+    dist_dir = _frontend_dist_dir()
+    index_html = dist_dir / "index.html"
+    assets_dir = dist_dir / "assets"
+    if not dist_dir.is_dir() or not index_html.is_file():
+        LOGGER.warning(
+            "PLUME_SERVE_FRONTEND=true but frontend dist directory is missing or incomplete: %s",
+            dist_dir,
+        )
+        return
+
+    if assets_dir.is_dir():
+        app.mount("/app/assets", StaticFiles(directory=assets_dir), name="frontend-assets")
+
+    @app.get("/app", include_in_schema=False)
+    @app.get("/app/", include_in_schema=False)
+    async def frontend_index() -> FileResponse:
+        return FileResponse(index_html)
+
+    @app.get("/app/{frontend_path:path}", include_in_schema=False)
+    async def frontend_fallback(frontend_path: str) -> Response:
+        candidate = (dist_dir / frontend_path).resolve()
+        try:
+            candidate.relative_to(dist_dir)
+        except ValueError:
+            return Response(status_code=404)
+
+        if candidate.is_file():
+            return FileResponse(candidate)
+        return FileResponse(index_html)
 
 
 def _cors_settings() -> tuple[list[str], str | None]:
@@ -78,6 +127,7 @@ def create_app() -> FastAPI:
     export_service = get_export_service()
     forecast_store = get_forecast_store()
     backend_config = forecast_service.config.load_backend()
+    dataset_scenario_service = DatasetScenarioService.from_env()
 
     def _runtime_status_payload() -> dict[str, object]:
         openremote_service_registration = app.state.openremote_service_registrar.status()
@@ -116,9 +166,16 @@ def create_app() -> FastAPI:
         forecast_store=forecast_store,
         explain_service=explain_service,
     )
-    dataset_scenario_service = DatasetScenarioService.from_env()
-    forecast_context_service = ForecastContextService(runtime_client=runtime_client, explain_service=explain_service, dataset_scenario_service=dataset_scenario_service)
-    decision_support_service = DecisionSupportService(runtime_client=runtime_client, explain_service=explain_service, forecast_context_service=forecast_context_service)
+    forecast_context_service = ForecastContextService(
+        runtime_client=runtime_client,
+        explain_service=explain_service,
+        dataset_scenario_service=dataset_scenario_service,
+    )
+    decision_support_service = DecisionSupportService(
+        runtime_client=runtime_client,
+        explain_service=explain_service,
+        forecast_context_service=forecast_context_service,
+    )
 
     register_session_routes(
         app,
@@ -128,8 +185,13 @@ def create_app() -> FastAPI:
         explain_service=explain_service,
     )
     register_decision_support_routes(app, decision_support_service=decision_support_service)
-    register_forecast_context_routes(app, forecast_context_service=forecast_context_service, dataset_scenario_service=dataset_scenario_service)
+    register_forecast_context_routes(
+        app,
+        forecast_context_service=forecast_context_service,
+        dataset_scenario_service=dataset_scenario_service,
+    )
     register_ops_routes(app, forecast_service=forecast_service, dispatch_worker=dispatch_retraining_worker)
+    _configure_frontend_serving(app)
 
     return app
 

@@ -14,11 +14,6 @@ def _env_enabled(name: str, default: bool) -> bool:
 
 
 def load_openremote_settings(config_dir: str | None = None) -> dict[str, object]:
-    """Deprecated provisional publishing settings loader.
-
-    Kept temporarily for compatibility with provisional modules/tests.
-    Main runtime path supports OpenRemote service registration only.
-    """
     config = Config(config_dir=config_dir)
     settings = dict(config.load_openremote())
 

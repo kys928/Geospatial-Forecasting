@@ -18,7 +18,6 @@ _TRUE_STRINGS = {"true", "1", "yes", "on"}
 
 
 def build_runtime_mode(metadata: dict | None) -> dict[str, Any]:
-    """Classify technical runtime metadata into a stable JSON-safe payload."""
     source = metadata if isinstance(metadata, dict) else {}
 
     normalized = {

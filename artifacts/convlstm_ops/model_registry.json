@@ -38,7 +38,7 @@
             "model_family": "RobustMultiStepConvLSTMForecaster",
             "model_id": "robust_pretrained_baseline_v3c_tiny_recall_lift",
             "normalization_mode": "robust_multistep",
-            "path": "artifacts/models/convlstm_multistep_three_stage_robust_v3c_tiny_recall_lift/v3b_final_baseline_full_checkpoint.pt",
+            "path": "artifacts/models/convlstm_multistep_three_stage_robust_v3c_tiny_recall_lift/final_full_checkpoint.pt",
             "prediction_engine": "torch_robust_multistep",
             "source": "pretrained_baseline",
             "status": "active",

@@ -6,15 +6,6 @@ import numpy as np
 
 
 class MinimalConvLSTMModel:
-    """Lightweight ConvLSTM-style model wrapper for online backend integration.
-
-    This uses random/untrained weights for demo/runtime plumbing only.
-
-    Inference contract:
-    - Input shape: (T, C, H, W)
-    - Output shape: (H, W)
-    - Output meaning: one non-negative concentration grid prediction for the next forecast step.
-    """
 
     def __init__(self, input_channels: int, hidden_channels: int = 8, seed: int = 7):
         if input_channels <= 0:

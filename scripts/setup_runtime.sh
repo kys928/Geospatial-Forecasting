@@ -1,17 +1,46 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-REPO_DIR="/workspace/Geospatial-Forecasting"
-SETUP_TARGET="/workspace/setup_pod_runtime.sh"
-ENV_FILE="/workspace/geospatial_runtime_env.sh"
-REPORT_FILE="/workspace/geospatial_runtime_last_setup_report.txt"
-DATASET_DIR="/workspace/Dataset/hysplit-plume-convlstm-multiyear-2024-2026"
-GGUF_PATH="/workspace/llm_runtime/models/Qwen_Qwen2.5-7B-Instruct.Q4_K_M.gguf"
-GGUF_SHA256_EXPECTED="11e1c92aa0175db460399af847179825301a1a91a31da01cae12a2386fcbf3a1"
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+DETECTED_REPO_DIR="$(cd -- "$SCRIPT_DIR/.." && pwd -P)"
+REPO_DIR="${PLUME_REPO_DIR:-$DETECTED_REPO_DIR}"
+PLUME_REPO_DIR="$REPO_DIR"
+PLUME_RUNTIME_ROOT="${PLUME_RUNTIME_ROOT:-$(dirname -- "$REPO_DIR")}"
+SETUP_TARGET="${PLUME_SETUP_TARGET:-$PLUME_RUNTIME_ROOT/setup_runtime.sh}"
+ENV_FILE="${PLUME_RUNTIME_ENV_FILE:-$PLUME_RUNTIME_ROOT/geospatial_runtime_env.sh}"
+REPORT_FILE="${PLUME_SETUP_REPORT_FILE:-$PLUME_RUNTIME_ROOT/geospatial_runtime_last_setup_report.txt}"
+PLUME_DATASET_ROOT="${PLUME_DATASET_ROOT:-$PLUME_RUNTIME_ROOT/Dataset}"
+PLUME_LLM_RUNTIME_ROOT="${PLUME_LLM_RUNTIME_ROOT:-$PLUME_RUNTIME_ROOT/llm_runtime}"
+DATASET_DIR="${PLUME_FULL_DATASET_PATH:-$PLUME_DATASET_ROOT/hysplit-plume-convlstm-multiyear-2024-2026}"
+GGUF_PATH="${PLUME_LOCAL_LLM_GGUF_PATH:-$PLUME_LLM_RUNTIME_ROOT/models/Qwen_Qwen2.5-7B-Instruct.Q4_K_M.gguf}"
+CONVLSTM_CHECKPOINT_PATH="${PLUME_CONVLSTM_CHECKPOINT_PATH:-$REPO_DIR/artifacts/models/convlstm_multistep_three_stage_robust_v3c_tiny_recall_lift/final_full_checkpoint.pt}"
+if [[ -v PLUME_LLM_SHA256_EXPECTED ]]; then
+  GGUF_SHA256_EXPECTED="$PLUME_LLM_SHA256_EXPECTED"
+else
+  GGUF_SHA256_EXPECTED="11e1c92aa0175db460399af847179825301a1a91a31da01cae12a2386fcbf3a1"
+fi
+if [[ -v PLUME_CONVLSTM_SHA256_EXPECTED ]]; then
+  CONVLSTM_SHA256_EXPECTED="$PLUME_CONVLSTM_SHA256_EXPECTED"
+else
+  CONVLSTM_SHA256_EXPECTED="3697c237f2f86de58cc313f822e7d998c975267ff4d221a481a46a4b92e5f748"
+fi
+PLUME_SETUP_DOWNLOAD_ASSETS="${PLUME_SETUP_DOWNLOAD_ASSETS:-true}"
+PLUME_SETUP_DOWNLOAD_MODEL_ASSETS="${PLUME_SETUP_DOWNLOAD_MODEL_ASSETS:-true}"
+PLUME_SETUP_DOWNLOAD_DATASET="${PLUME_SETUP_DOWNLOAD_DATASET:-false}"
+PLUME_SETUP_REQUIRE_DATASET="${PLUME_SETUP_REQUIRE_DATASET:-false}"
+export PLUME_RUNTIME_ROOT PLUME_REPO_DIR PLUME_DATASET_ROOT PLUME_LLM_RUNTIME_ROOT
+export PLUME_RUNTIME_ENV_FILE="$ENV_FILE"
+export PLUME_FULL_DATASET_PATH="$DATASET_DIR"
+export PLUME_LOCAL_LLM_GGUF_PATH="$GGUF_PATH"
+export PLUME_CONVLSTM_CHECKPOINT_PATH="$CONVLSTM_CHECKPOINT_PATH"
+export PLUME_LLM_SHA256_EXPECTED="$GGUF_SHA256_EXPECTED"
+export PLUME_CONVLSTM_SHA256_EXPECTED="$CONVLSTM_SHA256_EXPECTED"
+export PLUME_SETUP_DOWNLOAD_ASSETS PLUME_SETUP_DOWNLOAD_MODEL_ASSETS PLUME_SETUP_DOWNLOAD_DATASET PLUME_SETUP_REQUIRE_DATASET
 EXPECTED_WINDOWS_COUNT=40215
 NUMPY_VERSION="2.4.4"
 LLAMA_CPP_VERSION="0.3.22"
 DISKCACHE_VERSION="5.6.3"
+MATPLOTLIB_VERSION="3.9.4"
 
 log() { echo "[setup] $*"; }
 warn() { echo "[setup][warn] $*"; }
@@ -35,7 +64,8 @@ fi
 
 if [[ "$0" != "$SETUP_TARGET" ]]; then
   log "Copying setup script to $SETUP_TARGET"
-  cp "$REPO_DIR/scripts/setup_pod_runtime.sh" "$SETUP_TARGET"
+  mkdir -p "$(dirname "$SETUP_TARGET")"
+  cp "$REPO_DIR/scripts/setup_runtime.sh" "$SETUP_TARGET"
   chmod +x "$SETUP_TARGET"
 fi
 
@@ -79,6 +109,7 @@ python3 -m pip install \
   pydantic==2.13.4 \
   numpy=="$NUMPY_VERSION" \
   diskcache=="$DISKCACHE_VERSION" \
+  matplotlib=="$MATPLOTLIB_VERSION" \
   huggingface_hub==0.36.2 \
   openai==1.109.1 \
   shapely==2.1.2 \
@@ -111,8 +142,10 @@ python3 - <<'PY'
 import numpy
 import diskcache
 import llama_cpp
+import matplotlib
 print("numpy:", numpy.__version__)
 print("diskcache:", diskcache.__version__)
+print("matplotlib:", matplotlib.__version__)
 print("llama_cpp:", llama_cpp.__file__)
 if numpy.__version__ != "2.4.4":
     raise SystemExit("numpy pin verification failed: expected 2.4.4")
@@ -130,6 +163,7 @@ expected = {
     "pydantic": "2.13.4",
     "numpy": "2.4.4",
     "diskcache": "5.6.3",
+    "matplotlib": "3.9.4",
     "llama-cpp-python": "0.3.22",
     "huggingface-hub": "0.36.2",
     "openai": "1.109.1",
@@ -165,29 +199,71 @@ else
   npm install
 fi
 
-log "Validating dataset"
-[[ -d "$DATASET_DIR" ]] || fail "Dataset directory missing: $DATASET_DIR"
-[[ -f "$DATASET_DIR/dataset_manifest.csv" ]] || fail "dataset_manifest.csv missing"
-[[ -f "$DATASET_DIR/windows_manifest_enriched.csv" ]] || fail "windows_manifest_enriched.csv missing"
-[[ -d "$DATASET_DIR/windows" ]] || fail "windows directory missing"
+cd "$REPO_DIR"
+log "Bootstrapping runtime assets"
+python3 scripts/bootstrap_runtime_assets.py
 
-WINDOWS_COUNT="$(find "$DATASET_DIR/windows" -maxdepth 1 -name '*.npz' | wc -l | tr -d ' ')"
-if [[ "$WINDOWS_COUNT" == "0" ]]; then
-  fail "No .npz windows found in dataset windows directory"
+log "Validating optional dataset"
+DATASET_AVAILABLE="true"
+DATASET_INVALID_REASON=""
+if [[ ! -d "$DATASET_DIR" ]]; then
+  DATASET_AVAILABLE="false"
+  DATASET_INVALID_REASON="Dataset directory missing: $DATASET_DIR"
+elif [[ ! -f "$DATASET_DIR/dataset_manifest.csv" ]]; then
+  DATASET_AVAILABLE="false"
+  DATASET_INVALID_REASON="dataset_manifest.csv missing"
+elif [[ ! -f "$DATASET_DIR/windows_manifest_enriched.csv" ]]; then
+  DATASET_AVAILABLE="false"
+  DATASET_INVALID_REASON="windows_manifest_enriched.csv missing"
+elif [[ ! -d "$DATASET_DIR/windows" ]]; then
+  DATASET_AVAILABLE="false"
+  DATASET_INVALID_REASON="windows directory missing"
 fi
-if [[ "$WINDOWS_COUNT" != "$EXPECTED_WINDOWS_COUNT" ]]; then
-  warn "Dataset window count is $WINDOWS_COUNT (expected $EXPECTED_WINDOWS_COUNT)"
-else
-  log "Dataset window count matches expected: $WINDOWS_COUNT"
+
+WINDOWS_COUNT="0"
+if [[ "$DATASET_AVAILABLE" == "true" ]]; then
+  WINDOWS_COUNT="$(find "$DATASET_DIR/windows" -maxdepth 1 -name '*.npz' | wc -l | tr -d ' ')"
+  if [[ "$WINDOWS_COUNT" == "0" ]]; then
+    DATASET_AVAILABLE="false"
+    DATASET_INVALID_REASON="No .npz windows found in dataset windows directory"
+  elif [[ "$WINDOWS_COUNT" != "$EXPECTED_WINDOWS_COUNT" ]]; then
+    warn "Dataset window count is $WINDOWS_COUNT (expected $EXPECTED_WINDOWS_COUNT)"
+  else
+    log "Dataset window count matches expected: $WINDOWS_COUNT"
+  fi
+fi
+
+if [[ "$DATASET_AVAILABLE" != "true" ]]; then
+  if [[ "$PLUME_SETUP_REQUIRE_DATASET" == "true" ]]; then
+    fail "$DATASET_INVALID_REASON"
+  fi
+  warn "$DATASET_INVALID_REASON; dataset scenario mode will be disabled"
 fi
 
 log "Validating GGUF file and SHA256"
 [[ -f "$GGUF_PATH" ]] || fail "GGUF missing: $GGUF_PATH"
 GGUF_SHA256_ACTUAL="$(sha256sum "$GGUF_PATH" | awk '{print $1}')"
-if [[ "$GGUF_SHA256_ACTUAL" != "$GGUF_SHA256_EXPECTED" ]]; then
-  fail "GGUF hash mismatch. Expected $GGUF_SHA256_EXPECTED, got $GGUF_SHA256_ACTUAL"
+if [[ -n "$GGUF_SHA256_EXPECTED" ]]; then
+  if [[ "$GGUF_SHA256_ACTUAL" != "$GGUF_SHA256_EXPECTED" ]]; then
+    fail "GGUF hash mismatch. Expected $GGUF_SHA256_EXPECTED, got $GGUF_SHA256_ACTUAL"
+  fi
+  log "GGUF SHA256 matches expected"
+else
+  warn "GGUF SHA256 validation disabled because PLUME_LLM_SHA256_EXPECTED is set to an empty string"
 fi
-log "GGUF SHA256 matches expected"
+
+log "Validating ConvLSTM checkpoint"
+[[ -f "$CONVLSTM_CHECKPOINT_PATH" ]] || fail "ConvLSTM checkpoint missing: $CONVLSTM_CHECKPOINT_PATH"
+CONVLSTM_SHA256_ACTUAL="$(sha256sum "$CONVLSTM_CHECKPOINT_PATH" | awk '{print $1}')"
+if [[ -n "$CONVLSTM_SHA256_EXPECTED" ]]; then
+  if [[ "$CONVLSTM_SHA256_ACTUAL" != "$CONVLSTM_SHA256_EXPECTED" ]]; then
+    fail "ConvLSTM checkpoint hash mismatch. Expected $CONVLSTM_SHA256_EXPECTED, got $CONVLSTM_SHA256_ACTUAL"
+  fi
+  log "ConvLSTM SHA256 matches expected"
+else
+  warn "ConvLSTM SHA256 validation disabled because PLUME_CONVLSTM_SHA256_EXPECTED is set to an empty string"
+fi
+log "ConvLSTM checkpoint present"
 
 if command -v nvidia-smi >/dev/null 2>&1; then
   log "GPU info (nvidia-smi)"
@@ -209,43 +285,39 @@ else
   fi
 fi
 
-if [[ -z "${VITE_API_BASE_URL:-}" || -z "${PLUME_CORS_ALLOW_ORIGINS:-}" ]]; then
-  warn "VITE_API_BASE_URL and/or PLUME_CORS_ALLOW_ORIGINS not set in current shell."
-  warn "You must pass --api-base-url and --frontend-origin to run_runpod_stack.py."
-fi
 
+mkdir -p "$(dirname "$ENV_FILE")" "$(dirname "$REPORT_FILE")"
 cat > "$ENV_FILE" <<EOF_ENV
 #!/usr/bin/env bash
 
-export REPO_DIR="/workspace/Geospatial-Forecasting"
-export PYTHONPATH="/workspace/Geospatial-Forecasting/src"
+export REPO_DIR="$REPO_DIR"
+export PYTHONPATH="$REPO_DIR/src"
+export PLUME_RUNTIME_ROOT="$PLUME_RUNTIME_ROOT"
+export PLUME_REPO_DIR="$REPO_DIR"
+export PLUME_DATASET_ROOT="$PLUME_DATASET_ROOT"
+export PLUME_LLM_RUNTIME_ROOT="$PLUME_LLM_RUNTIME_ROOT"
+export PLUME_RUNTIME_ENV_FILE="$ENV_FILE"
 
-# RunPod browser routing.
 export VITE_API_BASE_URL="${VITE_API_BASE_URL:-}"
 export PLUME_CORS_ALLOW_ORIGINS="${PLUME_CORS_ALLOW_ORIGINS:-}"
 
-# Ops dev mode.
 export PLUME_OPS_AUTH_ENABLED="false"
 unset PLUME_OPS_API_TOKEN
 unset VITE_OPS_API_TOKEN
 unset PLUME_OPS_READONLY_TOKEN
 
-# Dataset playback / Forecast Context.
-export PLUME_DATASET_SCENARIO_MODE="enabled"
-export PLUME_FULL_DATASET_PATH="/workspace/Dataset/hysplit-plume-convlstm-multiyear-2024-2026"
-export PLUME_DATASET_MANIFEST_PATH="/workspace/Dataset/hysplit-plume-convlstm-multiyear-2024-2026/dataset_manifest.csv"
-export PLUME_WINDOWS_MANIFEST_ENRICHED_PATH="/workspace/Dataset/hysplit-plume-convlstm-multiyear-2024-2026/windows_manifest_enriched.csv"
-export PLUME_WINDOWS_DIR="/workspace/Dataset/hysplit-plume-convlstm-multiyear-2024-2026/windows"
+export PLUME_DATASET_SCENARIO_MODE="$([[ "$DATASET_AVAILABLE" == "true" ]] && echo enabled || echo disabled)"
+export PLUME_FULL_DATASET_PATH="$DATASET_DIR"
+export PLUME_DATASET_MANIFEST_PATH="$DATASET_DIR/dataset_manifest.csv"
+export PLUME_WINDOWS_MANIFEST_ENRICHED_PATH="$DATASET_DIR/windows_manifest_enriched.csv"
+export PLUME_WINDOWS_DIR="$DATASET_DIR/windows"
 export PLUME_DATASET_SCENARIO_SCAN_LIMIT="500"
 
-# AI Decision Support: safe frontend/dev default (context fallback, no local LLM required).
 export PLUME_EXPLANATION_BACKEND="llm"
 export PLUME_LLM_PROVIDER="local-gguf"
-export PLUME_LOCAL_LLM_GGUF_PATH="/workspace/llm_runtime/models/Qwen_Qwen2.5-7B-Instruct.Q4_K_M.gguf"
+export PLUME_LOCAL_LLM_GGUF_PATH="$GGUF_PATH"
+export PLUME_CONVLSTM_CHECKPOINT_PATH="$CONVLSTM_CHECKPOINT_PATH"
 export PLUME_LOCAL_LLM_N_GPU_LAYERS="-1"
-# Temporary RunPod demo stability default:
-# in-process local GGUF currently answers reliably, while isolated worker warmup can hang.
-# Revisit before final release; isolated mode remains the preferred safer architecture once fixed.
 export PLUME_LOCAL_LLM_N_CTX="1024"
 export PLUME_LOCAL_LLM_N_BATCH="128"
 export PLUME_LOCAL_LLM_MAX_TOKENS="300"
@@ -257,17 +329,16 @@ export PLUME_LOCAL_LLM_ISOLATED="false"
 export PLUME_LOCAL_LLM_WORKER_TIMEOUT_SECONDS="120"
 export PLUME_LOCAL_LLM_WORKER_STARTUP_TIMEOUT_SECONDS="240"
 
-# Explanation persistence behavior.
 export PLUME_PERSIST_BATCH_EXPLANATION="false"
 export PLUME_PERSIST_BATCH_EXPLANATION_USE_LLM="false"
 
-# Optional paths.
-export PLUME_DEMO_SCENARIO_DIR="/workspace/Geospatial-Forecasting/artifacts/demo_scenarios"
-export PLUME_ONLINE_SUBSET_PATH="/workspace/Dataset/online_learning_subset"
+export PLUME_DEMO_SCENARIO_DIR="$REPO_DIR/artifacts/demo_scenarios"
+export PLUME_ONLINE_SUBSET_PATH="$PLUME_DATASET_ROOT/online_learning_subset"
 
-# Local GGUF mode does not need HF tokens.
 unset HF_TOKEN
 unset HUGGINGFACEHUB_API_TOKEN
+unset KAGGLE_USERNAME
+unset KAGGLE_KEY
 unset PLUME_LLAMA_CPP_BIN
 EOF_ENV
 chmod +x "$ENV_FILE"
@@ -282,21 +353,23 @@ NPM_VER="$(npm --version)"
 {
   echo "date=$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
   echo "repo_commit=$REPO_COMMIT"
+  echo "runtime_root=$PLUME_RUNTIME_ROOT"
+  echo "repo_dir=$REPO_DIR"
+  echo "dataset_dir=$DATASET_DIR"
+  echo "gguf_path=$GGUF_PATH"
+  echo "convlstm_checkpoint_path=$CONVLSTM_CHECKPOINT_PATH"
+  echo "convlstm_checkpoint_exists=$([[ -f "$CONVLSTM_CHECKPOINT_PATH" ]] && echo true || echo false)"
   echo "python_version=$PY_VER"
   echo "pip_version=$PIP_VER"
   echo "node_version=$NODE_VER"
   echo "npm_version=$NPM_VER"
-  python3 -m pip show fastapi uvicorn pydantic numpy diskcache llama-cpp-python torch torchvision torchaudio pandas scikit-learn 2>/dev/null \
+  python3 -m pip show fastapi uvicorn pydantic numpy diskcache matplotlib llama-cpp-python torch torchvision torchaudio pandas scikit-learn 2>/dev/null \
     | awk '/^Name:|^Version:/{print}'
   echo "dataset_windows_count=$WINDOWS_COUNT"
   echo "gguf_sha256=$GGUF_SHA256_ACTUAL"
+  echo "convlstm_sha256=$CONVLSTM_SHA256_ACTUAL"
   echo "env_file=$ENV_FILE"
 } > "$REPORT_FILE"
 
 log "Wrote runtime env file: $ENV_FILE"
 log "Wrote setup report: $REPORT_FILE"
-
-echo
-echo "Next run command:"
-echo "cd /workspace/Geospatial-Forecasting"
-echo "python scripts/run_runpod_stack.py --api-base-url \"<RunPod 8000 proxy URL>\" --frontend-origin \"<RunPod 5173 proxy URL>\""

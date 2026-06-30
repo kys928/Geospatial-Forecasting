@@ -1,11 +1,4 @@
 #!/usr/bin/env python3
-"""Safe operational smoke test for the ConvLSTM adaptation loop.
-
-The script is intentionally read-mostly by default. It validates local paths,
-builds adaptation dataset manifests, runs the trainer CLI in dry-run mode, and
-optionally checks the Ops API. It starts real training only when the operator
-passes --run-tiny-training.
-"""
 
 from __future__ import annotations
 

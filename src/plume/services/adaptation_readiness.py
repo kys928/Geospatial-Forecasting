@@ -1,8 +1,3 @@
-"""Read-only readiness checks for automatic ConvLSTM adaptation.
-
-This service evaluates whether a buffered adaptation retraining run may start.
-It does not train, schedule, promote, activate, or delete model artifacts.
-"""
 
 from __future__ import annotations
 
@@ -32,7 +27,6 @@ _CHECKPOINT_SUFFIXES = {".ckpt", ".pth", ".pt", ".bin"}
 
 @dataclass(frozen=True)
 class AdaptationReadinessConfig:
-    """Policy and path settings used by adaptation readiness checks."""
 
     enabled: bool = True
     buffer_root: Path | str | None = None
@@ -88,7 +82,6 @@ class AdaptationReadinessConfig:
 
     @classmethod
     def from_yaml(cls, path: Path | str = "configs/adaptation.yaml") -> "AdaptationReadinessConfig":
-        """Load readiness policy from the existing adaptation YAML file."""
         config_path = Path(path)
         with config_path.open("r", encoding="utf-8") as handle:
             payload = yaml.safe_load(handle) or {}
@@ -171,7 +164,6 @@ class AdaptationReadinessConfig:
 
 @dataclass(frozen=True)
 class ReadinessCheck:
-    """One JSON-serializable readiness check outcome."""
 
     name: str
     status: str
@@ -185,7 +177,6 @@ class ReadinessCheck:
 
 @dataclass(frozen=True)
 class AdaptationReadinessResult:
-    """Aggregated readiness response for API or local consumers."""
 
     ready: bool
     status: str
@@ -209,7 +200,6 @@ class AdaptationReadinessResult:
 
 @dataclass(frozen=True)
 class CheckpointAvailability:
-    """Selected checkpoint path and source for adaptation warm-start."""
 
     passed: bool
     status: str
@@ -234,7 +224,6 @@ class CheckpointAvailability:
 
 @dataclass(frozen=True)
 class DatasetLayoutInspection:
-    """Lightweight inspection of supported training dataset directory layouts."""
 
     root: Path
     exists: bool
@@ -249,7 +238,6 @@ class DatasetLayoutInspection:
 
 @dataclass(frozen=True)
 class TrainingDatasetDiscovery:
-    """Training-source discovery result for fallback/manual stabilization data."""
 
     available: bool
     path: str | None
@@ -259,12 +247,6 @@ class TrainingDatasetDiscovery:
 
 
 def inspect_dataset_layout(path: str | Path) -> DatasetLayoutInspection:
-    """Inspect a dataset root for supported NPZ layouts without requiring manifests.
-
-    The check is intentionally cheap for large mounted datasets: direct child
-    counts are used first, and recursive scanning is only used for ``windows/``
-    when there are no immediate NPZ files.
-    """
     root = Path(path)
     exists = root.exists()
     dataset_manifest = root / "dataset_manifest"
@@ -377,7 +359,6 @@ def inspect_dataset_layout(path: str | Path) -> DatasetLayoutInspection:
 
 
 def inspect_training_dataset_layout(path: str | Path) -> TrainingDatasetDiscovery:
-    """Inspect a candidate training-source root without treating it as buffer data."""
     inspection = inspect_dataset_layout(path)
     details = {
         **inspection.details,
@@ -445,7 +426,6 @@ def check_checkpoint_available(
     latest_best_checkpoint_path: str | Path | None,
     allow_fresh_start: bool,
 ) -> CheckpointAvailability:
-    """Check explicit checkpoint existence and select active, fallback, or fresh start."""
     return discover_adaptation_checkpoint(
         repo_root=Path.cwd(),
         explicit_active_checkpoint=active_checkpoint_path,
@@ -464,7 +444,6 @@ def discover_adaptation_checkpoint(
     globs: list[str] | None = None,
     allow_fresh_start: bool = False,
 ) -> CheckpointAvailability:
-    """Discover a usable ConvLSTM adaptation checkpoint without requiring env vars."""
 
     details: dict[str, Any] = {
         "explicit_active_checkpoint": str(explicit_active_checkpoint) if explicit_active_checkpoint else None,
@@ -582,7 +561,6 @@ def discover_adaptation_reference_dataset(
     candidates: list[str] | None = None,
     config: AdaptationDatasetConfig | None = None,
 ) -> Path | None:
-    """Find the first usable fallback/full training-source root."""
     discovery = discover_training_dataset(
         repo_root=repo_root,
         explicit_path=explicit_path,
@@ -599,8 +577,7 @@ def discover_training_dataset(
     candidates: list[str] | None = None,
     config: AdaptationDatasetConfig | None = None,
 ) -> TrainingDatasetDiscovery:
-    """Find a usable fallback/full training source, preferring configured order."""
-    del config  # layout inspection owns lightweight validation for each supported source type.
+    del config
     roots: list[Path] = []
     if explicit_path is not None:
         roots.append(Path(explicit_path))
@@ -648,7 +625,6 @@ def discover_training_dataset(
 
 
 def _best_child_dataset(parent: Path) -> TrainingDatasetDiscovery | None:
-    """Inspect one level of child directories and prefer the largest usable layout."""
     if not parent.exists() or not parent.is_dir():
         return None
     usable: list[TrainingDatasetDiscovery] = []
@@ -738,7 +714,6 @@ def _check_accepted_sample_age(
 
 
 class AdaptationReadinessService:
-    """Evaluate read-only checks that gate automatic buffered retraining."""
 
     def __init__(self, config: AdaptationReadinessConfig | None = None) -> None:
         self.config = config or AdaptationReadinessConfig.from_yaml()
@@ -758,7 +733,6 @@ class AdaptationReadinessService:
         registry: Any | None = None,
         last_adaptation_training_at: datetime | str | None = None,
     ) -> AdaptationReadinessResult:
-        """Run readiness checks and return a JSON-serializable result."""
         checks: list[ReadinessCheck] = []
         warnings: list[str] = []
         summary: dict[str, Any] = {}
