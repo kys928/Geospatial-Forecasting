@@ -20,8 +20,6 @@ At a high level, it provides:
 
 Keep the distinction clear: the application manages and presents forecast workflows, but forecast provenance depends on the configured runtime mode and available assets.
 
-## What this project is not
-
 
 ## Documentation map
 

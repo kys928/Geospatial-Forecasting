@@ -220,7 +220,7 @@ apt-get update -y
 apt-get install -y git curl
 
 cd /workspace
-git clone --branch cleanup/safe-runtime-refactor https://github.com/kys928/Geospatial-Forecasting.git
+git clone https://github.com/kys928/Geospatial-Forecasting.git
 cd /workspace/Geospatial-Forecasting
 
 export PLUME_RUNTIME_ROOT="/workspace"
@@ -276,7 +276,7 @@ curl -fsS -X POST "${PLUME_PUBLIC_API_BASE_URL}/sessions" \
   -d '{}'
 ```
 
-If you are validating a PR branch instead of `cleanup/safe-runtime-refactor`, replace the `git clone --branch ...` value with that PR branch name.
+The handover setup uses the default branch/main. If you are validating a PR branch instead, clone that PR branch explicitly with `git clone --branch <branch-name> ...`.
 
 
 ## Dataset Download Behavior

@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 import json
 from pathlib import Path
+import shutil
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -358,6 +359,8 @@ convlstm_prediction_engine: torch_multistep
 convlstm_checkpoint_strict: false
 convlstm_device: cpu
 """, encoding="utf-8")
+    default_inference_config = Path(__file__).resolve().parents[1] / "configs" / "inference.yaml"
+    shutil.copy(default_inference_config, tmp_path / "inference.yaml")
 
     class InputOnlyDatasetService:
         def is_enabled(self):
