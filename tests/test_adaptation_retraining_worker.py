@@ -350,6 +350,7 @@ def test_worker_records_failure_on_trainer_exception(monkeypatch, tmp_path: Path
         raise RuntimeError("trainer exploded")
 
     monkeypatch.setattr("plume.services.convlstm_operations.train_three_stage_adaptation", fail)
+    monkeypatch.setattr("plume.services.convlstm_operations._validate_adaptation_resume_checkpoint", lambda _path: None)
 
     result = _run(tmp_path, config_dir)
 

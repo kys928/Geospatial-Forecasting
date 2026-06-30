@@ -155,14 +155,15 @@ def check_adaptation_checkpoint_compatibility(
     if not checkpoint_path.exists():
         return CompatibilityResult(False, False, str(checkpoint_path), ["checkpoint_file_missing"])
 
+    json_payload = _try_load_json_checkpoint(checkpoint_path)
+    if json_payload is not None:
+        contract_result = _validate_checkpoint_payload(json_payload)
+        if not contract_result.compatible:
+            return CompatibilityResult(False, False, str(checkpoint_path), contract_result.reasons, contract=contract_result.contract)
+        reasons = ["cannot_perform_strict_torch_compatibility_check"] if require_strict_torch else []
+        return CompatibilityResult(True, not require_strict_torch, str(checkpoint_path), reasons, False, contract_result.contract)
+
     if importlib.util.find_spec("torch") is None:
-        payload = _try_load_json_checkpoint(checkpoint_path)
-        if payload is not None:
-            contract_result = _validate_checkpoint_payload(payload)
-            if not contract_result.compatible:
-                return CompatibilityResult(False, False, str(checkpoint_path), contract_result.reasons, contract=contract_result.contract)
-            reasons = ["cannot_perform_strict_torch_compatibility_check"] if require_strict_torch else []
-            return CompatibilityResult(True, not require_strict_torch, str(checkpoint_path), reasons, False, contract_result.contract)
         if require_strict_torch:
             return CompatibilityResult(
                 True,

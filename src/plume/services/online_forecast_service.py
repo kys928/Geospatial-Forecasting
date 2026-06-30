@@ -273,6 +273,9 @@ class OnlineForecastService:
         self.state_store.save_latest_forecast_linkage(request.session_id, result.forecast_id, artifact_dir)
         return result
 
+    def get_latest_session_forecast_result(self, session_id: str) -> ForecastRunResult:
+        return self.get_latest_forecast_result(session_id)
+
     def get_latest_forecast_result(self, session_id: str) -> ForecastRunResult:
         self.get_session(session_id)
         result = self._latest_forecast_by_session.get(session_id)
